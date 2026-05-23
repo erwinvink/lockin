@@ -1,0 +1,77 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "contextState", "safetyFlags", "sessions"],
+  "properties": {
+    "summary": { "type": "string" },
+    "contextState": {
+      "enum": ["building", "plateau", "overreaching", "recovery_needed", "insufficient_history"]
+    },
+    "safetyFlags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "dayOffset",
+          "focus",
+          "purpose",
+          "estimatedDurationMinutes",
+          "progressionRationale",
+          "safetyNotes",
+          "loggingFieldsRequired",
+          "exercises"
+        ],
+        "properties": {
+          "title": { "type": "string" },
+          "dayOffset": { "type": "integer", "minimum": 0, "maximum": 6 },
+          "focus": { "enum": ["pull", "push", "core", "mixed", "recovery"] },
+          "purpose": { "type": "string" },
+          "estimatedDurationMinutes": { "type": "integer" },
+          "progressionRationale": { "type": "string" },
+          "safetyNotes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "loggingFieldsRequired": {
+            "type": "array",
+            "items": { "enum": ["pullUps", "pushUps", "plankSeconds"] }
+          },
+          "exercises": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["exercise", "sets", "reps", "seconds", "restSeconds", "intensity"],
+              "properties": {
+                "exercise": {
+                  "enum": [
+                    "pullUp",
+                    "pushUp",
+                    "plank",
+                    "scapularPull",
+                    "hollowHold",
+                    "inclinePushUp",
+                    "pikePushUp",
+                    "deadHang",
+                    "shoulderMobility"
+                  ]
+                },
+                "sets": { "type": "integer" },
+                "reps": { "type": "integer" },
+                "seconds": { "type": "integer" },
+                "restSeconds": { "type": "integer" },
+                "intensity": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

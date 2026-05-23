@@ -1,0 +1,16 @@
+{
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0"
+  }
+}

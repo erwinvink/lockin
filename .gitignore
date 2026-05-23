@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Xcode / Swift build products and local user state
+DerivedData/
+build/
+.build/
+*.xcuserstate
+xcuserdata/
+*.xcresult
+*.moved-aside
+
+# Node dependencies, build output, and local logs
+node_modules/
+dist/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local secrets and machine-specific env files
+.env
+.env.*
+!.env.example

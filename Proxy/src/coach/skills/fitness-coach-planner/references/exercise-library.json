@@ -1,0 +1,77 @@
+{
+  "version": "2026-05-11",
+  "exercises": {
+    "pullUp": {
+      "title": "Pull-up",
+      "goalMetric": "pullUps",
+      "requiredEquipment": ["pullUpBar"],
+      "formStandard": "Dead hang start, chin over bar, no kipping, controlled lower.",
+      "trainingRole": ["goal", "pull-strength"],
+      "defaultRestSeconds": 120
+    },
+    "pushUp": {
+      "title": "Push-up",
+      "goalMetric": "pushUps",
+      "requiredEquipment": [],
+      "formStandard": "Locked plank body line, controlled depth, full elbow extension.",
+      "trainingRole": ["goal", "push-volume"],
+      "defaultRestSeconds": 90
+    },
+    "plank": {
+      "title": "Plank",
+      "goalMetric": "plankSeconds",
+      "requiredEquipment": [],
+      "formStandard": "Straight body line, no sagging hips, steady breathing.",
+      "trainingRole": ["goal", "core-endurance"],
+      "defaultRestSeconds": 90
+    },
+    "scapularPull": {
+      "title": "Scapular pull",
+      "goalMetric": null,
+      "requiredEquipment": ["pullUpBar"],
+      "formStandard": "Arms straight, shoulder blades move without elbow bend.",
+      "trainingRole": ["pull-support", "technique"],
+      "defaultRestSeconds": 60
+    },
+    "deadHang": {
+      "title": "Dead hang",
+      "goalMetric": null,
+      "requiredEquipment": ["pullUpBar"],
+      "formStandard": "Full hang with controlled shoulders and no swinging.",
+      "trainingRole": ["grip", "pull-support"],
+      "defaultRestSeconds": 60
+    },
+    "hollowHold": {
+      "title": "Hollow hold",
+      "goalMetric": null,
+      "requiredEquipment": [],
+      "formStandard": "Low back pressed down, ribs tucked, controlled breathing.",
+      "trainingRole": ["core-support"],
+      "defaultRestSeconds": 45
+    },
+    "inclinePushUp": {
+      "title": "Incline push-up",
+      "goalMetric": null,
+      "requiredEquipment": [],
+      "formStandard": "Strict push-up line with hands elevated.",
+      "trainingRole": ["push-support", "regression"],
+      "defaultRestSeconds": 75
+    },
+    "pikePushUp": {
+      "title": "Pike push-up",
+      "goalMetric": null,
+      "requiredEquipment": [],
+      "formStandard": "Hips high, controlled press, head moves toward floor.",
+      "trainingRole": ["push-support", "shoulders"],
+      "defaultRestSeconds": 75
+    },
+    "shoulderMobility": {
+      "title": "Shoulder mobility",
+      "goalMetric": null,
+      "requiredEquipment": [],
+      "formStandard": "Pain-free range, controlled movement, no forcing.",
+      "trainingRole": ["warm-up", "recovery"],
+      "defaultRestSeconds": 30
+    }
+  }
+}

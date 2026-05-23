@@ -1,0 +1,3 @@
+display_name: Fitness Coach Planner
+short_description: Builds safe strict calisthenics week plans from goals, equipment, and training history.
+default_prompt: Generate a validated weekly strict calisthenics plan from my current profile and logs.
