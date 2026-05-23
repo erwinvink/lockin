@@ -2,14 +2,14 @@ import XCTest
 @testable import FitnessApp
 
 final class CoachValidationTests: XCTestCase {
-    func testProxyUnavailableErrorExplainsHowToStartLocalProxy() throws {
-        let endpoint = try XCTUnwrap(URL(string: "http://127.0.0.1:8787/generate-week-plan"))
+    func testProxyUnavailableErrorExplainsHostedProxyChecks() throws {
+        let endpoint = try XCTUnwrap(URL(string: LocalCoachClient.defaultEndpointString))
         let error = CoachClientError.proxyUnavailable(endpoint, URLError(.cannotConnectToHost))
         let message = try XCTUnwrap(error.errorDescription)
 
-        XCTAssertTrue(message.contains("local coach proxy is not running"))
-        XCTAssertTrue(message.contains("cd Proxy"))
-        XCTAssertTrue(message.contains("OPENAI_API_KEY"))
+        XCTAssertTrue(message.contains("hosted coach proxy is not reachable"))
+        XCTAssertTrue(message.contains("Coolify deployment"))
+        XCTAssertTrue(message.contains("https://lockin.elevenfactor.com"))
     }
 
     func testMissingAPIKeyErrorExplainsProxyEnvironment() {
@@ -17,13 +17,48 @@ final class CoachValidationTests: XCTestCase {
         let message = error.localizedDescription
 
         XCTAssertTrue(message.contains("OPENAI_API_KEY is not set"))
-        XCTAssertTrue(message.contains("Restart it with"))
+        XCTAssertTrue(message.contains("Coolify environment variables"))
     }
 
-    func testCoachClientNormalizesBareProxyHost() throws {
-        let client = try LocalCoachClient(endpointString: "127.0.0.1:8787")
+    func testCoachClientDefaultsToHostedProxy() throws {
+        let client = try LocalCoachClient()
 
-        XCTAssertEqual(client.endpoint.absoluteString, "http://127.0.0.1:8787/generate-week-plan")
+        XCTAssertEqual(client.endpoint.absoluteString, "https://lockin.elevenfactor.com/generate-week-plan")
+    }
+
+    func testCoachClientNormalizesBareHostedProxyHost() throws {
+        let client = try LocalCoachClient(endpointString: "lockin.elevenfactor.com")
+
+        XCTAssertEqual(client.endpoint.absoluteString, "https://lockin.elevenfactor.com/generate-week-plan")
+    }
+
+    func testCoachClientRejectsLoopbackProxyHosts() {
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "127.0.0.1:8787"))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://localhost:8787/generate-week-plan"))
+    }
+
+    func testCoachPlanRequestEncodesSelectedModel() throws {
+        let request = CoachPlanRequest(
+            model: "gpt-5.5",
+            baseline: CoachBaseline(pullUps: 1, pushUps: 2, plankSeconds: 30),
+            goals: CoachGoals(pullUps: 10, pushUps: 20, plankSeconds: 120),
+            weekStart: Date(timeIntervalSince1970: 0),
+            weeklySessions: 3,
+            equipment: ["pullUpBar"],
+            targetDate: Date(timeIntervalSince1970: 86_400),
+            trainingLogs: [],
+            plannedSessions: []
+        )
+
+        let data = try JSONEncoder.coachEncoder.encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["model"] as? String, "gpt-5.5")
+    }
+
+    func testCoachModelCatalogFallsBackForEmptySelection() {
+        XCTAssertEqual(CoachModelCatalog.normalized("  "), CoachModelCatalog.defaultModelID)
+        XCTAssertEqual(CoachModelCatalog.normalized(" gpt-5.5 "), "gpt-5.5")
     }
 
     func testRejectsAIPlanAboveStrictProgressionCaps() {

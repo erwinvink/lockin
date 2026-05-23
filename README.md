@@ -6,7 +6,7 @@ Native iPhone-first SwiftUI app for training from a measured starting point towa
 - 100 push-ups
 - 5:00 plank
 
-The app is built as a production-style personal coach: baseline and target inputs, exact weekly sessions, adaptive deloads, score penalties, app-specific ranks with real-world benchmark anchors, strict reminders, SwiftData persistence, CloudKit-ready model configuration, and a local OpenAI proxy boundary with a bundled coach skill.
+The app is built as a production-style personal coach: baseline and target inputs, exact weekly sessions, adaptive deloads, score penalties, app-specific ranks with real-world benchmark anchors, strict reminders, SwiftData persistence, CloudKit-ready model configuration, and a hosted OpenAI proxy boundary with a bundled coach skill.
 
 ## Run
 
@@ -20,17 +20,14 @@ xcodebuild \
   build
 ```
 
-## Local AI proxy
+## Hosted AI proxy
 
-The iOS app never stores an OpenAI API key. Start the local proxy when using AI coaching:
+The iOS app never stores an OpenAI API key. It calls the hosted coach proxy:
 
-```bash
-cd Proxy
-npm install
-cp .env.example .env
-npm run dev
+```text
+https://lockin.elevenfactor.com/generate-week-plan
 ```
 
-The app defaults to `http://127.0.0.1:8787`. The proxy loads the `fitness-coach-planner` skill bundle, summarizes recent and monthly training history, asks OpenAI for schema-valid JSON, and rejects unsafe plans before the app accepts them.
+The AI Coach context tab stores the selected model ID and loads available text model IDs from the proxy into a picker. The proxy loads the `fitness-coach-planner` skill bundle, summarizes recent and monthly training history, asks OpenAI for schema-valid JSON, and rejects unsafe plans before the app accepts them.
 
-Put the real OpenAI API key in `Proxy/.env`, which is ignored by git. Do not put the key in the iOS app or commit it to the repo.
+Put the real OpenAI API key in the server environment, for example Coolify's environment variables. Do not put the key in the iOS app or commit it to the repo.

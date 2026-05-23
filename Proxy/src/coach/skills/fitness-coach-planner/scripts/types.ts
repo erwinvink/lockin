@@ -13,6 +13,7 @@ export type SessionFocus = "pull" | "push" | "core" | "mixed" | "recovery";
 export type ContextState = "building" | "plateau" | "overreaching" | "recovery_needed" | "insufficient_history";
 
 export type CoachRequest = {
+  model: string;
   baseline: { pullUps: number; pushUps: number; plankSeconds: number };
   goals: { pullUps: number; pushUps: number; plankSeconds: number };
   weekStart: string;

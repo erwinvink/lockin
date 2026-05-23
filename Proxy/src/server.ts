@@ -5,16 +5,29 @@ import { join } from "node:path";
 import { buildCoachContext } from "./coach/skills/fitness-coach-planner/scripts/build-coach-context";
 import { validateWeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/validate-week-plan";
 import type { CoachRequest, WeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/types";
+import { defaultCoachModel, normalizeRequestedModel, pickTextModelIDs, withDefaultCoachModel } from "./model-selection";
 
 const port = Number(process.env.PORT ?? 8787);
 const apiKey = process.env.OPENAI_API_KEY;
-const model = process.env.OPENAI_MODEL ?? "gpt-5-mini";
 const skillRoot = join(process.cwd(), "src", "coach", "skills", "fitness-coach-planner");
 
 createServer(async (req: IncomingMessage, res: ServerResponse) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
-      writeJSON(res, 200, { ok: true, hasApiKey: Boolean(apiKey), model });
+      writeJSON(res, 200, { ok: true, hasApiKey: Boolean(apiKey), defaultModel: defaultCoachModel });
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/models") {
+      if (!apiKey) {
+        writeJSON(res, 500, { error: "OPENAI_API_KEY is not set" });
+        return;
+      }
+
+      writeJSON(res, 200, {
+        defaultModel: defaultCoachModel,
+        models: await fetchAvailableModels(apiKey)
+      });
       return;
     }
 
@@ -29,6 +42,12 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     const payload = JSON.parse(await readBody(req)) as CoachRequest;
+    const model = normalizeRequestedModel(payload.model);
+    if (!model) {
+      writeJSON(res, 400, { error: "model is required" });
+      return;
+    }
+
     const skill = await loadSkillBundle();
     const context = buildCoachContext(payload);
 
@@ -94,7 +113,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     writeJSON(res, 500, { error: error instanceof Error ? error.message : "Unknown proxy error" });
   }
 }).listen(port, () => {
-  console.log(`Fitness coach proxy listening on http://127.0.0.1:${port}`);
+  console.log(`Fitness coach proxy listening on port ${port}`);
 });
 
 async function loadSkillBundle() {
@@ -129,6 +148,22 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 function writeJSON(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+}
+
+async function fetchAvailableModels(apiKey: string): Promise<string[]> {
+  const response = await fetch("https://api.openai.com/v1/models", {
+    headers: {
+      authorization: `Bearer ${apiKey}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI models request failed with HTTP ${response.status}: ${await response.text()}`);
+  }
+
+  const json = (await response.json()) as { data?: unknown };
+  const data = Array.isArray(json.data) ? json.data : [];
+  return withDefaultCoachModel(pickTextModelIDs(data));
 }
 
 function extractOutputText(response: unknown): string {

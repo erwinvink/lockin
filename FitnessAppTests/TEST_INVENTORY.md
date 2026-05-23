@@ -29,16 +29,28 @@ This file is the durable human-readable test list for the lockin app. It records
 
 ### Coach Validation
 
-- `testProxyUnavailableErrorExplainsHowToStartLocalProxy`
-  - Verifies local proxy connection errors explain how to start the proxy.
-  - Confirms the message points to `cd Proxy` and `OPENAI_API_KEY`.
+- `testProxyUnavailableErrorExplainsHostedProxyChecks`
+  - Verifies hosted proxy connection errors explain the Coolify/DNS checks.
+  - Confirms the message points to `https://lockin.elevenfactor.com`.
 
 - `testMissingAPIKeyErrorExplainsProxyEnvironment`
   - Verifies the app explains the missing proxy `OPENAI_API_KEY` state.
-  - Confirms the restart instruction is visible in the error message.
+  - Confirms the Coolify environment variable instruction is visible in the error message.
 
-- `testCoachClientNormalizesBareProxyHost`
-  - Verifies entering `127.0.0.1:8787` still calls `/generate-week-plan`.
+- `testCoachClientDefaultsToHostedProxy`
+  - Verifies the default endpoint is `https://lockin.elevenfactor.com/generate-week-plan`.
+
+- `testCoachClientNormalizesBareHostedProxyHost`
+  - Verifies entering `lockin.elevenfactor.com` still calls `/generate-week-plan`.
+
+- `testCoachClientRejectsLoopbackProxyHosts`
+  - Verifies loopback proxy hosts are rejected instead of normalized.
+
+- `testCoachPlanRequestEncodesSelectedModel`
+  - Verifies the app sends the selected AI model ID in coach-generation requests.
+
+- `testCoachModelCatalogFallsBackForEmptySelection`
+  - Verifies empty model settings fall back to the app default model ID.
 
 - `testRejectsAIPlanAboveStrictProgressionCaps`
   - Verifies unsafe AI-generated pull-up prescriptions are rejected.
@@ -99,7 +111,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testCoachTabsAfterOnboarding`
   - Completes onboarding.
-  - Tests Coach generator, Context, and Rules surfaces.
+  - Tests Coach generator, Context model settings, and Rules surfaces.
 
 - `testProfileResetFlowUsesAIOnlyPlanCreation`
   - Completes onboarding.
@@ -130,7 +142,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Still useful: all rank thresholds from Recruit through Apex.
 
 - Coach
-  - Covered: generator surface, Context, Rules.
+  - Covered: generator surface, Context model settings, Rules.
   - Covered in unit tests: unsafe AI plan rejection and accepted AI conversion.
   - Still useful: UI-level proxy unavailable and missing API key messages.
 
@@ -202,7 +214,7 @@ When doing manual QA on the simulator, use this sequence:
 1. Start fresh and verify onboarding.
 2. Create a zero-baseline profile with goals 3 weeks out.
 3. Open Today and verify the AI-only empty state.
-4. Generate a week from Coach through the local proxy.
+4. Generate a week from Coach through the hosted proxy.
 5. Return to Today and inspect rank, compact prescription rows, checkboxes, and readiness.
 6. Check off the due session.
 7. Let the next due day roll forward or use test data to verify missed automation.

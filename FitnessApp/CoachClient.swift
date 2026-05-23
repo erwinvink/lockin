@@ -1,6 +1,7 @@
 import Foundation
 
 struct CoachPlanRequest: Codable, Equatable {
+    var model: String
     var baseline: CoachBaseline
     var goals: CoachGoals
     var weekStart: Date
@@ -11,9 +12,35 @@ struct CoachPlanRequest: Codable, Equatable {
     var plannedSessions: [CoachPlannedSession]
 }
 
+enum CoachModelCatalog {
+    static let defaultModelID = "gpt-5-mini"
+    static let defaultModelIDs = [
+        defaultModelID,
+        "gpt-5",
+        "gpt-4.1"
+    ]
+
+    static func normalized(_ modelID: String) -> String {
+        let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? defaultModelID : trimmed
+    }
+
+    static func mergedOptions(selectedModelID: String, fetchedModelIDs: [String]) -> [String] {
+        var seen: Set<String> = []
+        return ([normalized(selectedModelID)] + fetchedModelIDs + defaultModelIDs)
+            .map(normalized)
+            .filter { seen.insert($0).inserted }
+    }
+}
+
+struct CoachModelsResponse: Codable, Equatable {
+    var defaultModel: String
+    var models: [String]
+}
+
 enum CoachSkillDisplay {
     static let relationship = """
-    The AI week shown in Today and Log comes from the local proxy's validated fitness-coach-planner skill output.
+    The AI week shown in Today and Log comes from the hosted proxy's validated fitness-coach-planner skill output.
     """
 
     static let bundleContents = """
@@ -114,34 +141,28 @@ enum CoachClientError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            "The local coach proxy URL is invalid. Use something like http://127.0.0.1:8787/generate-week-plan."
+            "The hosted coach proxy URL is invalid. Use https://lockin.elevenfactor.com/generate-week-plan."
         case .proxyUnavailable(let endpoint, _):
             """
-            The local coach proxy is not running at \(endpoint.absoluteString).
+            The hosted coach proxy is not reachable at \(endpoint.absoluteString).
 
-            Start it on this Mac:
-            cd Proxy
-            OPENAI_API_KEY=sk-... npm run dev
-
-            Then tap Generate AI week again. If you run this on a real iPhone, replace 127.0.0.1 with your Mac's local network IP.
+            Check that the Coolify deployment is healthy, DNS has propagated, and the app domain is set to https://lockin.elevenfactor.com.
             """
         case .transportFailed(let endpoint, let error):
-            "The app could not reach the local coach proxy at \(endpoint.absoluteString): \(error.localizedDescription)"
+            "The app could not reach the hosted coach proxy at \(endpoint.absoluteString): \(error.localizedDescription)"
         case .invalidResponse:
-            "The local coach proxy returned a response the app could not read."
+            "The hosted coach proxy returned a response the app could not read."
         case .invalidStatus(let status, let message):
             if let message, message.contains("OPENAI_API_KEY") {
                 """
-                The local coach proxy is running, but OPENAI_API_KEY is not set.
+                The hosted coach proxy is running, but OPENAI_API_KEY is not set.
 
-                Restart it with:
-                cd Proxy
-                OPENAI_API_KEY=sk-... npm run dev
+                Set OPENAI_API_KEY in the Coolify environment variables, then redeploy.
                 """
             } else if let message, !message.isEmpty {
-                "The local coach proxy returned HTTP \(status): \(message)"
+                "The hosted coach proxy returned HTTP \(status): \(message)"
             } else {
-                "The local coach proxy returned HTTP \(status)."
+                "The hosted coach proxy returned HTTP \(status)."
             }
         case .validationFailed(let messages): messages.joined(separator: "\n")
         }
@@ -369,11 +390,13 @@ private func isHardIntensity(_ intensity: String) -> Bool {
 }
 
 struct LocalCoachClient {
+    static let defaultEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
+
     var endpoint: URL
     var session: URLSession = .shared
     var validator = CoachPlanValidator()
 
-    init(endpointString: String = "http://127.0.0.1:8787/generate-week-plan") throws {
+    init(endpointString: String = defaultEndpointString) throws {
         guard let endpoint = Self.normalizedEndpoint(from: endpointString) else { throw CoachClientError.invalidURL }
         self.endpoint = endpoint
     }
@@ -407,16 +430,47 @@ struct LocalCoachClient {
         return plan
     }
 
+    func fetchAvailableModels() async throws -> CoachModelsResponse {
+        guard let modelEndpoint = Self.modelEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        let urlRequest = URLRequest(url: modelEndpoint)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(modelEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(modelEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(CoachModelsResponse.self, from: data)
+    }
+
     private static func normalizedEndpoint(from value: String) -> URL? {
         var rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawValue.isEmpty else { return nil }
         if !rawValue.contains("://") {
-            rawValue = "http://\(rawValue)"
+            rawValue = "https://\(rawValue)"
         }
         guard var components = URLComponents(string: rawValue) else { return nil }
+        guard let host = components.host?.lowercased(), !host.isLoopbackProxyHost else { return nil }
         if components.path.isEmpty || components.path == "/" {
             components.path = "/generate-week-plan"
         }
+        return components.url
+    }
+
+    private static func modelEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/models"
+        components.query = nil
         return components.url
     }
 
@@ -447,6 +501,12 @@ struct LocalCoachClient {
         let rawMessage = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return rawMessage?.isEmpty == false ? rawMessage : nil
+    }
+}
+
+private extension String {
+    var isLoopbackProxyHost: Bool {
+        self == "localhost" || self == "127.0.0.1" || self == "::1" || self == "0.0.0.0"
     }
 }
 

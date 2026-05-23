@@ -6,7 +6,8 @@ struct CoachView: View {
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \CoachPlan.generatedAt, order: .reverse) private var plans: [CoachPlan]
-    @AppStorage("coachProxyEndpoint") private var endpoint = "http://127.0.0.1:8787/generate-week-plan"
+    @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
+    @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @State private var status: String?
     @State private var isLoading = false
     @State private var selectedMode: CoachMode = .generate
@@ -59,6 +60,7 @@ struct CoachView: View {
             .navigationTitle("Coach")
             .navigationBarTitleDisplayMode(.inline)
         }
+        .onAppear(perform: enforceHostedEndpoint)
     }
 
     private var generateContent: some View {
@@ -75,13 +77,12 @@ struct CoachView: View {
 
     private var contextContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            ProxyEndpointCard(endpoint: $endpoint)
+            CoachModelCard(endpoint: endpoint, selectedModelID: $selectedModelID)
             DatabaseContextCard(
                 profile: profile,
                 historyCount: coachHistoryLogs.count,
                 plannedCount: coachPlannedSessions.count
             )
-            PrivacyBoundaryCard()
         }
     }
 
@@ -93,7 +94,14 @@ struct CoachView: View {
     }
 
     private func generateAIWeek() {
+        enforceHostedEndpoint()
         Task { await requestPlan() }
+    }
+
+    private func enforceHostedEndpoint() {
+        if (try? LocalCoachClient(endpointString: endpoint)) == nil {
+            endpoint = LocalCoachClient.defaultEndpointString
+        }
     }
 
     private func requestPlan() async {
@@ -109,6 +117,7 @@ struct CoachView: View {
                 targetDate: profile.targetDate
             )
             let request = CoachPlanRequest(
+                model: CoachModelCatalog.normalized(selectedModelID),
                 baseline: CoachBaseline(pullUps: baseline.pullUps, pushUps: baseline.pushUps, plankSeconds: baseline.plankSeconds),
                 goals: CoachGoals(pullUps: profile.goalPullUps, pushUps: profile.goalPushUps, plankSeconds: profile.goalPlankSeconds),
                 weekStart: rollingPlanStart(),
@@ -222,19 +231,70 @@ private struct SafetyFlagsCard: View {
     }
 }
 
-private struct ProxyEndpointCard: View {
-    @Binding var endpoint: String
+private struct CoachModelCard: View {
+    var endpoint: String
+    @Binding var selectedModelID: String
+    @State private var availableModelIDs = CoachModelCatalog.defaultModelIDs
+    @State private var status: String?
+    @State private var isRefreshing = false
+
+    private var modelOptions: [String] {
+        CoachModelCatalog.mergedOptions(selectedModelID: selectedModelID, fetchedModelIDs: availableModelIDs)
+    }
+
+    private var normalizedSelection: Binding<String> {
+        Binding(
+            get: { CoachModelCatalog.normalized(selectedModelID) },
+            set: { selectedModelID = $0 }
+        )
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Proxy URL", systemImage: "link")
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Model", systemImage: "cpu")
                 .font(.headline)
-            TextField("Proxy URL", text: $endpoint)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+
+            Picker("Model", selection: normalizedSelection) {
+                ForEach(modelOptions, id: \.self) { modelID in
+                    Text(modelID).tag(modelID)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if isRefreshing {
+                SwiftUI.ProgressView("Loading OpenAI models")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            } else if let status {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
         }
         .card()
+        .task(id: endpoint) {
+            await loadModels()
+        }
+    }
+
+    private func loadModels() async {
+        isRefreshing = true
+        status = nil
+        defer { isRefreshing = false }
+
+        do {
+            let response = try await LocalCoachClient(endpointString: endpoint).fetchAvailableModels()
+            availableModelIDs = CoachModelCatalog.mergedOptions(
+                selectedModelID: response.defaultModel,
+                fetchedModelIDs: response.models
+            )
+            if selectedModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                selectedModelID = response.defaultModel
+            }
+            status = "Loaded \(availableModelIDs.count) models."
+        } catch {
+            status = error.localizedDescription
+        }
     }
 }
 
@@ -255,46 +315,6 @@ private struct DatabaseContextCard: View {
                 .foregroundStyle(AppTheme.muted)
         }
         .card()
-    }
-}
-
-private struct PrivacyBoundaryCard: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Privacy & architecture", systemImage: "lock.shield")
-                .font(.headline)
-            Text("API key stays behind your local proxy. The iOS app stores only the proxy URL.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
-            HStack(spacing: 16) {
-                BoundaryNode(title: "iPhone", icon: "iphone")
-                Image(systemName: "arrow.right")
-                    .foregroundStyle(AppTheme.muted)
-                BoundaryNode(title: "Local Proxy", icon: "shield")
-                Image(systemName: "arrow.right")
-                    .foregroundStyle(AppTheme.muted)
-                BoundaryNode(title: "AI Provider", icon: "cloud")
-            }
-        }
-        .card()
-    }
-}
-
-private struct BoundaryNode: View {
-    var title: String
-    var icon: String
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(AppTheme.text)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(AppTheme.muted)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
     }
 }
 

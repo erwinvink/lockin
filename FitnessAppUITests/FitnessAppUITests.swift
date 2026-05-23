@@ -63,7 +63,8 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Plan generator"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["WEEK PLAN"].exists)
         tapWhenReady(app.buttons["Context"], in: app)
-        XCTAssertTrue(app.staticTexts["Privacy & architecture"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Model"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textFields["Custom model ID"].exists)
         tapWhenReady(app.buttons["Rules"], in: app)
         XCTAssertTrue(app.staticTexts["Local safety checks"].waitForExistence(timeout: 5))
     }
