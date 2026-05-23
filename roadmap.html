@@ -1,0 +1,1499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lockin Roadmap</title>
+  <meta name="description" content="A visual roadmap for Lockin: strength, ultra running, journaling, sentiment, and multi-coach orchestration.">
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f7f2e8;
+      --muted: #b9b2a5;
+      --quiet: #756f66;
+      --black: #090908;
+      --coal: #12110f;
+      --panel: rgba(247, 242, 232, 0.075);
+      --panel-strong: rgba(247, 242, 232, 0.12);
+      --line: rgba(247, 242, 232, 0.18);
+      --line-strong: rgba(247, 242, 232, 0.34);
+      --orange: #ff6d24;
+      --amber: #ffc94a;
+      --lime: #c9ff5d;
+      --mint: #52e2b8;
+      --sky: #78bfff;
+      --rose: #ff7892;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+      --radius: 8px;
+      --max: 1180px;
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
+      font-family: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(115deg, rgba(255, 109, 36, 0.12), transparent 32%),
+        linear-gradient(245deg, rgba(82, 226, 184, 0.11), transparent 35%),
+        radial-gradient(circle at 50% -20%, rgba(255, 201, 74, 0.10), transparent 36%),
+        var(--black);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -3;
+      content: "";
+      background:
+        repeating-linear-gradient(105deg, rgba(247, 242, 232, 0.045) 0 1px, transparent 1px 42px),
+        repeating-linear-gradient(15deg, rgba(247, 242, 232, 0.03) 0 1px, transparent 1px 78px);
+      mask-image: linear-gradient(to bottom, black 0%, transparent 78%);
+      pointer-events: none;
+    }
+
+    body::after {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      content: "";
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.026) 1px, transparent 1px);
+      background-size: 82px 82px;
+      opacity: 0.55;
+      pointer-events: none;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .progress {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 60;
+      width: 100%;
+      height: 3px;
+      background: rgba(247, 242, 232, 0.08);
+    }
+
+    .progress span {
+      display: block;
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--orange), var(--amber), var(--lime), var(--mint));
+      box-shadow: 0 0 22px rgba(201, 255, 93, 0.55);
+    }
+
+    .noise {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      opacity: 0.08;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 220 220' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+    }
+
+    .shell {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      border-bottom: 1px solid rgba(247, 242, 232, 0.1);
+      background: rgba(9, 9, 8, 0.76);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      min-height: 76px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      object-fit: contain;
+      filter: drop-shadow(0 0 18px rgba(255, 109, 36, 0.38));
+    }
+
+    .wordmark {
+      width: 116px;
+      max-width: 32vw;
+      height: auto;
+      object-fit: contain;
+      filter: invert(1) brightness(1.4) contrast(1.04);
+      opacity: 0.9;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .nav-links a {
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .nav-links a:hover,
+    .nav-links a.active {
+      color: var(--ink);
+      border-color: rgba(247, 242, 232, 0.2);
+      background: rgba(247, 242, 232, 0.08);
+    }
+
+    .hero {
+      position: relative;
+      min-height: calc(100vh - 76px);
+      padding: 84px 0 58px;
+      display: grid;
+      align-items: center;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.04fr) minmax(320px, 0.76fr);
+      gap: 58px;
+      align-items: center;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    .hero h1 {
+      max-width: 860px;
+      font-family: Georgia, Cambria, "Times New Roman", serif;
+      font-size: clamp(56px, 9vw, 132px);
+      line-height: 0.88;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .hero h1 span {
+      color: transparent;
+      background: linear-gradient(92deg, var(--ink), var(--amber) 34%, var(--lime) 67%, var(--mint));
+      -webkit-background-clip: text;
+      background-clip: text;
+    }
+
+    .hero-copy {
+      max-width: 640px;
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: clamp(18px, 2vw, 23px);
+      line-height: 1.48;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 34px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 46px;
+      padding: 0 18px;
+      border: 1px solid rgba(247, 242, 232, 0.22);
+      border-radius: 999px;
+      background: rgba(247, 242, 232, 0.08);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+      transition: transform 180ms var(--ease), border-color 180ms ease, background 180ms ease;
+    }
+
+    .button.primary {
+      border-color: transparent;
+      color: #171208;
+      background: linear-gradient(135deg, var(--amber), var(--lime));
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+      border-color: rgba(247, 242, 232, 0.42);
+      background: rgba(247, 242, 232, 0.14);
+    }
+
+    .button.primary:hover {
+      background: linear-gradient(135deg, #ffd86d, #d7ff75);
+    }
+
+    .hero-card {
+      position: relative;
+      isolation: isolate;
+      min-height: 540px;
+      padding: 24px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(247, 242, 232, 0.105), rgba(247, 242, 232, 0.045)),
+        rgba(18, 17, 15, 0.82);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero-card::before {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      content: "";
+      background:
+        linear-gradient(90deg, transparent 0 47%, rgba(255, 201, 74, 0.32) 47% 48%, transparent 48%),
+        repeating-linear-gradient(0deg, transparent 0 48px, rgba(247, 242, 232, 0.07) 48px 49px);
+      opacity: 0.75;
+    }
+
+    .mission-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 34px;
+    }
+
+    .mission-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+    }
+
+    .mission-code {
+      color: var(--quiet);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .mission-map {
+      position: relative;
+      min-height: 370px;
+    }
+
+    .route {
+      position: absolute;
+      left: 50%;
+      top: 10px;
+      width: 2px;
+      height: calc(100% - 20px);
+      background: linear-gradient(to bottom, var(--orange), var(--amber), var(--mint), var(--sky));
+      transform: translateX(-50%);
+      box-shadow: 0 0 30px rgba(255, 201, 74, 0.25);
+    }
+
+    .route-step {
+      position: absolute;
+      width: min(220px, 44%);
+      padding: 14px 14px 13px;
+      border: 1px solid rgba(247, 242, 232, 0.16);
+      border-radius: 8px;
+      background: rgba(9, 9, 8, 0.78);
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.26);
+    }
+
+    .route-step:nth-child(2) {
+      left: 0;
+      top: 0;
+    }
+
+    .route-step:nth-child(3) {
+      right: 0;
+      top: 86px;
+    }
+
+    .route-step:nth-child(4) {
+      left: 0;
+      top: 176px;
+    }
+
+    .route-step:nth-child(5) {
+      right: 0;
+      top: 270px;
+    }
+
+    .route-step::after {
+      position: absolute;
+      top: 23px;
+      width: 19px;
+      height: 2px;
+      content: "";
+      background: rgba(247, 242, 232, 0.22);
+    }
+
+    .route-step:nth-child(odd)::after {
+      left: -20px;
+    }
+
+    .route-step:nth-child(even)::after {
+      right: -20px;
+    }
+
+    .route-step strong {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.15;
+    }
+
+    .route-step span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.38;
+    }
+
+    .section {
+      padding: 92px 0;
+      border-top: 1px solid rgba(247, 242, 232, 0.08);
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.78fr) minmax(280px, 0.52fr);
+      gap: 44px;
+      align-items: end;
+      margin-bottom: 44px;
+    }
+
+    .section h2 {
+      font-family: Georgia, Cambria, "Times New Roman", serif;
+      font-size: clamp(36px, 5vw, 72px);
+      line-height: 0.96;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .section-lead {
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.55;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 22px;
+    }
+
+    .filter-button {
+      cursor: pointer;
+      padding: 8px 12px;
+      border: 1px solid rgba(247, 242, 232, 0.17);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(247, 242, 232, 0.055);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      transition: transform 180ms var(--ease), color 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .filter-button:hover,
+    .filter-button.active {
+      color: var(--black);
+      border-color: transparent;
+      background: var(--lime);
+      transform: translateY(-1px);
+    }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(210px, 1fr));
+      gap: 16px;
+      overflow-x: auto;
+      padding: 8px 2px 18px;
+      scroll-snap-type: x proximity;
+    }
+
+    .timeline::-webkit-scrollbar {
+      height: 8px;
+    }
+
+    .timeline::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: rgba(247, 242, 232, 0.22);
+    }
+
+    .phase {
+      position: relative;
+      min-height: 370px;
+      padding: 19px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(247, 242, 232, 0.1), rgba(247, 242, 232, 0.045)),
+        rgba(18, 17, 15, 0.78);
+      scroll-snap-align: start;
+      overflow: hidden;
+      transition: transform 220ms var(--ease), border-color 220ms ease, background 220ms ease, opacity 220ms ease;
+    }
+
+    .phase::before {
+      display: block;
+      width: 38px;
+      height: 4px;
+      margin-bottom: 18px;
+      border-radius: 99px;
+      content: "";
+      background: var(--accent, var(--amber));
+      box-shadow: 0 0 20px color-mix(in srgb, var(--accent, var(--amber)) 55%, transparent);
+    }
+
+    .phase:hover {
+      transform: translateY(-6px);
+      border-color: rgba(247, 242, 232, 0.34);
+      background:
+        linear-gradient(180deg, rgba(247, 242, 232, 0.13), rgba(247, 242, 232, 0.055)),
+        rgba(18, 17, 15, 0.9);
+    }
+
+    .phase.is-dimmed {
+      opacity: 0.32;
+    }
+
+    .phase-number {
+      color: var(--quiet);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .phase h3 {
+      margin-top: 14px;
+      color: var(--ink);
+      font-size: 23px;
+      line-height: 1.05;
+      font-weight: 800;
+    }
+
+    .phase p {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.48;
+    }
+
+    .phase ul {
+      display: grid;
+      gap: 9px;
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .phase li {
+      position: relative;
+      padding-left: 18px;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.36;
+    }
+
+    .phase li::before {
+      position: absolute;
+      left: 0;
+      top: 0.62em;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      content: "";
+      background: var(--accent, var(--amber));
+      transform: translateY(-50%);
+    }
+
+    .coach-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .coach {
+      position: relative;
+      min-height: 330px;
+      padding: 24px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background: rgba(247, 242, 232, 0.065);
+      overflow: hidden;
+    }
+
+    .coach::after {
+      position: absolute;
+      inset: auto 18px 18px auto;
+      width: 92px;
+      height: 92px;
+      border: 1px solid rgba(247, 242, 232, 0.13);
+      border-radius: 50%;
+      content: "";
+      background:
+        linear-gradient(90deg, transparent 47%, rgba(247, 242, 232, 0.17) 48% 52%, transparent 53%),
+        linear-gradient(0deg, transparent 47%, rgba(247, 242, 232, 0.17) 48% 52%, transparent 53%);
+      opacity: 0.55;
+    }
+
+    .coach-kicker {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .coach h3 {
+      margin-top: 18px;
+      font-family: Georgia, Cambria, "Times New Roman", serif;
+      font-size: 35px;
+      line-height: 0.98;
+      font-weight: 700;
+    }
+
+    .coach p {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .coach-list {
+      display: grid;
+      gap: 9px;
+      margin: 22px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .coach-list li {
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.36;
+    }
+
+    .decision-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 0.84fr) minmax(290px, 0.58fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .decision-board {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      padding: 18px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background: rgba(247, 242, 232, 0.055);
+    }
+
+    .decision-option {
+      min-height: 210px;
+      padding: 18px;
+      border: 1px solid rgba(247, 242, 232, 0.13);
+      border-radius: 8px;
+      background: rgba(9, 9, 8, 0.48);
+    }
+
+    .decision-option.recommended {
+      border-color: rgba(201, 255, 93, 0.56);
+      background: linear-gradient(180deg, rgba(201, 255, 93, 0.12), rgba(9, 9, 8, 0.5));
+    }
+
+    .decision-option h3,
+    .data-card h3 {
+      color: var(--ink);
+      font-size: 20px;
+      line-height: 1.1;
+      font-weight: 800;
+    }
+
+    .decision-option p,
+    .data-card p {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.47;
+    }
+
+    .data-card {
+      padding: 24px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(255, 109, 36, 0.11), transparent 38%),
+        rgba(247, 242, 232, 0.06);
+    }
+
+    .data-card ul {
+      display: grid;
+      gap: 11px;
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .data-card li {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(247, 242, 232, 0.09);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .data-card li strong {
+      color: var(--ink);
+      font-weight: 800;
+      text-align: right;
+    }
+
+    .daily-loop {
+      display: grid;
+      grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1fr);
+      gap: 28px;
+      align-items: stretch;
+    }
+
+    .phone {
+      position: relative;
+      width: min(360px, 100%);
+      min-height: 680px;
+      margin: 0 auto;
+      padding: 18px;
+      border: 1px solid rgba(247, 242, 232, 0.26);
+      border-radius: 42px;
+      background: linear-gradient(180deg, #1b1915, #070706);
+      box-shadow: 0 34px 90px rgba(0, 0, 0, 0.44);
+    }
+
+    .phone-screen {
+      height: 100%;
+      min-height: 642px;
+      padding: 24px 18px;
+      border: 1px solid rgba(247, 242, 232, 0.08);
+      border-radius: 28px;
+      background:
+        linear-gradient(160deg, rgba(255, 201, 74, 0.11), transparent 32%),
+        linear-gradient(345deg, rgba(82, 226, 184, 0.13), transparent 34%),
+        #0d0c0a;
+      overflow: hidden;
+    }
+
+    .phone-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .phone h3 {
+      margin-top: 30px;
+      font-family: Georgia, Cambria, "Times New Roman", serif;
+      font-size: 44px;
+      line-height: 0.96;
+      font-weight: 700;
+    }
+
+    .phone-panel {
+      margin-top: 20px;
+      padding: 16px;
+      border: 1px solid rgba(247, 242, 232, 0.13);
+      border-radius: 8px;
+      background: rgba(247, 242, 232, 0.075);
+    }
+
+    .phone-panel strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.2;
+    }
+
+    .phone-panel span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .meter {
+      height: 8px;
+      margin-top: 14px;
+      border-radius: 999px;
+      background: rgba(247, 242, 232, 0.12);
+      overflow: hidden;
+    }
+
+    .meter span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--orange), var(--amber), var(--mint));
+    }
+
+    .loop-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .loop-item {
+      min-height: 210px;
+      padding: 22px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background: rgba(247, 242, 232, 0.06);
+    }
+
+    .loop-item strong {
+      display: block;
+      color: var(--accent);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .loop-item h3 {
+      margin-top: 18px;
+      color: var(--ink);
+      font-size: 24px;
+      line-height: 1.08;
+    }
+
+    .loop-item p {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .milestone {
+      position: relative;
+      padding: clamp(28px, 6vw, 58px);
+      border: 1px solid rgba(247, 242, 232, 0.15);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(201, 255, 93, 0.16), transparent 38%),
+        linear-gradient(315deg, rgba(120, 191, 255, 0.12), transparent 42%),
+        rgba(247, 242, 232, 0.055);
+      overflow: hidden;
+    }
+
+    .milestone::before {
+      position: absolute;
+      inset: 26px 26px auto auto;
+      width: 160px;
+      height: 160px;
+      border: 1px solid rgba(247, 242, 232, 0.16);
+      content: "";
+      background:
+        repeating-linear-gradient(90deg, rgba(247, 242, 232, 0.12) 0 1px, transparent 1px 20px),
+        repeating-linear-gradient(0deg, rgba(247, 242, 232, 0.08) 0 1px, transparent 1px 20px);
+      opacity: 0.42;
+      transform: rotate(12deg);
+    }
+
+    .milestone h2 {
+      max-width: 880px;
+    }
+
+    .milestone p {
+      max-width: 740px;
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: clamp(18px, 2vw, 24px);
+      line-height: 1.5;
+    }
+
+    .build-order {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 34px;
+      counter-reset: order;
+    }
+
+    .build-order div {
+      position: relative;
+      min-height: 118px;
+      padding: 18px 14px 14px;
+      border: 1px solid rgba(247, 242, 232, 0.14);
+      border-radius: 8px;
+      background: rgba(9, 9, 8, 0.42);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.35;
+      counter-increment: order;
+    }
+
+    .build-order div::before {
+      display: block;
+      margin-bottom: 14px;
+      color: var(--accent, var(--amber));
+      content: "0" counter(order);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .questions {
+      columns: 2;
+      column-gap: 40px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .questions li {
+      break-inside: avoid;
+      margin-bottom: 12px;
+      padding: 16px;
+      border: 1px solid rgba(247, 242, 232, 0.12);
+      border-radius: 8px;
+      background: rgba(247, 242, 232, 0.05);
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .footer {
+      padding: 48px 0 64px;
+      color: var(--quiet);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .footer .shell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      border-top: 1px solid rgba(247, 242, 232, 0.1);
+      padding-top: 22px;
+    }
+
+    .js [data-reveal] {
+      opacity: 0;
+      transform: translateY(22px);
+      transition: opacity 640ms var(--ease), transform 640ms var(--ease);
+    }
+
+    .js [data-reveal].visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 980px) {
+      .hero-grid,
+      .section-head,
+      .decision-layout,
+      .daily-loop {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding-top: 62px;
+      }
+
+      .hero-card {
+        min-height: 500px;
+      }
+
+      .coach-grid,
+      .decision-board,
+      .loop-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .build-order {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 680px) {
+      .shell {
+        width: min(100% - 24px, var(--max));
+      }
+
+      .nav {
+        min-height: auto;
+        padding: 14px 0;
+        align-items: flex-start;
+      }
+
+      .nav-links {
+        display: none;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 54px 0 36px;
+      }
+
+      .hero h1 {
+        font-size: clamp(46px, 16vw, 78px);
+      }
+
+      .hero-copy {
+        font-size: 17px;
+      }
+
+      .hero-card {
+        min-height: 470px;
+        padding: 18px;
+      }
+
+      .route-step {
+        width: 47%;
+        padding: 12px;
+      }
+
+      .route-step strong {
+        font-size: 13px;
+      }
+
+      .route-step span {
+        font-size: 11px;
+      }
+
+      .section {
+        padding: 64px 0;
+      }
+
+      .section h2 {
+        font-size: clamp(34px, 11vw, 54px);
+      }
+
+      .phone {
+        min-height: 620px;
+      }
+
+      .phone-screen {
+        min-height: 582px;
+      }
+
+      .build-order,
+      .loop-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .questions {
+        columns: 1;
+      }
+
+      .footer .shell {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" aria-hidden="true"><span id="scrollProgress"></span></div>
+  <div class="noise" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <div class="shell nav">
+      <a class="brand" href="#top" aria-label="Lockin roadmap home">
+        <img class="brand-mark" src="FitnessApp/Assets.xcassets/LockinMark.imageset/lockin-mark.png" alt="">
+        <img class="wordmark" src="FitnessApp/Assets.xcassets/LockinWordmark.imageset/lockin-wordmark.png" alt="Lockin">
+      </a>
+      <nav class="nav-links" aria-label="Roadmap sections">
+        <a href="#phases">Phases</a>
+        <a href="#coaches">Coaches</a>
+        <a href="#server">Server</a>
+        <a href="#daily">Daily Loop</a>
+        <a href="#next">Next Build</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="shell hero-grid">
+        <div data-reveal>
+          <h1>Strength, miles, mind. <span>One system.</span></h1>
+          <p class="hero-copy">
+            Lockin grows from a strict calisthenics coach into a personal training
+            operating system for pull-ups, push-ups, ultra-running, journaling,
+            sentiment, and coach decisions you can inspect.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#next" aria-label="Jump to the next Lockin build">Next build</a>
+            <a class="button" href="#phases" aria-label="Jump to roadmap phases">Explore roadmap</a>
+          </div>
+        </div>
+
+        <aside class="hero-card" data-reveal aria-label="Roadmap route preview">
+          <div class="mission-top">
+            <div>
+              <div class="mission-title">Roadmap Route</div>
+              <div class="mission-code">LOCKIN / 2026 / BUILD PATH</div>
+            </div>
+            <img class="brand-mark" src="FitnessApp/Assets.xcassets/LockinMark.imageset/lockin-mark.png" alt="">
+          </div>
+          <div class="mission-map">
+            <div class="route" aria-hidden="true"></div>
+            <div class="route-step">
+              <strong>Strength Base</strong>
+              <span>Current coach stays reliable, visible, and testable.</span>
+            </div>
+            <div class="route-step">
+              <strong>Server Spike</strong>
+              <span>Move coach skills where the app can stay clean.</span>
+            </div>
+            <div class="route-step">
+              <strong>Journal Signal</strong>
+              <span>Daily check-ins and reflection become coach input.</span>
+            </div>
+            <div class="route-step">
+              <strong>Ultra System</strong>
+              <span>Running, long runs, fueling, terrain, and recovery.</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section" id="phases">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <div>
+            <h2>Seven phases, one recovery budget.</h2>
+          </div>
+          <div>
+            <p class="section-lead">
+              The sequence protects the app from becoming messy: first stabilize
+              the current strength loop, then add reflection, running, and
+              multi-coach orchestration.
+            </p>
+            <div class="pill-row" aria-label="Filter roadmap phases">
+              <button class="filter-button active" type="button" data-filter="all">All</button>
+              <button class="filter-button" type="button" data-filter="strength">Strength</button>
+              <button class="filter-button" type="button" data-filter="server">Server</button>
+              <button class="filter-button" type="button" data-filter="mind">Mind</button>
+              <button class="filter-button" type="button" data-filter="running">Running</button>
+              <button class="filter-button" type="button" data-filter="coach">Coaches</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="timeline" data-reveal>
+          <article class="phase" style="--accent: var(--amber)" data-tags="strength coach">
+            <div class="phase-number">PHASE 01</div>
+            <h3>Stabilize Strength</h3>
+            <p>Make the existing pull-up, push-up, and plank coach trustworthy before the app gets wider.</p>
+            <ul>
+              <li>Explain AI week planning</li>
+              <li>Tighten completed, missed, partial, and deload logs</li>
+              <li>Keep the current proxy boundary</li>
+            </ul>
+          </article>
+
+          <article class="phase" style="--accent: var(--sky)" data-tags="server coach">
+            <div class="phase-number">PHASE 02</div>
+            <h3>Server Architecture Spike</h3>
+            <p>Decide whether coach skills, schemas, validation, and context building should move to your server.</p>
+            <ul>
+              <li>Compare local proxy, server, and hybrid</li>
+              <li>Define privacy rules</li>
+              <li>Keep iOS as clean as possible</li>
+            </ul>
+          </article>
+
+          <article class="phase" style="--accent: var(--rose)" data-tags="mind coach">
+            <div class="phase-number">PHASE 03</div>
+            <h3>Journal and Sentiment</h3>
+            <p>Make reflection useful without turning Lockin into a full diary app first.</p>
+            <ul>
+              <li>Daily mood, energy, fatigue, soreness, stress</li>
+              <li>Short journal entries</li>
+              <li>Coach-visible summaries</li>
+            </ul>
+          </article>
+
+          <article class="phase" style="--accent: var(--mint)" data-tags="running">
+            <div class="phase-number">PHASE 04</div>
+            <h3>Running Foundation</h3>
+            <p>Add endurance training carefully before jumping into full ultra complexity.</p>
+            <ul>
+              <li>Running goals and run logs</li>
+              <li>Easy, long, recovery, hill, and tempo sessions</li>
+              <li>Weekly load across strength and running</li>
+            </ul>
+          </article>
+
+          <article class="phase" style="--accent: var(--orange)" data-tags="running coach">
+            <div class="phase-number">PHASE 05</div>
+            <h3>Ultra-Running Mode</h3>
+            <p>Support real long-range preparation: terrain, fueling, race profile, taper, and recovery blocks.</p>
+            <ul>
+              <li>Race distance, date, elevation, cutoff</li>
+              <li>Back-to-back long runs</li>
+              <li>Injury and overtraining warnings</li>
+            </ul>
+          </article>
+
+          <article class="phase" style="--accent: var(--lime)" data-tags="coach server mind running strength">
+            <div class="phase-number">PHASE 06</div>
+            <h3>Multi-Coach Orchestration</h3>
+            <p>Let specialists propose plans, then have one synthesis coach resolve conflicts.</p>
+            <ul>
+              <li>Strength coach proposal</li>
+              <li>Ultra coach proposal</li>
+              <li>Synthesis coach final plan</li>
+            </ul>
+          </article>
+
+          <article class="phase" style="--accent: var(--amber)" data-tags="mind coach strength running">
+            <div class="phase-number">PHASE 07</div>
+            <h3>Habit System Polish</h3>
+            <p>Turn Today into a daily command center that makes the next right action obvious.</p>
+            <ul>
+              <li>Today training, check-in, journal shortcut</li>
+              <li>Weekly review</li>
+              <li>Progress across strength, running, consistency, recovery</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="coaches">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <h2>Specialists first. Synthesis last.</h2>
+          <p class="section-lead">
+            The clean model is not one huge prompt. Each coach owns a bounded
+            domain, and the synthesis coach is responsible for tradeoffs.
+          </p>
+        </div>
+
+        <div class="coach-grid" data-reveal>
+          <article class="coach" style="--accent: var(--amber)">
+            <div class="coach-kicker">Strength Coach</div>
+            <h3>Strict reps, real progression.</h3>
+            <p>Owns pull-ups, push-ups, plank, strict form, deloads, missed workouts, and benchmark pressure.</p>
+            <ul class="coach-list">
+              <li>Pull-up and push-up progression</li>
+              <li>Plank and trunk strength</li>
+              <li>Strength maintenance during high mileage weeks</li>
+            </ul>
+          </article>
+
+          <article class="coach" style="--accent: var(--mint)">
+            <div class="coach-kicker">Ultra Coach</div>
+            <h3>Miles without wreckage.</h3>
+            <p>Owns base mileage, long runs, terrain, recovery, fueling practice, race goals, and injury risk.</p>
+            <ul class="coach-list">
+              <li>Easy runs, long runs, hills, tempo</li>
+              <li>Fueling and gear rehearsals</li>
+              <li>Taper and recovery weeks</li>
+            </ul>
+          </article>
+
+          <article class="coach" style="--accent: var(--lime)">
+            <div class="coach-kicker">Synthesis Coach</div>
+            <h3>The one plan you follow.</h3>
+            <p>Reads both specialists plus journals, sentiment, pain, fatigue, and adherence to return one integrated week.</p>
+            <ul class="coach-list">
+              <li>Conflict resolution</li>
+              <li>Recovery budget management</li>
+              <li>Short explanations for plan changes</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="server">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <h2>The server decision is a product decision.</h2>
+          <p class="section-lead">
+            Moving skills to a server is not just infrastructure. It decides
+            privacy, coach versioning, app complexity, sync, and how much context
+            coaches can safely use.
+          </p>
+        </div>
+
+        <div class="decision-layout">
+          <div class="decision-board" data-reveal>
+            <article class="decision-option">
+              <h3>Local proxy only</h3>
+              <p>Simple for development, private by default, but awkward once coaches need schedule, sync, and shared history.</p>
+            </article>
+            <article class="decision-option recommended">
+              <h3>Hybrid</h3>
+              <p>Keep local mode for development. Add server mode for real use, versioned skills, orchestration, and validation.</p>
+            </article>
+            <article class="decision-option">
+              <h3>Server now</h3>
+              <p>Cleanest long-term architecture, but it forces account, sync, and privacy choices earlier.</p>
+            </article>
+          </div>
+
+          <aside class="data-card" data-reveal>
+            <h3>Recommended default</h3>
+            <p>Hybrid. The current proxy remains useful, while the long-term coach system gets a cleaner home.</p>
+            <ul>
+              <li><span>iOS app</span><strong>Capture and show</strong></li>
+              <li><span>Server or proxy</span><strong>Coach context</strong></li>
+              <li><span>Skill layer</span><strong>Versioned rules</strong></li>
+              <li><span>Validator</span><strong>Reject unsafe plans</strong></li>
+              <li><span>User control</span><strong>Journal privacy</strong></li>
+            </ul>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="daily">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <h2>Make Today the place you return to.</h2>
+          <p class="section-lead">
+            The app should have one obvious daily loop: train, check in, reflect,
+            and let the coach adjust the week when reality changes.
+          </p>
+        </div>
+
+        <div class="daily-loop">
+          <div class="phone" data-reveal aria-label="Today command center preview">
+            <div class="phone-screen">
+              <div class="phone-head">
+                <span>LOCKIN TODAY</span>
+                <span>06:15</span>
+              </div>
+              <h3>Long easy run, strength maintenance.</h3>
+              <div class="phone-panel">
+                <strong>Coach note</strong>
+                <span>Keep pull intensity low. Mileage is the main stressor this week.</span>
+                <div class="meter" aria-hidden="true"><span style="width: 72%"></span></div>
+              </div>
+              <div class="phone-panel">
+                <strong>Check-in</strong>
+                <span>Energy, fatigue, soreness, stress, motivation, sleep quality.</span>
+                <div class="meter" aria-hidden="true"><span style="width: 58%"></span></div>
+              </div>
+              <div class="phone-panel">
+                <strong>Journal</strong>
+                <span>One short entry. The coach sees summaries only if you allow it.</span>
+                <div class="meter" aria-hidden="true"><span style="width: 40%"></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="loop-grid" data-reveal>
+            <article class="loop-item" style="--accent: var(--amber)">
+              <strong>Morning</strong>
+              <h3>See the day's training.</h3>
+              <p>Training, coach note, recovery warning, and the one thing that matters today.</p>
+            </article>
+            <article class="loop-item" style="--accent: var(--rose)">
+              <strong>Before or after</strong>
+              <h3>Log sentiment honestly.</h3>
+              <p>Mood, fatigue, soreness, sleep, motivation, and stress become signals, not noise.</p>
+            </article>
+            <article class="loop-item" style="--accent: var(--mint)">
+              <strong>Training</strong>
+              <h3>Complete the work.</h3>
+              <p>Strength and running sessions share one recovery budget instead of fighting each other.</p>
+            </article>
+            <article class="loop-item" style="--accent: var(--lime)">
+              <strong>Review</strong>
+              <h3>Adjust next week.</h3>
+              <p>The synthesis coach reads what happened and explains exactly why the plan changes.</p>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="next">
+      <div class="shell">
+        <div class="milestone" data-reveal>
+          <h2>Next milestone: journal signals into the strength coach.</h2>
+          <p>
+            Lockin has daily check-ins, short journal entries, and a server/proxy
+            spike that proves whether coach skills should move out of the app.
+            The existing strength coach can use check-in and journal summaries
+            when generating the next week.
+          </p>
+          <div class="build-order">
+            <div style="--accent: var(--sky)">Write server decision and privacy rules</div>
+            <div style="--accent: var(--rose)">Add journal and sentiment models</div>
+            <div style="--accent: var(--amber)">Add daily check-in UI and persistence</div>
+            <div style="--accent: var(--mint)">Build journal/check-in coach context</div>
+            <div style="--accent: var(--lime)">Feed summaries into the strength coach</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="questions">
+      <div class="shell">
+        <div class="section-head" data-reveal>
+          <h2>Open decisions.</h2>
+          <p class="section-lead">
+            These are the choices that should stay explicit before implementation
+            makes them accidentally permanent.
+          </p>
+        </div>
+        <ul class="questions" data-reveal>
+          <li>Is Lockin personal-only, or should it become multi-user from the start?</li>
+          <li>Should journals sync to a server, stay local, or sync only as summaries?</li>
+          <li>Should the synthesis coach be allowed to read raw journal entries?</li>
+          <li>Should running plans optimize for distance, time-on-feet, or race date first?</li>
+          <li>Should strength goals remain equal priority once ultra training begins?</li>
+          <li>Should Apple Health import be part of the first running version, or later?</li>
+          <li>Should manual running logs come before GPS and watch data?</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="shell">
+      <span>Lockin roadmap artifact</span>
+      <span>Strength. Miles. Mind. One system.</span>
+    </div>
+  </footer>
+
+  <script>
+    document.body.classList.add("js");
+
+    const progress = document.getElementById("scrollProgress");
+    const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
+    const sections = navLinks
+      .map((link) => document.querySelector(link.getAttribute("href")))
+      .filter(Boolean);
+
+    const updateProgress = () => {
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      const ratio = maxScroll > 0 ? window.scrollY / maxScroll : 0;
+      progress.style.width = `${Math.max(0, Math.min(100, ratio * 100))}%`;
+    };
+
+    const revealObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("visible");
+          revealObserver.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.14 });
+
+    document.querySelectorAll("[data-reveal]").forEach((node) => {
+      revealObserver.observe(node);
+    });
+
+    const navObserver = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+
+      if (!visible) return;
+
+      navLinks.forEach((link) => {
+        link.classList.toggle("active", link.getAttribute("href") === `#${visible.target.id}`);
+      });
+    }, { rootMargin: "-35% 0px -55% 0px", threshold: [0.08, 0.2, 0.4] });
+
+    sections.forEach((section) => navObserver.observe(section));
+
+    const phases = Array.from(document.querySelectorAll(".phase"));
+    const filters = Array.from(document.querySelectorAll("[data-filter]"));
+
+    filters.forEach((button) => {
+      button.addEventListener("click", () => {
+        const filter = button.dataset.filter;
+
+        filters.forEach((item) => {
+          item.classList.toggle("active", item === button);
+        });
+
+        phases.forEach((phase) => {
+          const tags = phase.dataset.tags.split(" ");
+          const isMatch = filter === "all" || tags.includes(filter);
+          phase.classList.toggle("is-dimmed", !isMatch);
+        });
+      });
+    });
+
+    window.addEventListener("scroll", updateProgress, { passive: true });
+    window.addEventListener("resize", updateProgress);
+    updateProgress();
+  </script>
+</body>
+</html>
