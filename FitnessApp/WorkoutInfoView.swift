@@ -48,9 +48,9 @@ struct WorkoutInfoContent: View {
                 Text(prescription.exercise.title)
                     .font(.headline)
 
-                WorkoutSummaryCard(prescription: prescription)
-
                 WorkoutTimerCard(prescription: prescription, onDone: onDone)
+
+                WorkoutSummaryCard(prescription: prescription)
 
                 WorkoutInfoSection(
                     title: "What it is",
@@ -76,7 +76,6 @@ private struct WorkoutSummaryCard: View {
         VStack(alignment: .leading, spacing: 8) {
             InfoLine(title: "Target", value: workoutTargetText(prescription))
             InfoLine(title: "Rest", value: durationText(seconds: prescription.restSeconds))
-            InfoLine(title: "Effort", value: prescription.intensity)
         }
         .padding(10)
         .background(AppTheme.surfaceRaised)
@@ -119,58 +118,23 @@ private struct WorkoutTimerCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center) {
-                Text("Timer")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(AppTheme.text)
-                Spacer()
-                StatusPill(text: statusText, color: statusColor, systemImage: statusIcon)
-            }
-
             if phases.isEmpty {
-                InfoLine(title: "Timed target", value: "None")
-                Button(action: finishExercise) {
-                    Label("Done", systemImage: "checkmark.circle.fill")
-                }
-                .buttonStyle(PrimaryActionButtonStyle())
+                InfoLine(title: "Target", value: "None")
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .lastTextBaseline, spacing: 8) {
-                        Text(format(seconds: displayedRemainingSeconds))
-                            .font(.system(size: 52, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(AppTheme.text)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.72)
-                        Text(currentPhaseCaption)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.muted)
-                            .lineLimit(2)
-                    }
+                    phaseControls
 
-                    TimerPhaseStrip(phases: phases, phaseIndex: phaseIndex, isFinished: isFinished)
+                    TimerPhaseStrip(
+                        phases: phases,
+                        phaseIndex: phaseIndex,
+                        isFinished: isFinished,
+                        onSelect: { selectPhase(at: $0) }
+                    )
 
                     Text(nextPhaseText)
                         .font(.caption)
                         .foregroundStyle(AppTheme.muted)
                         .lineLimit(2)
-                }
-
-                HStack(spacing: 8) {
-                    Button(action: toggleTimer) {
-                        Label(startButtonTitle, systemImage: startButtonIcon)
-                    }
-                    .buttonStyle(PrimaryActionButtonStyle())
-
-                    Button(action: resetTimer) {
-                        Label("Restart", systemImage: "arrow.counterclockwise")
-                    }
-                    .buttonStyle(SecondaryActionButtonStyle())
-
-                    Button(action: finishExercise) {
-                        Label("Done", systemImage: "checkmark.circle.fill")
-                    }
-                    .buttonStyle(SecondaryActionButtonStyle())
                 }
             }
         }
@@ -183,11 +147,42 @@ private struct WorkoutTimerCard: View {
         }
     }
 
-    private var displayedRemainingSeconds: Int {
-        if remainingSeconds > 0 || isFinished {
-            return remainingSeconds
+    private var phaseControls: some View {
+        HStack(alignment: .center, spacing: 10) {
+            PhaseControlButton(
+                systemImage: "backward.end.fill",
+                accessibilityLabel: "Previous phase",
+                isEnabled: canGoToPreviousPhase,
+                action: goToPreviousPhase
+            )
+
+            phaseValueLabel
+                .accessibilityLabel(accessibilityTimerLabel)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            PhaseControlButton(
+                systemImage: isFinalPhase ? "checkmark.circle.fill" : "forward.end.fill",
+                accessibilityLabel: nextControlAccessibilityLabel,
+                isEnabled: true,
+                action: goToNextPhase
+            )
         }
-        return currentPhase?.durationSeconds ?? 0
+    }
+
+    private var phaseValueLabel: some View {
+        HStack(alignment: .lastTextBaseline, spacing: 8) {
+            Text(displayValueText)
+                .font(.system(size: 52, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(AppTheme.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Text(displayUnitText)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.muted)
+                .lineLimit(2)
+        }
+        .contentShape(Rectangle())
     }
 
     private var currentPhase: WorkoutTimerPhase? {
@@ -195,62 +190,92 @@ private struct WorkoutTimerCard: View {
         return phases[min(phaseIndex, phases.count - 1)]
     }
 
-    private var statusText: String {
-        guard let currentPhase else { return "No timer" }
-        if isFinished { return "Complete" }
-        return currentPhase.title
+    private var displayValueText: String {
+        guard let currentPhase else { return "--" }
+        if isFinished { return "Done" }
+        if currentPhase.isTimed {
+            return format(seconds: displayedRemainingSeconds)
+        }
+        return currentPhase.displayValue
     }
 
-    private var statusIcon: String {
-        if isFinished { return "checkmark.circle.fill" }
-        guard let currentPhase else { return "timer" }
-        return currentPhase.kind == .work ? "figure.strengthtraining.traditional" : "pause.circle.fill"
-    }
-
-    private var statusColor: Color {
-        if isFinished { return AppTheme.accent }
-        guard let currentPhase else { return AppTheme.muted }
-        return currentPhase.kind == .work ? AppTheme.accent : AppTheme.gold
-    }
-
-    private var currentPhaseCaption: String {
+    private var displayUnitText: String {
         guard let currentPhase else { return "" }
         if isFinished { return "complete" }
-        return currentPhase.caption
+        return currentPhase.displayUnit
     }
 
     private var nextPhaseText: String {
         guard !isFinished else { return "Exercise timer complete." }
         let nextIndex = phaseIndex + 1
-        guard phases.indices.contains(nextIndex) else { return "Last interval." }
-        return "Next: \(phases[nextIndex].title.lowercased()) for \(durationText(seconds: phases[nextIndex].durationSeconds))."
-    }
-
-    private var startButtonTitle: String {
-        isRunning ? "Pause" : "Start"
-    }
-
-    private var startButtonIcon: String {
-        isRunning ? "pause.fill" : "play.fill"
-    }
-
-    private func toggleTimer() {
-        guard !phases.isEmpty else { return }
-        if isFinished || remainingSeconds == 0 {
-            resetTimer()
+        guard phases.indices.contains(nextIndex) else {
+            return currentPhase?.kind == .rest ? "Final rest." : "Final set."
         }
-        isRunning.toggle()
+        return "Up next: \(phases[nextIndex].summaryText.lowercased())."
+    }
+
+    private var displayedRemainingSeconds: Int {
+        if remainingSeconds > 0 || isFinished {
+            return remainingSeconds
+        }
+        return currentPhase?.durationSeconds ?? 0
+    }
+
+    private var canGoToPreviousPhase: Bool {
+        phaseIndex > 0
+    }
+
+    private var isFinalPhase: Bool {
+        isFinished || (!phases.isEmpty && phaseIndex == phases.count - 1)
+    }
+
+    private var nextControlAccessibilityLabel: String {
+        if isFinalPhase {
+            return "Finish exercise"
+        }
+        if currentPhase?.kind == .rest {
+            return "Skip rest"
+        }
+        return "Next phase"
+    }
+
+    private var accessibilityTimerLabel: String {
+        guard let currentPhase else { return "Workout phase" }
+        if isFinished { return "Exercise timer complete." }
+        if currentPhase.isTimed {
+            return "\(currentPhase.title), \(format(seconds: displayedRemainingSeconds)) remaining."
+        }
+        return "\(currentPhase.title), \(currentPhase.displayValue) \(currentPhase.displayUnit)."
+    }
+
+    private func goToNextPhase() {
+        if isFinalPhase {
+            finishExercise()
+        } else {
+            advanceTimer(autoStartTimedPhase: true)
+        }
+    }
+
+    private func goToPreviousPhase() {
+        guard canGoToPreviousPhase else { return }
+        selectPhase(at: phaseIndex - 1)
     }
 
     private func resetTimer() {
         phaseIndex = 0
-        remainingSeconds = phases.first?.durationSeconds ?? 0
-        isRunning = false
         isFinished = false
+        activateCurrentPhase(autoStartTimedPhase: true)
+    }
+
+    private func selectPhase(at index: Int) {
+        guard phases.indices.contains(index) else { return }
+        phaseIndex = index
+        isFinished = false
+        activateCurrentPhase(autoStartTimedPhase: true)
     }
 
     private func tickTimer() {
-        guard isRunning, !phases.isEmpty else { return }
+        guard isRunning, let currentPhase, currentPhase.isTimed else { return }
 
         if remainingSeconds <= 1 {
             advanceTimer()
@@ -259,16 +284,26 @@ private struct WorkoutTimerCard: View {
         }
     }
 
-    private func advanceTimer() {
+    private func advanceTimer(autoStartTimedPhase: Bool = true) {
         let nextIndex = phaseIndex + 1
         if phases.indices.contains(nextIndex) {
             phaseIndex = nextIndex
-            remainingSeconds = phases[nextIndex].durationSeconds
+            activateCurrentPhase(autoStartTimedPhase: autoStartTimedPhase)
         } else {
             remainingSeconds = 0
             isRunning = false
             isFinished = true
         }
+    }
+
+    private func activateCurrentPhase(autoStartTimedPhase: Bool) {
+        guard let currentPhase else {
+            remainingSeconds = 0
+            isRunning = false
+            return
+        }
+        remainingSeconds = currentPhase.durationSeconds ?? 0
+        isRunning = autoStartTimedPhase && currentPhase.isTimed
     }
 
     private func finishExercise() {
@@ -277,21 +312,49 @@ private struct WorkoutTimerCard: View {
     }
 }
 
+private struct PhaseControlButton: View {
+    var systemImage: String
+    var accessibilityLabel: String
+    var isEnabled: Bool = true
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(isEnabled ? AppTheme.text : AppTheme.muted.opacity(0.45))
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(AppTheme.surface))
+                .overlay(Circle().stroke(AppTheme.divider, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 private struct TimerPhaseStrip: View {
     var phases: [WorkoutTimerPhase]
     var phaseIndex: Int
     var isFinished: Bool
+    var onSelect: (Int) -> Void
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(Array(phases.enumerated()), id: \.element.id) { index, phase in
-                Capsule()
-                    .fill(color(for: phase, at: index))
-                    .frame(height: 7)
-                    .frame(maxWidth: .infinity)
+                Button {
+                    onSelect(index)
+                } label: {
+                    Capsule()
+                        .fill(color(for: phase, at: index))
+                        .frame(height: 7)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(phase.stripAccessibilityLabel)
             }
         }
-        .accessibilityHidden(true)
     }
 
     private func color(for phase: WorkoutTimerPhase, at index: Int) -> Color {
@@ -305,15 +368,20 @@ private struct TimerPhaseStrip: View {
     }
 }
 
-private enum WorkoutTimerPhaseKind: String {
+enum WorkoutTimerPhaseKind: String {
     case work
     case rest
 }
 
-private struct WorkoutTimerPhase: Identifiable {
+enum WorkoutTimerPhaseTarget: Equatable {
+    case reps(Int)
+    case seconds(Int)
+}
+
+struct WorkoutTimerPhase: Identifiable, Equatable {
     var kind: WorkoutTimerPhaseKind
     var setNumber: Int
-    var durationSeconds: Int
+    var target: WorkoutTimerPhaseTarget
 
     var id: String {
         "\(kind.rawValue)-\(setNumber)"
@@ -328,18 +396,71 @@ private struct WorkoutTimerPhase: Identifiable {
         }
     }
 
-    var caption: String {
-        switch kind {
-        case .work:
-            "work"
-        case .rest:
-            "before set \(setNumber + 1)"
+    var durationSeconds: Int? {
+        guard case let .seconds(seconds) = target else { return nil }
+        return seconds
+    }
+
+    var isTimed: Bool {
+        durationSeconds != nil
+    }
+
+    var isManual: Bool {
+        guard kind == .work else { return false }
+        if case .reps = target { return true }
+        return false
+    }
+
+    var displayValue: String {
+        switch target {
+        case let .reps(reps):
+            "\(reps)"
+        case let .seconds(seconds):
+            format(seconds: seconds)
+        }
+    }
+
+    var displayUnit: String {
+        switch target {
+        case .reps:
+            "reps"
+        case .seconds:
+            kind == .rest ? "rest" : "work"
+        }
+    }
+
+    var summaryText: String {
+        switch target {
+        case let .reps(reps):
+            "\(title): \(reps) reps"
+        case let .seconds(seconds):
+            kind == .rest ? "rest for \(durationText(seconds: seconds))" : "\(title): \(durationText(seconds: seconds))"
+        }
+    }
+
+    var stripAccessibilityLabel: String {
+        switch target {
+        case let .reps(reps):
+            return "Go to \(title), \(reps) reps"
+        case let .seconds(seconds):
+            if kind == .rest {
+                return "Go to rest after set \(setNumber), \(durationText(seconds: seconds))"
+            }
+            return "Go to \(title), \(durationText(seconds: seconds))"
         }
     }
 }
 
-private func workoutTimerPhases(for prescription: SetPrescription) -> [WorkoutTimerPhase] {
-    guard prescription.sets > 0, prescription.targetSeconds > 0 else { return [] }
+func workoutTimerPhases(for prescription: SetPrescription) -> [WorkoutTimerPhase] {
+    guard prescription.sets > 0 else { return [] }
+    let workTarget: WorkoutTimerPhaseTarget
+    if prescription.targetSeconds > 0 {
+        workTarget = .seconds(prescription.targetSeconds)
+    } else if prescription.targetReps > 0 {
+        workTarget = .reps(prescription.targetReps)
+    } else {
+        return []
+    }
 
     var phases: [WorkoutTimerPhase] = []
     for setNumber in 1...prescription.sets {
@@ -347,7 +468,7 @@ private func workoutTimerPhases(for prescription: SetPrescription) -> [WorkoutTi
             WorkoutTimerPhase(
                 kind: .work,
                 setNumber: setNumber,
-                durationSeconds: prescription.targetSeconds
+                target: workTarget
             )
         )
 
@@ -356,7 +477,7 @@ private func workoutTimerPhases(for prescription: SetPrescription) -> [WorkoutTi
                 WorkoutTimerPhase(
                     kind: .rest,
                     setNumber: setNumber,
-                    durationSeconds: prescription.restSeconds
+                    target: .seconds(prescription.restSeconds)
                 )
             )
         }

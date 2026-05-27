@@ -73,4 +73,43 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(overduePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [overdue.id])
         XCTAssertEqual(duePlannedSession(from: [future, dueToday, overdue], now: now, calendar: calendar)?.id, dueToday.id)
     }
+
+    func testWorkoutTimerPhasesIncludeManualRepSetsAndTimedRest() {
+        let prescription = SetPrescription(
+            sessionId: UUID(),
+            blockId: UUID(),
+            orderIndex: 0,
+            exercise: .pushUp,
+            sets: 3,
+            targetReps: 20,
+            restSeconds: 60,
+            intensity: "Hard"
+        )
+
+        let phases = workoutTimerPhases(for: prescription)
+
+        XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work, .rest, .work])
+        XCTAssertEqual(phases.map(\.target), [.reps(20), .seconds(60), .reps(20), .seconds(60), .reps(20)])
+        XCTAssertTrue(phases[0].isManual)
+        XCTAssertFalse(phases[1].isManual)
+    }
+
+    func testWorkoutTimerPhasesKeepTimedWorkForHolds() {
+        let prescription = SetPrescription(
+            sessionId: UUID(),
+            blockId: UUID(),
+            orderIndex: 0,
+            exercise: .plank,
+            sets: 2,
+            targetSeconds: 45,
+            restSeconds: 30,
+            intensity: "Moderate"
+        )
+
+        let phases = workoutTimerPhases(for: prescription)
+
+        XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work])
+        XCTAssertEqual(phases.map(\.target), [.seconds(45), .seconds(30), .seconds(45)])
+        XCTAssertTrue(phases.allSatisfy { !$0.isManual })
+    }
 }

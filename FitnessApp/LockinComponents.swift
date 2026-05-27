@@ -290,16 +290,18 @@ struct WeekPlanRow: View {
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
             Spacer()
-            Image(systemName: iconName)
-                .font(.body.weight(.bold))
-                .foregroundStyle(statusColor)
+            WorkoutStatusIcon(status: session.status)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
     }
+}
+
+struct WorkoutStatusIcon: View {
+    var status: SessionStatus
 
     private var iconName: String {
-        switch session.status {
+        switch status {
         case .planned: "circle"
         case .completed, .deload: "checkmark.circle.fill"
         case .missed: "xmark.circle.fill"
@@ -307,11 +309,27 @@ struct WeekPlanRow: View {
     }
 
     private var statusColor: Color {
-        switch session.status {
+        switch status {
         case .planned: AppTheme.muted
         case .completed, .deload: AppTheme.accent
         case .missed: AppTheme.warning
         }
+    }
+
+    private var accessibilityLabel: String {
+        switch status {
+        case .planned: "Open"
+        case .completed: "Done"
+        case .missed: "Missed"
+        case .deload: "Deloaded"
+        }
+    }
+
+    var body: some View {
+        Image(systemName: iconName)
+            .font(.body.weight(.bold))
+            .foregroundStyle(statusColor)
+            .accessibilityLabel(accessibilityLabel)
     }
 }
 

@@ -1,6 +1,12 @@
 import SwiftData
 import SwiftUI
 
+private enum LogMetricField: Hashable {
+    case pullUps
+    case pushUps
+    case plankSeconds
+}
+
 struct LogWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -14,9 +20,10 @@ struct LogWorkoutView: View {
     var session: WorkoutSession
     var profile: UserProfile
 
-    @State private var pullUps = 0
-    @State private var pushUps = 0
-    @State private var plankSeconds = 0
+    @FocusState private var focusedLogField: LogMetricField?
+    @State private var pullUpsText = ""
+    @State private var pushUpsText = ""
+    @State private var plankSecondsText = ""
     @State private var rpe = 7
     @State private var painLevel = 0
     @State private var fatigueLevel = 5
@@ -61,27 +68,23 @@ struct LogWorkoutView: View {
         previousLogs.first(where: { $0.loggedPlankSeconds })?.plankSeconds ?? profile.baselinePlankSeconds
     }
 
+    private var requiredLogFieldsAreValid: Bool {
+        (!shouldLogPullUps || parsedLogValue(pullUpsText, range: 0...300) != nil)
+            && (!shouldLogPushUps || parsedLogValue(pushUpsText, range: 0...500) != nil)
+            && (!shouldLogPlank || parsedLogValue(plankSecondsText, range: 0...3_600) != nil)
+    }
+
     var body: some View {
         NavigationStack {
             ScreenBackground {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(session.title)
-                        .font(.system(.title2, design: .rounded, weight: .bold))
-                    Text("Record the best strict set or hold from this session, not total reps across all sets.")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.muted)
-                }
-                .card()
-
-                LogSessionOverviewCard(session: session, exercises: sessionExercises)
-
                 LoggedWorkCard(
                     shouldLogPullUps: shouldLogPullUps,
                     shouldLogPushUps: shouldLogPushUps,
                     shouldLogPlank: shouldLogPlank,
-                    pullUps: $pullUps,
-                    pushUps: $pushUps,
-                    plankSeconds: $plankSeconds
+                    pullUpsText: $pullUpsText,
+                    pushUpsText: $pushUpsText,
+                    plankSecondsText: $plankSecondsText,
+                    focusedField: $focusedLogField
                 )
 
                 ReadinessInputCard(
@@ -94,6 +97,8 @@ struct LogWorkoutView: View {
 
                 Button("Save log", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
+                    .disabled(!requiredLogFieldsAreValid)
+                    .opacity(requiredLogFieldsAreValid ? 1 : 0.45)
             }
             .navigationTitle("Log")
             .navigationBarTitleDisplayMode(.inline)
@@ -101,29 +106,35 @@ struct LogWorkoutView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedLogField = nil
+                    }
+                }
             }
+            .scrollDismissesKeyboard(.interactively)
         }
-        .onAppear(perform: seedLatestValues)
-    }
-
-    private func seedLatestValues() {
-        pullUps = latestPullUps
-        pushUps = latestPushUps
-        plankSeconds = latestPlankSeconds
     }
 
     private func save() {
-        let savedPullUps = shouldLogPullUps ? pullUps : latestPullUps
-        let savedPushUps = shouldLogPushUps ? pushUps : latestPushUps
-        let savedPlankSeconds = shouldLogPlank ? plankSeconds : latestPlankSeconds
+        focusedLogField = nil
+        guard requiredLogFieldsAreValid else { return }
+
+        let loggedPullUps = shouldLogPullUps
+        let loggedPushUps = shouldLogPushUps
+        let loggedPlankSeconds = shouldLogPlank
+        let savedPullUps = shouldLogPullUps ? parsedLogValue(pullUpsText, range: 0...300) ?? 0 : latestPullUps
+        let savedPushUps = shouldLogPushUps ? parsedLogValue(pushUpsText, range: 0...500) ?? 0 : latestPushUps
+        let savedPlankSeconds = shouldLogPlank ? parsedLogValue(plankSecondsText, range: 0...3_600) ?? 0 : latestPlankSeconds
         let log = PerformanceLog(
             sessionId: session.id,
             pullUps: savedPullUps,
             pushUps: savedPushUps,
             plankSeconds: savedPlankSeconds,
-            loggedPullUps: shouldLogPullUps,
-            loggedPushUps: shouldLogPushUps,
-            loggedPlankSeconds: shouldLogPlank,
+            loggedPullUps: loggedPullUps,
+            loggedPushUps: loggedPushUps,
+            loggedPlankSeconds: loggedPlankSeconds,
             rpe: rpe,
             painLevel: painLevel,
             fatigueLevel: fatigueLevel,
@@ -138,9 +149,9 @@ struct LogWorkoutView: View {
                 pullUps: savedPullUps,
                 pushUps: savedPushUps,
                 plankSeconds: savedPlankSeconds,
-                loggedPullUps: shouldLogPullUps,
-                loggedPushUps: shouldLogPushUps,
-                loggedPlankSeconds: shouldLogPlank,
+                loggedPullUps: loggedPullUps,
+                loggedPushUps: loggedPushUps,
+                loggedPlankSeconds: loggedPlankSeconds,
                 rpe: rpe,
                 painLevel: painLevel,
                 fatigueLevel: fatigueLevel
@@ -191,26 +202,11 @@ struct LogWorkoutView: View {
             UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
         }
     }
-}
 
-private struct LogSessionOverviewCard: View {
-    var session: WorkoutSession
-    var exercises: [ExerciseKind]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Session type", systemImage: "figure.strengthtraining.traditional")
-                .font(.headline)
-            InfoLine(title: "Focus", value: session.focus.title)
-            InfoLine(title: "Exercises", value: exerciseText)
-            InfoLine(title: "Score rule", value: "+\(TrainingEngine.missedSessionPenaltyPoints) penalties only if marked missed")
-        }
-        .card()
-    }
-
-    private var exerciseText: String {
-        let names = exercises.map(\.title)
-        return names.isEmpty ? "Readiness only" : names.joined(separator: ", ")
+    private func parsedLogValue(_ text: String, range: ClosedRange<Int>) -> Int? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed) else { return nil }
+        return min(range.upperBound, max(range.lowerBound, value))
     }
 }
 
@@ -218,25 +214,54 @@ private struct LoggedWorkCard: View {
     var shouldLogPullUps: Bool
     var shouldLogPushUps: Bool
     var shouldLogPlank: Bool
-    @Binding var pullUps: Int
-    @Binding var pushUps: Int
-    @Binding var plankSeconds: Int
+    @Binding var pullUpsText: String
+    @Binding var pushUpsText: String
+    @Binding var plankSecondsText: String
+    @FocusState.Binding var focusedField: LogMetricField?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Logged work")
-                .font(.headline)
-            Text("Use the best clean uninterrupted set for reps, and the longest clean hold for plank.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Logged work")
+                    .font(.headline)
+                Spacer()
+                if shouldLogPullUps || shouldLogPushUps || shouldLogPlank {
+                    Text("Required")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(AppTheme.accent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(AppTheme.accentSoft)
+                        .clipShape(Capsule())
+                }
+            }
             if shouldLogPullUps {
-                IntegerField(title: "Best pull-up set", value: $pullUps, range: 0...300)
+                LogNumberField(
+                    title: "Best pull-up set",
+                    text: $pullUpsText,
+                    range: 0...300,
+                    focusedField: $focusedField,
+                    focusID: .pullUps
+                )
             }
             if shouldLogPushUps {
-                IntegerField(title: "Best push-up set", value: $pushUps, range: 0...500)
+                LogNumberField(
+                    title: "Best push-up set",
+                    text: $pushUpsText,
+                    range: 0...500,
+                    focusedField: $focusedField,
+                    focusID: .pushUps
+                )
             }
             if shouldLogPlank {
-                IntegerField(title: "Longest plank hold", value: $plankSeconds, range: 0...3_600, suffix: "sec")
+                LogNumberField(
+                    title: "Longest plank hold",
+                    text: $plankSecondsText,
+                    range: 0...3_600,
+                    suffix: "sec",
+                    focusedField: $focusedField,
+                    focusID: .plankSeconds
+                )
             }
             if !shouldLogPullUps && !shouldLogPushUps && !shouldLogPlank {
                 Text("No goal max test is planned in this session. Log readiness and notes only.")
@@ -244,7 +269,60 @@ private struct LoggedWorkCard: View {
                     .foregroundStyle(AppTheme.muted)
             }
         }
-        .card()
+        .card(padding: 12)
+    }
+}
+
+private struct LogNumberField: View {
+    var title: String
+    @Binding var text: String
+    var range: ClosedRange<Int>
+    var suffix: String = ""
+    @FocusState.Binding var focusedField: LogMetricField?
+    var focusID: LogMetricField
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.text)
+                .lineLimit(2)
+            Spacer()
+            HStack(spacing: 6) {
+                TextField("", text: $text)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
+                    .frame(width: 70)
+                    .accessibilityLabel(title)
+                    .focused($focusedField, equals: focusID)
+                    .onChange(of: text) { _, newValue in
+                        text = sanitized(newValue)
+                    }
+                if !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(AppTheme.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                    .stroke(focusedField == focusID ? AppTheme.accent.opacity(0.7) : AppTheme.divider, lineWidth: 1)
+            )
+        }
+    }
+
+    private func sanitized(_ value: String) -> String {
+        let digits = value.filter(\.isNumber)
+        guard let intValue = Int(digits) else { return digits }
+        if intValue > range.upperBound { return "\(range.upperBound)" }
+        if intValue < range.lowerBound { return "\(range.lowerBound)" }
+        return digits
     }
 }
 
@@ -254,14 +332,197 @@ private struct ReadinessInputCard: View {
     @Binding var fatigueLevel: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("Readiness")
                 .font(.headline)
-            IntegerField(title: "RPE", value: $rpe, range: 1...10)
-            IntegerField(title: "Pain", value: $painLevel, range: 0...10)
-            IntegerField(title: "Fatigue", value: $fatigueLevel, range: 1...10)
+            ReadinessSlider(
+                title: "RPE",
+                systemImage: "speedometer",
+                value: $rpe,
+                range: 1...10,
+                descriptor: ReadinessScale.rpe
+            )
+            Divider()
+            ReadinessSlider(
+                title: "Pain",
+                systemImage: "heart",
+                value: $painLevel,
+                range: 0...10,
+                descriptor: ReadinessScale.pain
+            )
+            Divider()
+            ReadinessSlider(
+                title: "Fatigue",
+                systemImage: "battery.50percent",
+                value: $fatigueLevel,
+                range: 0...10,
+                descriptor: ReadinessScale.fatigue
+            )
         }
-        .card()
+        .card(padding: 10)
+    }
+}
+
+private struct ReadinessSlider: View {
+    var title: String
+    var systemImage: String
+    @Binding var value: Int
+    var range: ClosedRange<Int>
+    var descriptor: (Int) -> ReadinessDescriptor
+    @State private var draftValue: Double?
+
+    private var displayedValue: Int {
+        let rawValue = Int((draftValue ?? Double(value)).rounded())
+        return min(range.upperBound, max(range.lowerBound, rawValue))
+    }
+
+    private var sliderValue: Binding<Double> {
+        Binding(
+            get: { draftValue ?? Double(value) },
+            set: { newValue in
+                draftValue = min(Double(range.upperBound), max(Double(range.lowerBound), newValue))
+            }
+        )
+    }
+
+    var body: some View {
+        let current = descriptor(displayedValue)
+
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Label(title, systemImage: systemImage)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.text)
+
+                    Text(current.detail)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                HStack(spacing: 6) {
+                    Text("\(displayedValue)")
+                        .font(.system(.body, design: .rounded, weight: .bold))
+                    Text(current.label)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+                .foregroundStyle(current.color)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(current.color.opacity(0.12))
+                .clipShape(Capsule())
+            }
+
+            Slider(
+                value: sliderValue,
+                in: Double(range.lowerBound)...Double(range.upperBound),
+                step: 1,
+                onEditingChanged: handleEditingChanged
+            )
+                .tint(current.color)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func handleEditingChanged(_ isEditing: Bool) {
+        if isEditing {
+            draftValue = draftValue ?? Double(value)
+        } else {
+            value = displayedValue
+            draftValue = nil
+        }
+    }
+}
+
+private struct ReadinessDescriptor {
+    var label: String
+    var detail: String
+    var color: Color
+}
+
+private enum ReadinessScale {
+    static func rpe(_ value: Int) -> ReadinessDescriptor {
+        switch value {
+        case 1:
+            ReadinessDescriptor(label: "Very light", detail: "Warm-up effort. Plenty left in the tank.", color: AppTheme.accent)
+        case 2:
+            ReadinessDescriptor(label: "Easy", detail: "Breathing is calm and the work feels repeatable.", color: AppTheme.accent)
+        case 3:
+            ReadinessDescriptor(label: "Light", detail: "Comfortable effort with no real strain.", color: AppTheme.accent)
+        case 4:
+            ReadinessDescriptor(label: "Steady", detail: "Working, but you could keep this pace cleanly.", color: AppTheme.accent)
+        case 5:
+            ReadinessDescriptor(label: "Moderate", detail: "Solid effort. Challenging without feeling heavy.", color: AppTheme.gold)
+        case 6:
+            ReadinessDescriptor(label: "Somewhat hard", detail: "Focus required. Several clean reps still left.", color: AppTheme.gold)
+        case 7:
+            ReadinessDescriptor(label: "Hard", detail: "Hard set. Roughly three clean reps left.", color: AppTheme.gold)
+        case 8:
+            ReadinessDescriptor(label: "Very hard", detail: "Very hard. Around two clean reps left.", color: AppTheme.gold)
+        case 9:
+            ReadinessDescriptor(label: "Near max", detail: "Near your limit. About one clean rep left.", color: AppTheme.warning)
+        default:
+            ReadinessDescriptor(label: "Max effort", detail: "Maximum effort. No clean reps left.", color: AppTheme.warning)
+        }
+    }
+
+    static func pain(_ value: Int) -> ReadinessDescriptor {
+        switch value {
+        case 0:
+            ReadinessDescriptor(label: "None", detail: "No pain.", color: AppTheme.accent)
+        case 1:
+            ReadinessDescriptor(label: "Tiny", detail: "Barely noticeable discomfort.", color: AppTheme.accent)
+        case 2:
+            ReadinessDescriptor(label: "Mild", detail: "Annoying, but not limiting your movement.", color: AppTheme.accent)
+        case 3:
+            ReadinessDescriptor(label: "Manageable", detail: "Noticeable, but clean form still feels normal.", color: AppTheme.gold)
+        case 4:
+            ReadinessDescriptor(label: "Moderate", detail: "Moderate pain. Lockin will deload after saving.", color: AppTheme.warning)
+        case 5:
+            ReadinessDescriptor(label: "Moderate", detail: "Pain is affecting comfort or mechanics.", color: AppTheme.warning)
+        case 6:
+            ReadinessDescriptor(label: "Strong", detail: "Hard to ignore. Keep stress low.", color: AppTheme.warning)
+        case 7:
+            ReadinessDescriptor(label: "Severe", detail: "Severe pain. Hard training is a bad signal today.", color: AppTheme.warning)
+        case 8:
+            ReadinessDescriptor(label: "Very severe", detail: "Movement quality is compromised.", color: AppTheme.warning)
+        case 9:
+            ReadinessDescriptor(label: "Extreme", detail: "Nearly intolerable pain.", color: AppTheme.warning)
+        default:
+            ReadinessDescriptor(label: "Worst", detail: "Worst imaginable pain.", color: AppTheme.warning)
+        }
+    }
+
+    static func fatigue(_ value: Int) -> ReadinessDescriptor {
+        switch value {
+        case 0:
+            ReadinessDescriptor(label: "Fresh", detail: "No meaningful fatigue.", color: AppTheme.accent)
+        case 1:
+            ReadinessDescriptor(label: "Very light", detail: "Very light fatigue. You feel fresh.", color: AppTheme.accent)
+        case 2:
+            ReadinessDescriptor(label: "Low", detail: "Low tiredness. Easy to get moving.", color: AppTheme.accent)
+        case 3:
+            ReadinessDescriptor(label: "Moderate", detail: "Moderate fatigue, but continuing feels fine.", color: AppTheme.accent)
+        case 4:
+            ReadinessDescriptor(label: "Noticeable", detail: "Energy is down, but control is still good.", color: AppTheme.gold)
+        case 5:
+            ReadinessDescriptor(label: "Tired", detail: "Hard and tiring, but continuing is manageable.", color: AppTheme.gold)
+        case 6:
+            ReadinessDescriptor(label: "Heavy", detail: "Strong fatigue is building.", color: AppTheme.gold)
+        case 7:
+            ReadinessDescriptor(label: "Drained", detail: "Very strenuous. You have to push yourself.", color: AppTheme.gold)
+        case 8:
+            ReadinessDescriptor(label: "Very drained", detail: "Very tired. Quality may start to drop.", color: AppTheme.warning)
+        case 9:
+            ReadinessDescriptor(label: "Overreached", detail: "High fatigue. Lockin will deload after saving.", color: AppTheme.warning)
+        default:
+            ReadinessDescriptor(label: "Spent", detail: "Maximum fatigue. Recovery should win.", color: AppTheme.warning)
+        }
     }
 }
 
@@ -275,6 +536,6 @@ private struct NotesCard: View {
             TextField("What changed?", text: $notes, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
         }
-        .card()
+        .card(padding: 12)
     }
 }
