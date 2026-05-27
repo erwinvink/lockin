@@ -15,6 +15,11 @@
 		AA0000000000000000000106 /* NotificationScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000206 /* NotificationScheduler.swift */; };
 		AA0000000000000000000107 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000207 /* Theme.swift */; };
 		AA0000000000000000000108 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000208 /* RootView.swift */; };
+		AA0000000000000000000109 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000209 /* Assets.xcassets */; };
+		AA0000000000000000000110 /* TrainingEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000210 /* TrainingEngineTests.swift */; };
+		AA0000000000000000000111 /* CoachValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* CoachValidationTests.swift */; };
+		AA0000000000000000000112 /* FitnessAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000212 /* FitnessAppUITests.swift */; };
+		AA0000000000000000000113 /* PersistenceResetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000214 /* PersistenceResetTests.swift */; };
 		AA0000000000000000000114 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000230 /* AppShellView.swift */; };
 		AA0000000000000000000115 /* LockinComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000231 /* LockinComponents.swift */; };
 		AA0000000000000000000116 /* TrainingPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000232 /* TrainingPlanStore.swift */; };
@@ -27,11 +32,6 @@
 		AA000000000000000000011D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000239 /* SettingsView.swift */; };
 		AA000000000000000000011E /* LogWorkoutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023A /* LogWorkoutView.swift */; };
 		AA000000000000000000011F /* RanksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023B /* RanksView.swift */; };
-		AA0000000000000000000109 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000209 /* Assets.xcassets */; };
-		AA0000000000000000000110 /* TrainingEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000210 /* TrainingEngineTests.swift */; };
-		AA0000000000000000000111 /* CoachValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* CoachValidationTests.swift */; };
-		AA0000000000000000000112 /* FitnessAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000212 /* FitnessAppUITests.swift */; };
-		AA0000000000000000000113 /* PersistenceResetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000214 /* PersistenceResetTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,6 +60,15 @@
 		AA0000000000000000000206 /* NotificationScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationScheduler.swift; sourceTree = "<group>"; };
 		AA0000000000000000000207 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AA0000000000000000000208 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000209 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AA0000000000000000000210 /* TrainingEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingEngineTests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000211 /* CoachValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachValidationTests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000212 /* FitnessAppUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitnessAppUITests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000213 /* FitnessApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitnessApp.entitlements; sourceTree = "<group>"; };
+		AA0000000000000000000214 /* PersistenceResetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceResetTests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000221 /* FitnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000222 /* FitnessAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000223 /* FitnessAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000230 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000231 /* LockinComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockinComponents.swift; sourceTree = "<group>"; };
 		AA0000000000000000000232 /* TrainingPlanStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingPlanStore.swift; sourceTree = "<group>"; };
@@ -72,15 +81,6 @@
 		AA0000000000000000000239 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA000000000000000000023A /* LogWorkoutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogWorkoutView.swift; sourceTree = "<group>"; };
 		AA000000000000000000023B /* RanksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RanksView.swift; sourceTree = "<group>"; };
-		AA0000000000000000000209 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		AA0000000000000000000213 /* FitnessApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitnessApp.entitlements; sourceTree = "<group>"; };
-		AA0000000000000000000210 /* TrainingEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingEngineTests.swift; sourceTree = "<group>"; };
-		AA0000000000000000000211 /* CoachValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachValidationTests.swift; sourceTree = "<group>"; };
-		AA0000000000000000000212 /* FitnessAppUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitnessAppUITests.swift; sourceTree = "<group>"; };
-		AA0000000000000000000214 /* PersistenceResetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceResetTests.swift; sourceTree = "<group>"; };
-		AA0000000000000000000221 /* FitnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000222 /* FitnessAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000223 /* FitnessAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -485,17 +485,17 @@
 				CODE_SIGN_ENTITLEMENTS = FitnessApp/FitnessApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = CQ7NKMRK4A;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FitnessApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = lockin;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSAppTransportSecurity.NSAllowsArbitraryLoadsInLocalNetworking = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "lockin connects to your local AI coach proxy when you use a Mac IP address.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -520,17 +520,17 @@
 				CODE_SIGN_ENTITLEMENTS = FitnessApp/FitnessApp.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = CQ7NKMRK4A;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = FitnessApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = lockin;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSAppTransportSecurity.NSAllowsArbitraryLoadsInLocalNetworking = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "lockin connects to your local AI coach proxy when you use a Mac IP address.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

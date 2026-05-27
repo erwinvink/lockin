@@ -13,7 +13,8 @@ enum ModelContainerFactory {
             PerformanceLog.self,
             RankState.self,
             CoachPlan.self,
-            CoachDecision.self
+            CoachDecision.self,
+            CoachVerdict.self
         ])
     }
 
@@ -37,4 +38,3 @@ enum ModelContainerFactory {
         }
     }
 }
-

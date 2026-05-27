@@ -5,7 +5,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   const sortedLogs = [...request.trainingLogs].sort(
     (a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime()
   );
-  const last5Logs = sortedLogs.slice(-5);
+  const last5Logs = sortedLogs.slice(-5).map(normalizeLogForContext);
 
   const currentMonthStart = startOfMonthUTC(now);
   const lastFullMonthStart = addMonths(currentMonthStart, -1);
@@ -15,14 +15,22 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   const lastFullMonth = summarizeMonth(sortedLogs, lastFullMonthStart, false);
   const previousFullMonth = summarizeMonth(sortedLogs, previousFullMonthStart, false);
   const twoFullMonthTrend = summarizeTrend(lastFullMonth, previousFullMonth);
-  const riskFlags = collectRiskFlags(last5Logs, lastFullMonth, previousFullMonth, request.weeklySessions);
+  const validCompletedMonthLogCount = validLogCount(sortedLogs, previousFullMonthStart, currentMonthStart);
+  const riskFlags = collectRiskFlags(
+    last5Logs,
+    lastFullMonth,
+    previousFullMonth,
+    request.weeklySessions,
+    validCompletedMonthLogCount
+  );
   const adherence = summarizeAdherence(request);
-  const state = classifyState(riskFlags, twoFullMonthTrend.label, sortedLogs.length, adherence);
+  const state = classifyState(riskFlags, twoFullMonthTrend.label, validCompletedMonthLogCount, adherence);
 
   return {
     profile: {
       baseline: request.baseline,
       goals: request.goals,
+      profileNotes: trimNote(request.profileNotes),
       weekStart: request.weekStart,
       weeklySessions: clampInt(request.weeklySessions, 1, 7),
       equipment: [...request.equipment].sort(),
@@ -52,7 +60,8 @@ function collectRiskFlags(
   last5Logs: TrainingLog[],
   lastFullMonth: CoachContext["history"]["lastFullMonth"],
   previousFullMonth: CoachContext["history"]["previousFullMonth"],
-  weeklySessions: number
+  weeklySessions: number,
+  validCompletedMonthLogCount: number
 ): string[] {
   const flags: string[] = [];
 
@@ -71,6 +80,10 @@ function collectRiskFlags(
     flags.push("sudden_monthly_volume_increase");
   }
 
+  if (validCompletedMonthLogCount < 3) {
+    flags.push("insufficient_completed_month_history");
+  }
+
   return flags;
 }
 
@@ -87,12 +100,12 @@ function summarizeAdherence(request: CoachRequest): CoachContext["adherence"] {
 function classifyState(
   riskFlags: string[],
   trendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
-  logCount: number,
+  validCompletedMonthLogCount: number,
   adherence: CoachContext["adherence"]
 ): ContextState {
   if (riskFlags.some((flag) => flag.includes("pain") || flag.includes("fatigue"))) return "recovery_needed";
   if (riskFlags.includes("sudden_monthly_volume_increase") || riskFlags.includes("repeated_high_rpe")) return "overreaching";
-  if (logCount < 3) return "insufficient_history";
+  if (validCompletedMonthLogCount < 3 || trendLabel === "insufficient_history") return "insufficient_history";
   if (trendLabel === "flat" && adherence.completed >= Math.max(3, adherence.planned * 0.7)) return "plateau";
   if (trendLabel === "declining") return "overreaching";
   return "building";
@@ -111,4 +124,26 @@ function latestKnownBest(
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function validLogCount(logs: TrainingLog[], start: Date, end: Date): number {
+  return logs.filter((log) => {
+    const completedAt = new Date(log.completedAt);
+    return completedAt >= start && completedAt < end && hasLoggedGoalMetric(log);
+  }).length;
+}
+
+function hasLoggedGoalMetric(log: TrainingLog): boolean {
+  return log.loggedPullUps || log.loggedPushUps || log.loggedPlankSeconds;
+}
+
+function normalizeLogForContext(log: TrainingLog): TrainingLog {
+  return {
+    ...log,
+    notes: trimNote(log.notes)
+  };
+}
+
+function trimNote(note: string | undefined): string {
+  return (note ?? "").trim().replace(/\s+/g, " ").slice(0, 800);
 }

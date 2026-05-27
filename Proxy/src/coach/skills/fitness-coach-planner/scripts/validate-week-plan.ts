@@ -1,25 +1,48 @@
-import type { CoachContext, ExerciseKind, WeeklyPlan } from "./types";
+import type { CoachContext, ContextState, ExerciseKind, SessionFocus } from "./types";
 
 type ValidationResult = {
   accepted: boolean;
   messages: string[];
 };
 
-const pullBarExercises = new Set<ExerciseKind>(["pullUp", "scapularPull", "deadHang"]);
-const pullExercises = new Set<ExerciseKind>(["pullUp", "scapularPull", "deadHang"]);
-const pushExercises = new Set<ExerciseKind>(["pushUp", "inclinePushUp", "pikePushUp"]);
-const coreExercises = new Set<ExerciseKind>(["plank", "hollowHold"]);
-const goalLoggingByExercise: Partial<Record<ExerciseKind, "pullUps" | "pushUps" | "plankSeconds">> = {
-  pullUp: "pullUps",
-  pushUp: "pushUps",
-  plank: "plankSeconds"
-};
+const contextStates = new Set<ContextState>([
+  "building",
+  "plateau",
+  "overreaching",
+  "recovery_needed",
+  "insufficient_history"
+]);
+const sessionFocuses = new Set<SessionFocus>(["pull", "push", "core", "mixed", "recovery"]);
+const exerciseKinds = new Set<ExerciseKind>([
+  "pullUp",
+  "pushUp",
+  "plank",
+  "scapularPull",
+  "hollowHold",
+  "inclinePushUp",
+  "pikePushUp",
+  "deadHang",
+  "shoulderMobility"
+]);
+const loggingFields = new Set(["pullUps", "pushUps", "plankSeconds"]);
 
-export function validateWeeklyPlan(plan: WeeklyPlan, context: CoachContext): ValidationResult {
+export function validateWeeklyPlan(plan: unknown, context: CoachContext): ValidationResult {
   const messages: string[] = [];
 
-  if (!plan || typeof plan !== "object") {
+  if (!isRecord(plan)) {
     return { accepted: false, messages: ["Plan is not an object."] };
+  }
+
+  if (typeof plan.summary !== "string") {
+    messages.push("Plan summary is missing or not a string.");
+  }
+
+  if (typeof plan.contextState !== "string" || !contextStates.has(plan.contextState as ContextState)) {
+    messages.push("Plan contextState is missing or unknown.");
+  }
+
+  if (!Array.isArray(plan.safetyFlags) || !plan.safetyFlags.every((flag) => typeof flag === "string")) {
+    messages.push("Plan safetyFlags is missing or not a string array.");
   }
 
   if (!Array.isArray(plan.sessions)) {
@@ -30,162 +53,110 @@ export function validateWeeklyPlan(plan: WeeklyPlan, context: CoachContext): Val
     messages.push(`Expected ${context.profile.weeklySessions} sessions, got ${plan.sessions.length}.`);
   }
 
-  if (plan.contextState !== context.readiness.state) {
-    messages.push(`Plan contextState ${plan.contextState} does not match built context ${context.readiness.state}.`);
-  }
-
-  const hasPullUpBar = context.profile.equipment.includes("pullUpBar");
-  const pullCap = cap(context.history.bestRecentTests.pullUps, context.profile.baseline.pullUps, 0.85, 1);
-  const pushCap = cap(context.history.bestRecentTests.pushUps, context.profile.baseline.pushUps, 0.75, 2);
-  const plankCap = cap(context.history.bestRecentTests.plankSeconds, context.profile.baseline.plankSeconds, 0.8, 15);
-  const weeklyPatterns = new Set<MovementPattern>();
-  let balancedSessionCount = 0;
   let previousDayOffset = -1;
 
   for (const [sessionIndex, session] of plan.sessions.entries()) {
+    if (!isRecord(session)) {
+      messages.push(`Session ${sessionIndex + 1} is not an object.`);
+      continue;
+    }
+
+    if (typeof session.title !== "string") {
+      messages.push(`Session ${sessionIndex + 1} title is missing or not a string.`);
+    }
+
+    if (typeof session.purpose !== "string") {
+      messages.push(`Session ${sessionIndex + 1} purpose is missing or not a string.`);
+    }
+
+    if (typeof session.progressionRationale !== "string") {
+      messages.push(`Session ${sessionIndex + 1} progressionRationale is missing or not a string.`);
+    }
+
+    if (typeof session.focus !== "string" || !sessionFocuses.has(session.focus as SessionFocus)) {
+      messages.push(`Session ${sessionIndex + 1} focus is missing or unknown.`);
+    }
+
+    const estimatedDurationMinutes = session.estimatedDurationMinutes;
+    if (
+      typeof estimatedDurationMinutes !== "number" ||
+      !Number.isInteger(estimatedDurationMinutes) ||
+      estimatedDurationMinutes < 0
+    ) {
+      messages.push(`Session ${sessionIndex + 1} estimated duration must be a non-negative integer.`);
+    }
+
     if (!Array.isArray(session.exercises)) {
       messages.push(`Session ${sessionIndex + 1} exercises is missing or not an array.`);
       continue;
     }
 
+    if (!Array.isArray(session.safetyNotes) || !session.safetyNotes.every((note) => typeof note === "string")) {
+      messages.push(`Session ${sessionIndex + 1} safetyNotes is missing or not a string array.`);
+    }
+
     if (!Array.isArray(session.loggingFieldsRequired)) {
       messages.push(`Session ${sessionIndex + 1} loggingFieldsRequired is missing or not an array.`);
-      continue;
+    } else {
+      for (const field of session.loggingFieldsRequired) {
+        if (typeof field !== "string" || !loggingFields.has(field)) {
+          messages.push(`Session ${sessionIndex + 1} has an unknown logging field.`);
+        }
+      }
     }
 
-    if (session.estimatedDurationMinutes < 10 || session.estimatedDurationMinutes > 120) {
-      messages.push(`Session ${sessionIndex + 1} estimated duration is outside 10-120 minutes.`);
-    }
-
-    if (!Number.isInteger(session.dayOffset) || session.dayOffset < 0 || session.dayOffset > 6) {
+    const dayOffset = session.dayOffset;
+    if (typeof dayOffset !== "number" || !Number.isInteger(dayOffset) || dayOffset < 0 || dayOffset > 6) {
       messages.push(`Session ${sessionIndex + 1} dayOffset must be an integer from 0 through 6.`);
     }
 
-    if (Number.isInteger(session.dayOffset)) {
-      if (session.dayOffset <= previousDayOffset) {
+    if (typeof dayOffset === "number" && Number.isInteger(dayOffset)) {
+      if (dayOffset <= previousDayOffset) {
         messages.push(`Session ${sessionIndex + 1} dayOffset must be strictly later than the previous session.`);
       }
-      previousDayOffset = session.dayOffset;
+      previousDayOffset = dayOffset;
     }
-
-    const prescribedGoalFields = new Set<"pullUps" | "pushUps" | "plankSeconds">();
-    const sessionPatterns = new Set<MovementPattern>();
 
     for (const exercise of session.exercises) {
-      if (!hasPullUpBar && pullBarExercises.has(exercise.exercise)) {
-        messages.push(`${exercise.exercise} requires pullUpBar, but pullUpBar is unavailable.`);
+      if (!isRecord(exercise)) {
+        messages.push(`Session ${sessionIndex + 1} contains an exercise that is not an object.`);
+        continue;
       }
 
-      if (exercise.sets < 1 || exercise.sets > 10) {
-        messages.push(`${exercise.exercise} has unsafe set count ${exercise.sets}.`);
+      if (typeof exercise.exercise !== "string" || !exerciseKinds.has(exercise.exercise as ExerciseKind)) {
+        messages.push(`Session ${sessionIndex + 1} has an unknown exercise.`);
       }
 
-      if (exercise.reps < 0 || exercise.seconds < 0 || exercise.restSeconds < 0) {
-        messages.push(`${exercise.exercise} contains a negative reps, seconds, or rest value.`);
+      const sets = exercise.sets;
+      const reps = exercise.reps;
+      const seconds = exercise.seconds;
+      const restSeconds = exercise.restSeconds;
+
+      if (typeof sets !== "number" || !Number.isInteger(sets) || sets < 1) {
+        messages.push(`Session ${sessionIndex + 1} has a non-positive or non-integer set count.`);
       }
 
-      if (exercise.exercise === "pullUp" && exercise.reps > pullCap) {
-        messages.push(`Pull-up set exceeds cap: ${exercise.reps} > ${pullCap}.`);
+      if (typeof reps !== "number" || !Number.isInteger(reps) || reps < 0) {
+        messages.push(`Session ${sessionIndex + 1} has invalid reps.`);
       }
 
-      if (exercise.exercise === "pushUp" && exercise.reps > pushCap) {
-        messages.push(`Push-up set exceeds cap: ${exercise.reps} > ${pushCap}.`);
+      if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 0) {
+        messages.push(`Session ${sessionIndex + 1} has invalid seconds.`);
       }
 
-      if (exercise.exercise === "plank" && exercise.seconds > plankCap) {
-        messages.push(`Plank hold exceeds cap: ${exercise.seconds}s > ${plankCap}s.`);
+      if (typeof restSeconds !== "number" || !Number.isInteger(restSeconds) || restSeconds < 0) {
+        messages.push(`Session ${sessionIndex + 1} has invalid rest seconds.`);
       }
 
-      const loggingField = goalLoggingByExercise[exercise.exercise];
-      if (loggingField) prescribedGoalFields.add(loggingField);
-
-      for (const pattern of patternsFor(exercise.exercise)) {
-        sessionPatterns.add(pattern);
-        weeklyPatterns.add(pattern);
+      if (typeof exercise.intensity !== "string") {
+        messages.push(`Session ${sessionIndex + 1} has an exercise intensity that is not a string.`);
       }
-
-      if (context.readiness.state === "recovery_needed" && isHardIntensity(exercise.intensity)) {
-        messages.push(`Recovery-needed plan contains hard intensity for ${exercise.exercise}.`);
-      }
-    }
-
-    if (session.focus === "mixed" && !isBalancedEnough(sessionPatterns, hasPullUpBar)) {
-      messages.push(`Session ${sessionIndex + 1} is marked mixed but does not cover enough movement patterns.`);
-    }
-
-    if (session.focus !== "mixed" && session.focus !== "recovery" && !sessionPatterns.has(session.focus)) {
-      messages.push(`Session ${sessionIndex + 1} is marked ${session.focus} but does not prescribe that movement pattern.`);
-    }
-
-    if (
-      context.readiness.state !== "recovery_needed" &&
-      session.focus !== "mixed" &&
-      session.focus !== "recovery" &&
-      sessionPatterns.size < 2
-    ) {
-      messages.push(`Session ${sessionIndex + 1} is a single-focus day without support work.`);
-    }
-
-    if (isBalancedEnough(sessionPatterns, hasPullUpBar)) {
-      balancedSessionCount += 1;
-    }
-
-    for (const prescribedField of prescribedGoalFields) {
-      if (!session.loggingFieldsRequired.includes(prescribedField)) {
-        messages.push(`Session ${sessionIndex + 1} prescribes ${prescribedField} work but does not require that log field.`);
-      }
-    }
-
-    for (const requestedField of session.loggingFieldsRequired) {
-      if (!prescribedGoalFields.has(requestedField)) {
-        messages.push(`Session ${sessionIndex + 1} requires ${requestedField} logging without prescribing that goal exercise.`);
-      }
-    }
-  }
-
-  if (context.readiness.state !== "recovery_needed") {
-    if (hasPullUpBar && !weeklyPatterns.has("pull")) {
-      messages.push("Weekly plan does not include pull exposure.");
-    }
-    if (!weeklyPatterns.has("push")) {
-      messages.push("Weekly plan does not include push exposure.");
-    }
-    if (!weeklyPatterns.has("core")) {
-      messages.push("Weekly plan does not include core exposure.");
-    }
-
-    const requiredBalancedSessions = context.profile.weeklySessions >= 4 ? 2 : context.profile.weeklySessions >= 3 ? 1 : 0;
-    if (balancedSessionCount < requiredBalancedSessions) {
-      messages.push(`Expected at least ${requiredBalancedSessions} mixed or full-body sessions, got ${balancedSessionCount}.`);
     }
   }
 
   return { accepted: messages.length === 0, messages };
 }
 
-function cap(bestRecent: number | null, baseline: number, multiplier: number, minimum: number): number {
-  const source = Math.max(bestRecent ?? 0, baseline, minimum);
-  return Math.max(minimum, Math.floor(source * multiplier));
-}
-
-type MovementPattern = "pull" | "push" | "core";
-
-function patternsFor(exercise: ExerciseKind): MovementPattern[] {
-  const patterns: MovementPattern[] = [];
-  if (pullExercises.has(exercise)) patterns.push("pull");
-  if (pushExercises.has(exercise)) patterns.push("push");
-  if (coreExercises.has(exercise)) patterns.push("core");
-  return patterns;
-}
-
-function isBalancedEnough(patterns: Set<MovementPattern>, hasPullUpBar: boolean): boolean {
-  if (hasPullUpBar) {
-    return patterns.has("pull") && patterns.has("push") && patterns.has("core");
-  }
-  return patterns.has("push") && patterns.has("core");
-}
-
-function isHardIntensity(intensity: string): boolean {
-  const normalized = intensity.toLowerCase();
-  return normalized.includes("hard") || normalized.includes("max") || normalized.includes("failure");
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

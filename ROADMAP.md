@@ -209,7 +209,7 @@ Flow:
 2. Ultra-running coach proposes the running week.
 3. Synthesis coach reads both proposals plus logs, journals, and check-ins.
 4. Synthesis coach resolves conflicts and returns one integrated week.
-5. Validator rejects unsafe or structurally invalid plans.
+5. Validator rejects structurally invalid plans.
 6. App shows the final plan and a short explanation.
 
 Needed server/proxy pieces:

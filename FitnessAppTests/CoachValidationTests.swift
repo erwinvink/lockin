@@ -32,9 +32,11 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(client.endpoint.absoluteString, "https://lockin.elevenfactor.com/generate-week-plan")
     }
 
-    func testCoachClientRejectsLoopbackProxyHosts() {
+    func testCoachClientRejectsNonHostedProxyHosts() {
         XCTAssertThrowsError(try LocalCoachClient(endpointString: "127.0.0.1:8787"))
         XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://localhost:8787/generate-week-plan"))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://172.20.10.3:8790/generate-week-plan"))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://lockin.elevenfactor.com/generate-week-plan"))
     }
 
     func testCoachPlanRequestEncodesSelectedModel() throws {
@@ -42,11 +44,28 @@ final class CoachValidationTests: XCTestCase {
             model: "gpt-5.5",
             baseline: CoachBaseline(pullUps: 1, pushUps: 2, plankSeconds: 30),
             goals: CoachGoals(pullUps: 10, pushUps: 20, plankSeconds: 120),
+            profileNotes: "Left elbow gets cranky after high pull volume.",
             weekStart: Date(timeIntervalSince1970: 0),
             weeklySessions: 3,
             equipment: ["pullUpBar"],
             targetDate: Date(timeIntervalSince1970: 86_400),
-            trainingLogs: [],
+            trainingLogs: [
+                CoachLog(
+                    id: UUID().uuidString,
+                    sessionId: UUID().uuidString,
+                    completedAt: Date(timeIntervalSince1970: 0),
+                    pullUps: 1,
+                    pushUps: 2,
+                    plankSeconds: 30,
+                    loggedPullUps: true,
+                    loggedPushUps: true,
+                    loggedPlankSeconds: true,
+                    rpe: 7,
+                    painLevel: 2,
+                    fatigueLevel: 5,
+                    notes: "Felt shoulder tightness near the end."
+                )
+            ],
             plannedSessions: []
         )
 
@@ -54,6 +73,9 @@ final class CoachValidationTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         XCTAssertEqual(object["model"] as? String, "gpt-5.5")
+        XCTAssertEqual(object["profileNotes"] as? String, "Left elbow gets cranky after high pull volume.")
+        let logs = try XCTUnwrap(object["trainingLogs"] as? [[String: Any]])
+        XCTAssertEqual(logs.first?["notes"] as? String, "Felt shoulder tightness near the end.")
     }
 
     func testCoachModelCatalogFallsBackForEmptySelection() {
@@ -61,7 +83,7 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(CoachModelCatalog.normalized(" gpt-5.5 "), "gpt-5.5")
     }
 
-    func testRejectsAIPlanAboveStrictProgressionCaps() {
+    func testAcceptsAIPlanAboveFormerProgressionCapsWhenTechnicallyValid() {
         let response = CoachPlanResponse(
             summary: "Too hot",
             contextState: "building",
@@ -87,18 +109,18 @@ final class CoachValidationTests: XCTestCase {
             response: response,
             baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
             preferences: TrainingPreferences(
-                weeklySessions: 4,
+                weeklySessions: 1,
                 equipment: [.pullUpBar],
                 targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
             ),
             weekStart: Date()
         )
 
-        XCTAssertEqual(result.status, .rejected)
-        XCTAssertFalse(result.messages.isEmpty)
+        XCTAssertEqual(result.status, .accepted)
+        XCTAssertTrue(result.messages.isEmpty)
     }
 
-    func testRejectsAIPlanWithoutWeeklyMovementBalance() {
+    func testAcceptsAIPlanWithoutLocalMovementBalancePolicy() {
         let response = CoachPlanResponse(
             summary: "Too narrow",
             contextState: "building",
@@ -132,8 +154,32 @@ final class CoachValidationTests: XCTestCase {
             weekStart: Date()
         )
 
+        XCTAssertEqual(result.status, .accepted)
+        XCTAssertTrue(result.messages.isEmpty)
+    }
+
+    func testRejectsAIPlanWithInvalidTechnicalShape() {
+        var response = CoachPlanResponse.balancedFixture()
+        response.sessions[1].dayOffset = response.sessions[0].dayOffset
+        response.sessions[2].loggingFieldsRequired = ["watts"]
+        response.sessions[3].exercises[0] = CoachExerciseResponse(exercise: "plank", sets: 0, reps: -1, seconds: 30, restSeconds: 90, intensity: "Moderate")
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: Date()
+        )
+
         XCTAssertEqual(result.status, .rejected)
-        XCTAssertTrue(result.messages.contains { $0.contains("push exposure") || $0.contains("core exposure") })
+        XCTAssertTrue(result.messages.contains { $0.contains("strictly increasing") })
+        XCTAssertTrue(result.messages.contains { $0.contains("unknown logging field") })
+        XCTAssertTrue(result.messages.contains { $0.contains("non-positive set count") })
+        XCTAssertTrue(result.messages.contains { $0.contains("negative reps") })
     }
 
     func testAcceptedAIPlanConvertsToVisibleWeeklyPlan() {

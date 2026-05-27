@@ -18,9 +18,10 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Coach"].tap()
         XCTAssertTrue(app.navigationBars["Coach"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Plan generator"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Ready for the first week"].exists)
         XCTAssertTrue(app.buttons["Generate AI week"].exists)
-        XCTAssertFalse(app.staticTexts["Ready to refresh the next 7 days."].exists)
+        XCTAssertTrue(app.staticTexts["What I'll use"].exists)
     }
 
     func testLogShowsEmptyAIOnlyStateAfterOnboarding() {
@@ -54,19 +55,22 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Progress"].exists)
     }
 
-    func testCoachTabsAfterOnboarding() {
+    func testCoachReadAndAdvancedControlsAfterOnboarding() {
         let app = launchFreshApp()
         onboardDefault(app)
 
         app.tabBars.buttons["Coach"].tap()
         XCTAssertTrue(app.navigationBars["Coach"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Plan generator"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Ready for the first week"].exists)
         XCTAssertFalse(app.staticTexts["WEEK PLAN"].exists)
-        tapWhenReady(app.buttons["Context"], in: app)
+        XCTAssertFalse(app.buttons["Context"].exists)
+        XCTAssertFalse(app.buttons["Rules"].exists)
+        tapWhenReady(app.buttons["Advanced"], in: app)
         XCTAssertTrue(app.staticTexts["Model"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Proxy status"].exists)
         XCTAssertFalse(app.textFields["Custom model ID"].exists)
-        tapWhenReady(app.buttons["Rules"], in: app)
-        XCTAssertTrue(app.staticTexts["Local safety checks"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Technical checks"].exists)
     }
 
     func testProfileResetFlowUsesAIOnlyPlanCreation() {

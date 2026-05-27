@@ -4,6 +4,7 @@ struct CoachPlanRequest: Codable, Equatable {
     var model: String
     var baseline: CoachBaseline
     var goals: CoachGoals
+    var profileNotes: String
     var weekStart: Date
     var weeklySessions: Int
     var equipment: [String]
@@ -62,7 +63,7 @@ enum CoachSkillDisplay {
     - two-month trend
     - readiness and risk flags
 
-    Local safety and policy check after the model call:
+    Technical output check after the model call:
     scripts/validate-week-plan.ts
     """
 }
@@ -92,6 +93,7 @@ struct CoachLog: Codable, Equatable {
     var rpe: Int
     var painLevel: Int
     var fatigueLevel: Int
+    var notes: String
 }
 
 struct CoachPlannedSession: Codable, Equatable {
@@ -107,6 +109,22 @@ struct CoachPlanResponse: Codable, Equatable {
     var contextState: String
     var safetyFlags: [String]
     var sessions: [CoachSessionResponse]
+}
+
+struct CoachVerdictResponse: Codable, Equatable {
+    var headline: String
+    var summary: String
+    var latestChange: String
+    var recommendation: String
+    var shouldUpdatePlan: Bool
+    var contextState: String
+    var safetyFlags: [String]
+}
+
+struct CoachProxyHealthResponse: Codable, Equatable {
+    var ok: Bool
+    var hasApiKey: Bool
+    var defaultModel: String
 }
 
 struct CoachSessionResponse: Codable, Equatable {
@@ -181,18 +199,20 @@ private extension URLError {
 }
 
 struct CoachPlanValidator {
-    var engine = TrainingEngine()
+    private let validContextStates: Set<String> = ["building", "plateau", "overreaching", "recovery_needed", "insufficient_history"]
+    private let validLoggingFields: Set<String> = ["pullUps", "pushUps", "plankSeconds"]
 
-    func validate(response: CoachPlanResponse, baseline: Baseline, preferences: TrainingPreferences, weekStart: Date) -> PlanValidationResult {
+    func validate(response: CoachPlanResponse, baseline _: Baseline, preferences: TrainingPreferences, weekStart _: Date) -> PlanValidationResult {
         var messages: [String] = []
+
+        if !validContextStates.contains(response.contextState) {
+            messages.append("AI plan has an unknown context state.")
+        }
 
         if response.sessions.count != preferences.weeklySessions {
             messages.append("AI plan must contain exactly \(preferences.weeklySessions) sessions.")
         }
 
-        let hasPullUpBar = preferences.equipment.contains(.pullUpBar)
-        var weeklyPatterns: Set<MovementPattern> = []
-        var balancedSessionCount = 0
         var previousDayOffset = -1
 
         for (index, session) in response.sessions.enumerated() {
@@ -205,87 +225,34 @@ struct CoachPlanValidator {
             }
             previousDayOffset = session.dayOffset
 
-            guard let focus = SessionFocus(rawValue: session.focus) else {
+            guard SessionFocus(rawValue: session.focus) != nil else {
                 messages.append("AI session \(index + 1) has an unknown focus.")
                 continue
             }
 
-            var prescribedGoalFields: Set<String> = []
-            var sessionPatterns: Set<MovementPattern> = []
+            if session.estimatedDurationMinutes < 0 {
+                messages.append("AI session \(index + 1) has a negative duration.")
+            }
+
+            for field in session.loggingFieldsRequired where !validLoggingFields.contains(field) {
+                messages.append("AI session \(index + 1) has an unknown logging field.")
+            }
 
             for exercise in session.exercises {
-                guard let kind = ExerciseKind(rawValue: exercise.exercise) else {
+                guard ExerciseKind(rawValue: exercise.exercise) != nil else {
                     messages.append("AI session \(index + 1) has an unknown exercise.")
                     continue
                 }
 
-                if exercise.sets < 1 || exercise.sets > 10 {
-                    messages.append("AI session \(index + 1) has an unsafe set count.")
+                if exercise.sets < 1 {
+                    messages.append("AI session \(index + 1) has a non-positive set count.")
                 }
 
                 if exercise.reps < 0 || exercise.seconds < 0 || exercise.restSeconds < 0 {
                     messages.append("AI session \(index + 1) has a negative reps, hold, or rest value.")
                 }
-
-                if let field = loggingField(for: kind) {
-                    prescribedGoalFields.insert(field)
-                }
-
-                for pattern in movementPatterns(for: kind) {
-                    sessionPatterns.insert(pattern)
-                    weeklyPatterns.insert(pattern)
-                }
-
-                if response.contextState == "recovery_needed" && isHardIntensity(exercise.intensity) {
-                    messages.append("Recovery-needed AI plan contains hard intensity.")
-                }
-            }
-
-            if focus == .mixed && !isBalancedEnough(sessionPatterns, hasPullUpBar: hasPullUpBar) {
-                messages.append("AI session \(index + 1) is marked mixed without enough movement coverage.")
-            }
-
-            if let focusPattern = MovementPattern(focus: focus), !sessionPatterns.contains(focusPattern) {
-                messages.append("AI session \(index + 1) is marked \(focus.rawValue) but does not train that pattern.")
-            }
-
-            if response.contextState != "recovery_needed", focus != .mixed, focus != .recovery, sessionPatterns.count < 2 {
-                messages.append("AI session \(index + 1) is a single-focus day without support work.")
-            }
-
-            if isBalancedEnough(sessionPatterns, hasPullUpBar: hasPullUpBar) {
-                balancedSessionCount += 1
-            }
-
-            for field in prescribedGoalFields where !session.loggingFieldsRequired.contains(field) {
-                messages.append("AI session \(index + 1) prescribes \(field) but does not require that log field.")
-            }
-
-            for field in session.loggingFieldsRequired where !prescribedGoalFields.contains(field) {
-                messages.append("AI session \(index + 1) requires \(field) logging without prescribing that goal exercise.")
             }
         }
-
-        if response.contextState != "recovery_needed" {
-            if hasPullUpBar && !weeklyPatterns.contains(.pull) {
-                messages.append("AI plan does not include pull exposure.")
-            }
-            if !weeklyPatterns.contains(.push) {
-                messages.append("AI plan does not include push exposure.")
-            }
-            if !weeklyPatterns.contains(.core) {
-                messages.append("AI plan does not include core exposure.")
-            }
-
-            let requiredBalancedSessions = preferences.weeklySessions >= 4 ? 2 : preferences.weeklySessions >= 3 ? 1 : 0
-            if balancedSessionCount < requiredBalancedSessions {
-                messages.append("AI plan does not include enough mixed or full-body sessions.")
-            }
-        }
-
-        let week = response.weeklyPlan(weekStart: weekStart)
-        let engineResult = engine.validate(plan: week, preferences: preferences, baseline: baseline)
-        messages.append(contentsOf: engineResult.messages)
 
         return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
     }
@@ -332,65 +299,87 @@ extension CoachPlanResponse {
     }
 }
 
-private enum MovementPattern {
-    case pull
-    case push
-    case core
+enum CoachVerdictRefreshFlag {
+    static let needsRefreshKey = "coachVerdictNeedsRefresh"
+}
 
-    init?(focus: SessionFocus) {
-        switch focus {
-        case .pull:
-            self = .pull
-        case .push:
-            self = .push
-        case .core:
-            self = .core
-        case .mixed, .recovery:
-            return nil
+func makeCoachRequest(
+    profile: UserProfile,
+    modelID: String,
+    logs: [PerformanceLog],
+    sessions: [WorkoutSession],
+    weekStart: Date = rollingPlanStart()
+) -> CoachPlanRequest {
+    let baseline = Baseline(
+        pullUps: profile.baselinePullUps,
+        pushUps: profile.baselinePushUps,
+        plankSeconds: profile.baselinePlankSeconds
+    )
+
+    return CoachPlanRequest(
+        model: CoachModelCatalog.normalized(modelID),
+        baseline: CoachBaseline(
+            pullUps: baseline.pullUps,
+            pushUps: baseline.pushUps,
+            plankSeconds: baseline.plankSeconds
+        ),
+        goals: CoachGoals(
+            pullUps: profile.goalPullUps,
+            pushUps: profile.goalPushUps,
+            plankSeconds: profile.goalPlankSeconds
+        ),
+        profileNotes: profile.painNotes,
+        weekStart: weekStart,
+        weeklySessions: profile.weeklySessions,
+        equipment: profile.equipment.map(\.rawValue).sorted(),
+        targetDate: profile.targetDate,
+        trainingLogs: coachHistoryLogs(from: logs).map {
+            CoachLog(
+                id: $0.id.uuidString,
+                sessionId: $0.sessionId.uuidString,
+                completedAt: $0.completedAt,
+                pullUps: $0.pullUps,
+                pushUps: $0.pushUps,
+                plankSeconds: $0.plankSeconds,
+                loggedPullUps: $0.loggedPullUps,
+                loggedPushUps: $0.loggedPushUps,
+                loggedPlankSeconds: $0.loggedPlankSeconds,
+                rpe: $0.rpe,
+                painLevel: $0.painLevel,
+                fatigueLevel: $0.fatigueLevel,
+                notes: $0.notes
+            )
+        },
+        plannedSessions: coachPlannedSessions(from: sessions).map {
+            CoachPlannedSession(
+                id: $0.id.uuidString,
+                scheduledDate: $0.scheduledDate,
+                title: $0.title,
+                focus: $0.focus.rawValue,
+                status: $0.status.rawValue
+            )
         }
-    }
+    )
 }
 
-private func movementPatterns(for exercise: ExerciseKind) -> Set<MovementPattern> {
-    switch exercise {
-    case .pullUp, .scapularPull, .deadHang:
-        return [.pull]
-    case .pushUp, .inclinePushUp, .pikePushUp:
-        return [.push]
-    case .plank, .hollowHold:
-        return [.core]
-    case .shoulderMobility:
-        return []
-    }
+func coachHistoryLogs(from logs: [PerformanceLog], now: Date = Date()) -> [PerformanceLog] {
+    let cutoff = Calendar.current.date(byAdding: .month, value: -3, to: now) ?? Date.distantPast
+    return logs
+        .filter { $0.completedAt >= cutoff }
+        .sorted { $0.completedAt < $1.completedAt }
 }
 
-private func loggingField(for exercise: ExerciseKind) -> String? {
-    switch exercise {
-    case .pullUp:
-        return "pullUps"
-    case .pushUp:
-        return "pushUps"
-    case .plank:
-        return "plankSeconds"
-    default:
-        return nil
-    }
-}
-
-private func isBalancedEnough(_ patterns: Set<MovementPattern>, hasPullUpBar: Bool) -> Bool {
-    if hasPullUpBar {
-        return patterns.contains(.pull) && patterns.contains(.push) && patterns.contains(.core)
-    }
-    return patterns.contains(.push) && patterns.contains(.core)
-}
-
-private func isHardIntensity(_ intensity: String) -> Bool {
-    let lowercased = intensity.lowercased()
-    return lowercased.contains("hard") || lowercased.contains("max") || lowercased.contains("failure")
+func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -> [WorkoutSession] {
+    let start = Calendar.current.date(byAdding: .month, value: -2, to: now) ?? Date.distantPast
+    let end = Calendar.current.date(byAdding: .month, value: 1, to: now) ?? Date.distantFuture
+    return sessions
+        .filter { $0.scheduledDate >= start && $0.scheduledDate <= end }
+        .sorted { $0.scheduledDate < $1.scheduledDate }
 }
 
 struct LocalCoachClient {
     static let defaultEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
+    private static let hostedProxyHost = "lockin.elevenfactor.com"
 
     var endpoint: URL
     var session: URLSession = .shared
@@ -430,6 +419,56 @@ struct LocalCoachClient {
         return plan
     }
 
+    func generateVerdict(request: CoachPlanRequest) async throws -> CoachVerdictResponse {
+        guard let verdictEndpoint = Self.verdictEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: verdictEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 90
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(verdictEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(verdictEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(CoachVerdictResponse.self, from: data)
+    }
+
+    func fetchProxyHealth() async throws -> CoachProxyHealthResponse {
+        guard let healthEndpoint = Self.healthEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        let urlRequest = URLRequest(url: healthEndpoint)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(healthEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(healthEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(CoachProxyHealthResponse.self, from: data)
+    }
+
     func fetchAvailableModels() async throws -> CoachModelsResponse {
         guard let modelEndpoint = Self.modelEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
         let urlRequest = URLRequest(url: modelEndpoint)
@@ -460,10 +499,27 @@ struct LocalCoachClient {
             rawValue = "https://\(rawValue)"
         }
         guard var components = URLComponents(string: rawValue) else { return nil }
-        guard let host = components.host?.lowercased(), !host.isLoopbackProxyHost else { return nil }
+        guard components.scheme?.lowercased() == "https" else { return nil }
+        guard components.host?.lowercased() == hostedProxyHost else { return nil }
+        components.scheme = "https"
+        components.host = hostedProxyHost
         if components.path.isEmpty || components.path == "/" {
             components.path = "/generate-week-plan"
         }
+        return components.url
+    }
+
+    private static func verdictEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/coach-verdict"
+        components.query = nil
+        return components.url
+    }
+
+    private static func healthEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/health"
+        components.query = nil
         return components.url
     }
 
@@ -501,12 +557,6 @@ struct LocalCoachClient {
         let rawMessage = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return rawMessage?.isEmpty == false ? rawMessage : nil
-    }
-}
-
-private extension String {
-    var isLoopbackProxyHost: Bool {
-        self == "localhost" || self == "127.0.0.1" || self == "::1" || self == "0.0.0.0"
     }
 }
 

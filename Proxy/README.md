@@ -10,7 +10,7 @@ npm run dev
 
 Put the real `OPENAI_API_KEY` in `.env`. Keep `.env` local or on your server only; commit `.env.example`, not `.env`.
 
-The app calls `POST https://lockin.elevenfactor.com/generate-week-plan` with local training data and the selected model ID. The proxy loads `src/coach/skills/fitness-coach-planner`, builds a deterministic coaching context, calls OpenAI with the skill instructions and references, and validates the structured JSON before the app accepts it.
+The app calls `POST https://lockin.elevenfactor.com/generate-week-plan` with local training data and the selected model ID. The proxy loads `src/coach/skills/fitness-coach-planner`, builds a deterministic coaching context, calls OpenAI with the skill instructions and references, and runs technical validation on the structured JSON before the app accepts it.
 
 Check `GET https://lockin.elevenfactor.com/health` to confirm the proxy is running and has an API key. The app's AI Coach context tab stores the selected model ID and can refresh available text model IDs through `GET https://lockin.elevenfactor.com/models`.
 

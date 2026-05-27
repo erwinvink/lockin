@@ -28,6 +28,6 @@ The iOS app never stores an OpenAI API key. It calls the hosted coach proxy:
 https://lockin.elevenfactor.com/generate-week-plan
 ```
 
-The AI Coach context tab stores the selected model ID and loads available text model IDs from the proxy into a picker. The proxy loads the `fitness-coach-planner` skill bundle, summarizes recent and monthly training history, asks OpenAI for schema-valid JSON, and rejects unsafe plans before the app accepts them.
+The AI Coach context tab stores the selected model ID and loads available text model IDs from the proxy into a picker. The proxy loads the `fitness-coach-planner` skill bundle, summarizes recent and monthly training history, asks OpenAI for schema-valid JSON, and rejects technically invalid output before the app accepts it.
 
 Put the real OpenAI API key in the server environment, for example Coolify's environment variables. Do not put the key in the iOS app or commit it to the repo.

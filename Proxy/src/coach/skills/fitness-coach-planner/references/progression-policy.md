@@ -31,6 +31,7 @@ Normal training weeks should be balanced enough to train the actual goal system,
 Use `last5Logs` for immediate readiness.
 Use `lastFullMonth` and `previousFullMonth` for trend.
 Use `currentPartialMonth` only as an in-progress signal.
+Use profile notes and recent workout notes as safety context, especially when they mention pain, injury, form breakdown, soreness, equipment limits, or unusual life stress. Do not diagnose; adjust the plan conservatively and explain the adjustment in safety notes.
 
 States:
 

@@ -5,8 +5,11 @@ struct LogWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query private var ranks: [RankState]
+    @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var previousLogs: [PerformanceLog]
+    @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
+    @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
 
     var session: WorkoutSession
     var profile: UserProfile
@@ -154,8 +157,39 @@ struct LogWorkoutView: View {
             modelContext.insert(CoachDecision(planId: coachPlan.id, rationale: outcome.reason, safetyFlags: ["auto-deload"]))
         }
 
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            queueCoachVerdictRefresh(sourceLogID: log.id, logsIncludingSavedLog: previousLogs + [log])
+        } catch {
+            // Keep the current UX quiet; failed saves leave the sheet without starting a coach refresh.
+        }
         dismiss()
+    }
+
+    private func queueCoachVerdictRefresh(sourceLogID: UUID, logsIncludingSavedLog: [PerformanceLog]) {
+        UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: selectedModelID,
+            logs: logsIncludingSavedLog,
+            sessions: sessions,
+            weekStart: rollingPlanStart()
+        )
+
+        Task {
+            await refreshCoachVerdict(request: request, sourceLogID: sourceLogID)
+        }
+    }
+
+    private func refreshCoachVerdict(request: CoachPlanRequest, sourceLogID: UUID) async {
+        do {
+            let response = try await LocalCoachClient(endpointString: endpoint).generateVerdict(request: request)
+            modelContext.insert(CoachVerdict(response: response, sourceLogId: sourceLogID))
+            try modelContext.save()
+            UserDefaults.standard.set(false, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+        } catch {
+            UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+        }
     }
 }
 

@@ -16,6 +16,7 @@ export type CoachRequest = {
   model: string;
   baseline: { pullUps: number; pushUps: number; plankSeconds: number };
   goals: { pullUps: number; pushUps: number; plankSeconds: number };
+  profileNotes: string;
   weekStart: string;
   weeklySessions: number;
   equipment: string[];
@@ -37,6 +38,7 @@ export type TrainingLog = {
   rpe: number;
   painLevel: number;
   fatigueLevel: number;
+  notes: string;
 };
 
 export type PlannedSession = {
@@ -77,6 +79,7 @@ export type CoachContext = {
   profile: {
     baseline: CoachRequest["baseline"];
     goals: CoachRequest["goals"];
+    profileNotes: string;
     weekStart: string;
     weeklySessions: number;
     equipment: string[];
@@ -128,4 +131,14 @@ export type WeeklyPlan = {
       intensity: string;
     }>;
   }>;
+};
+
+export type CoachVerdict = {
+  headline: string;
+  summary: string;
+  latestChange: string;
+  recommendation: string;
+  shouldUpdatePlan: boolean;
+  contextState: ContextState;
+  safetyFlags: string[];
 };

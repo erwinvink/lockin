@@ -7,6 +7,7 @@ const baseContext: CoachContext = {
   profile: {
     baseline: { pullUps: 5, pushUps: 20, plankSeconds: 60 },
     goals: { pullUps: 50, pushUps: 100, plankSeconds: 300 },
+    profileNotes: "",
     weekStart: "2026-05-11T00:00:00Z",
     weeklySessions: 4,
     equipment: ["pullUpBar", "yogaMat"],
@@ -36,7 +37,7 @@ test("accepts a balanced four-session plan with mixed exposure", () => {
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
-test("rejects one-pattern pull-only weeks outside recovery", () => {
+test("accepts coach-policy decisions when the technical shape is valid", () => {
   const plan = balancedPlan();
   plan.sessions = plan.sessions.map((session, index) => ({
     ...session,
@@ -44,16 +45,14 @@ test("rejects one-pattern pull-only weeks outside recovery", () => {
     focus: "pull",
     loggingFieldsRequired: ["pullUps"],
     exercises: [
-      { exercise: "pullUp", sets: 3, reps: 3, seconds: 0, restSeconds: 120, intensity: "Moderate" },
+      { exercise: "pullUp", sets: 12, reps: 25, seconds: 0, restSeconds: 120, intensity: "Max" },
       { exercise: "deadHang", sets: 2, reps: 0, seconds: 20, restSeconds: 60, intensity: "Support" }
     ]
   }));
 
   const result = validateWeeklyPlan(plan, baseContext);
 
-  assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("push exposure")));
-  assert.ok(result.messages.some((message) => message.includes("core exposure")));
+  assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
 test("rejects invalid or unordered day offsets", () => {
@@ -64,6 +63,17 @@ test("rejects invalid or unordered day offsets", () => {
 
   assert.equal(result.accepted, false);
   assert.ok(result.messages.some((message) => message.includes("strictly later")));
+});
+
+test("rejects non-renderable exercise values", () => {
+  const plan = balancedPlan();
+  plan.sessions[0].exercises[0] = { ...plan.sessions[0].exercises[0], sets: 0, reps: -1 };
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("set count")));
+  assert.ok(result.messages.some((message) => message.includes("invalid reps")));
 });
 
 function balancedPlan(): WeeklyPlan {

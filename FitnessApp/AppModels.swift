@@ -392,6 +392,65 @@ final class CoachDecision {
     }
 }
 
+@Model
+final class CoachVerdict {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var sourceLogIdRaw: String = ""
+    var headline: String = ""
+    var summary: String = ""
+    var latestChange: String = ""
+    var recommendation: String = ""
+    var shouldUpdatePlan: Bool = false
+    var contextState: String = ""
+    var safetyFlagsRaw: String = ""
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = Date(),
+        sourceLogId: UUID?,
+        headline: String,
+        summary: String,
+        latestChange: String,
+        recommendation: String,
+        shouldUpdatePlan: Bool,
+        contextState: String,
+        safetyFlags: [String]
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.sourceLogIdRaw = sourceLogId?.uuidString ?? ""
+        self.headline = headline
+        self.summary = summary
+        self.latestChange = latestChange
+        self.recommendation = recommendation
+        self.shouldUpdatePlan = shouldUpdatePlan
+        self.contextState = contextState
+        self.safetyFlagsRaw = safetyFlags.joined(separator: "|")
+    }
+
+    convenience init(response: CoachVerdictResponse, sourceLogId: UUID?) {
+        self.init(
+            sourceLogId: sourceLogId,
+            headline: response.headline,
+            summary: response.summary,
+            latestChange: response.latestChange,
+            recommendation: response.recommendation,
+            shouldUpdatePlan: response.shouldUpdatePlan,
+            contextState: response.contextState,
+            safetyFlags: response.safetyFlags
+        )
+    }
+
+    var sourceLogId: UUID? {
+        UUID(uuidString: sourceLogIdRaw)
+    }
+
+    var safetyFlags: [String] {
+        safetyFlagsRaw.split(separator: "|").map(String.init)
+    }
+}
+
 struct RealWorldBenchmark: Identifiable {
     let id = UUID()
     let title: String

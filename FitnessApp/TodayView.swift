@@ -149,7 +149,8 @@ struct WorkoutPrescriptionCard: View {
                         item: item,
                         block: blocks.first(where: { $0.id == item.blockId }),
                         isComplete: completedPrescriptionIds.contains(item.id),
-                        onToggle: { toggle(item) }
+                        onToggle: { toggle(item) },
+                        onComplete: { complete(item) }
                     )
                     if index < prescriptions.count - 1 {
                         Divider()
@@ -178,6 +179,10 @@ struct WorkoutPrescriptionCard: View {
             completedPrescriptionIds.insert(item.id)
         }
     }
+
+    private func complete(_ item: SetPrescription) {
+        completedPrescriptionIds.insert(item.id)
+    }
 }
 
 private struct CompactPrescriptionRow: View {
@@ -185,20 +190,32 @@ private struct CompactPrescriptionRow: View {
     var block: WorkoutBlock?
     var isComplete: Bool
     var onToggle: () -> Void
+    var onComplete: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(item.exercise.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(AppTheme.text)
-                .lineLimit(1)
-            Spacer()
-            Text(prescriptionText(item))
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
-                .foregroundStyle(AppTheme.text)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            WorkoutInfoButton(prescription: item, block: block)
+        HStack(alignment: .center, spacing: 8) {
+            WorkoutInfoPopover(prescription: item, block: block, onDone: onComplete) {
+                HStack(alignment: .center, spacing: 12) {
+                    Text(item.exercise.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(prescriptionText(item))
+                        .font(.system(.subheadline, design: .rounded, weight: .bold))
+                        .foregroundStyle(AppTheme.text)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(AppTheme.muted.opacity(0.72))
+                }
+                .padding(.leading, 10)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .frame(maxWidth: .infinity)
+
             Button(action: onToggle) {
                 Image(systemName: isComplete ? "checkmark.circle.fill" : "circle")
                     .font(.title3.weight(.bold))
@@ -209,8 +226,7 @@ private struct CompactPrescriptionRow: View {
             .accessibilityLabel(isComplete ? "\(item.exercise.title) done" : "Mark \(item.exercise.title) done")
             .accessibilityIdentifier(isComplete ? "exercise-checkbox-checked" : "exercise-checkbox-unchecked")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.trailing, 10)
     }
 }
 

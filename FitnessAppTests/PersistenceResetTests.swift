@@ -47,6 +47,16 @@ final class PersistenceResetTests: XCTestCase {
         let rank = RankState(xp: 100)
         let plan = CoachPlan(weekStart: Date(), summary: "Temporary", source: .rules, validationStatus: .accepted)
         let decision = CoachDecision(planId: plan.id, rationale: "Temporary", safetyFlags: ["temporary"])
+        let verdict = CoachVerdict(
+            sourceLogId: log.id,
+            headline: "Temporary",
+            summary: "Temporary",
+            latestChange: "Temporary",
+            recommendation: "Temporary",
+            shouldUpdatePlan: false,
+            contextState: "building",
+            safetyFlags: ["temporary"]
+        )
 
         modelContext.insert(profile)
         modelContext.insert(session)
@@ -56,6 +66,7 @@ final class PersistenceResetTests: XCTestCase {
         modelContext.insert(rank)
         modelContext.insert(plan)
         modelContext.insert(decision)
+        modelContext.insert(verdict)
         try modelContext.save()
 
         try wipeAllData(in: modelContext)
@@ -69,6 +80,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RankState>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachPlan>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachDecision>()).count, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachVerdict>()).count, 0)
     }
 
     func testPersistAIPlanReplacesOnlyFuturePlannedSessions() throws {

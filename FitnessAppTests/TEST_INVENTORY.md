@@ -52,13 +52,16 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testCoachModelCatalogFallsBackForEmptySelection`
   - Verifies empty model settings fall back to the app default model ID.
 
-- `testRejectsAIPlanAboveStrictProgressionCaps`
-  - Verifies unsafe AI-generated pull-up prescriptions are rejected.
-  - Confirms validation returns actionable messages.
+- `testAcceptsAIPlanAboveFormerProgressionCapsWhenTechnicallyValid`
+  - Verifies former local progression caps no longer veto skill-owned coaching policy.
+  - Confirms technically valid AI output is accepted.
 
-- `testRejectsAIPlanWithoutWeeklyMovementBalance`
-  - Verifies AI plans without push/core balance are rejected.
-  - Confirms weekly movement coverage is enforced.
+- `testAcceptsAIPlanWithoutLocalMovementBalancePolicy`
+  - Verifies local validation no longer enforces movement-balance policy.
+  - Confirms coaching policy remains skill-owned.
+
+- `testRejectsAIPlanWithInvalidTechnicalShape`
+  - Verifies malformed schedules, logging fields, and exercise values are rejected.
 
 - `testAcceptedAIPlanConvertsToVisibleWeeklyPlan`
   - Verifies a balanced AI plan is accepted.
@@ -143,7 +146,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - Coach
   - Covered: generator surface, Context model settings, Rules.
-  - Covered in unit tests: unsafe AI plan rejection and accepted AI conversion.
+  - Covered in unit tests: technical AI output validation and accepted AI conversion.
   - Still useful: UI-level proxy unavailable and missing API key messages.
 
 - Log/Calendar

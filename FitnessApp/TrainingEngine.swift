@@ -161,39 +161,6 @@ struct TrainingEngine {
         CalisthenicsRank.allCases.last(where: { xp >= $0.minimumXP }) ?? .recruit
     }
 
-    func validate(plan: WeeklyPlan, preferences: TrainingPreferences, baseline: Baseline) -> PlanValidationResult {
-        var messages: [String] = []
-
-        if plan.sessions.count > max(2, preferences.weeklySessions + 1) {
-            messages.append("Too many sessions for the configured week.")
-        }
-
-        let maxPullSet = max(1, Int(Double(max(baseline.pullUps, 1)) * 0.85))
-        let maxPushSet = max(2, Int(Double(max(baseline.pushUps, 1)) * 0.75))
-        let maxPlankHold = max(15, Int(Double(max(baseline.plankSeconds, 1)) * 0.80))
-
-        for session in plan.sessions {
-            for block in session.blocks {
-                for set in block.sets {
-                    switch set.exercise {
-                    case .pullUp where set.reps > maxPullSet:
-                        messages.append("Pull-up set exceeds safe strict-form cap.")
-                    case .pushUp where set.reps > maxPushSet:
-                        messages.append("Push-up set exceeds safe strict-form cap.")
-                    case .plank where set.seconds > maxPlankHold:
-                        messages.append("Plank hold exceeds safe strict-form cap.")
-                    case let exercise where [.pullUp, .scapularPull, .deadHang].contains(exercise) && !preferences.equipment.contains(.pullUpBar):
-                        messages.append("Pull-focused work requires a pull-up bar.")
-                    default:
-                        break
-                    }
-                }
-            }
-        }
-
-        return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
-    }
-
     private func readinessMultiplier(from baseline: Baseline, goals: GoalTargets, targetDate: Date, weekIndex: Int) -> Double {
         let weeksRemaining = max(1.0, targetDate.timeIntervalSince(Date()) / (7 * 24 * 60 * 60))
         let pullGap = Double(max(goals.pullUps - baseline.pullUps, 1))

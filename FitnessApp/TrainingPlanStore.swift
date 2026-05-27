@@ -182,6 +182,7 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
 }
 
 func wipeAllData(in modelContext: ModelContext) throws {
+    try deleteAll(CoachVerdict.self, in: modelContext)
     try deleteAll(CoachDecision.self, in: modelContext)
     try deleteAll(CoachPlan.self, in: modelContext)
     try deleteAll(PerformanceLog.self, in: modelContext)
@@ -219,10 +220,6 @@ func prescriptionText(_ item: SetPrescription) -> String {
     return "\(item.sets) x \(item.targetReps)"
 }
 
-func workoutInstruction(_ item: SetPrescription) -> String {
-    "Do \(workoutTargetText(item)). Rest \(durationText(seconds: item.restSeconds)) after each set. Keep the effort at \(item.intensity.lowercased())."
-}
-
 func workoutTargetText(_ item: SetPrescription) -> String {
     if item.targetSeconds > 0 {
         return "\(item.sets) sets of \(durationText(seconds: item.targetSeconds)) each"
@@ -248,38 +245,51 @@ func format(seconds: Int) -> String {
     return "\(minutes):" + String(format: "%02d", seconds)
 }
 
-func exerciseCue(_ exercise: ExerciseKind) -> String {
+func exerciseMovementDescription(_ exercise: ExerciseKind) -> String {
     switch exercise {
     case .pullUp:
-        "Start from a dead hang, pull until your chin clearly passes the bar, then lower under control to straight arms. No kipping or half reps."
+        "A vertical pull on a bar: start hanging with straight arms, pull until your chin clears the bar, then lower back to straight arms."
     case .pushUp:
-        "Keep one locked body line, lower to full depth, and press to full lockout. Stop the set when hips sag or range shortens."
+        "A floor press: keep your body in one straight line, lower your chest toward the floor, then press back to locked arms."
     case .plank:
-        "Hold ribs down, glutes tight, and shoulders stacked. End the set when hips sag, form shakes apart, or you have to hold your breath."
+        "A timed front hold: brace your abs and glutes, keep ribs down, and hold a straight line from shoulders to heels."
     case .scapularPull:
-        "Hang with straight arms, pull the shoulder blades down and back without bending the elbows, pause, then release under control."
+        "A small pull from a dead hang: keep elbows straight, pull the shoulder blades down and back, pause, then release."
     case .hollowHold:
-        "Press the low back into the floor and keep ribs down. Extend arms and legs only as far as you can control."
+        "A floor core hold: lie on your back, press your low back into the floor, lift shoulders and legs, and hold the hollow shape."
     case .inclinePushUp:
-        "Place hands on the raised surface, keep a straight body line, touch chest to the surface, and finish each rep at lockout."
+        "A push-up with hands on a raised surface: lower your chest to the surface, then press back up with a straight body line."
     case .pikePushUp:
-        "Keep hips high, send the head between the hands, and press through the shoulders without collapsing the neck."
+        "A shoulder-focused push-up: keep hips high, lower your head between your hands, then press back up without losing the pike shape."
     case .deadHang:
-        "Hang with straight arms and active shoulders. Stop before grip slips or shoulder pain appears."
+        "A timed hang from a bar: grip the bar, keep arms straight, keep shoulders active, and hold without swinging."
     case .shoulderMobility:
-        "Move slowly through a comfortable range. This is preparation work, not a max-effort drill."
+        "Slow arm circles: raise both arms forward to overhead, sweep them out and down, then reverse the direction. Stay pain-free."
     }
 }
 
-func workoutLoggingNote(_ exercise: ExerciseKind) -> String {
-    switch exercise {
+func exerciseWorkoutContext(_ exercise: ExerciseKind, block: WorkoutBlock?) -> String {
+    let context = switch exercise {
     case .pullUp:
-        "Log pull-ups after this session because this workout trains the exact goal movement."
+        "This is goal work for your pull-up number. Keep every rep strict enough to count."
     case .pushUp:
-        "Log push-ups after this session because this workout trains the exact goal movement."
+        "This is goal work for your push-up number. Stop before speed or depth turns sloppy."
     case .plank:
-        "Log plank time after this session because this workout trains the exact goal hold."
-    default:
-        "This is support work. Do it as prescribed, but it does not replace a goal max test."
+        "This is goal work for your plank time. Quality of the hold matters more than surviving ugly seconds."
+    case .scapularPull:
+        "This builds active shoulder position for stronger pull-up work."
+    case .hollowHold:
+        "This supports plank control and the body line you need in pull-ups and push-ups."
+    case .inclinePushUp:
+        "This builds push-up volume with less load than floor reps."
+    case .pikePushUp:
+        "This adds shoulder pressing strength to support harder push sessions."
+    case .deadHang:
+        "This builds grip and shoulder tolerance for pull-up work."
+    case .shoulderMobility:
+        "This prepares or restores your shoulders so the strength work stays clean."
     }
+
+    guard let block else { return context }
+    return "\(context) It sits in the \(block.name) block."
 }

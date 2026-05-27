@@ -1,6 +1,6 @@
 ---
 name: fitness-coach-planner
-description: Use when generating, reviewing, or repairing weekly strict calisthenics training plans from baseline measurements, goals, equipment, target date, sessions per week, planned sessions, and training logs. Always build deterministic context, use bundled references, return schema-valid JSON, and validate safety before accepting a plan.
+description: Use when generating, reviewing, or repairing weekly strict calisthenics training plans from baseline measurements, goals, equipment, target date, sessions per week, planned sessions, and training logs. Always build deterministic context, use bundled references, return schema-valid JSON, and pass technical output validation before accepting a plan.
 ---
 
 # Fitness Coach Planner
@@ -15,17 +15,18 @@ This skill is a planning pipeline, not a motivational chat prompt:
 2. Compare immediate readiness with completed monthly history.
 3. Use progression rules, exercise references, and benchmark anchors.
 4. Produce structured JSON.
-5. Validate the plan before accepting it.
+5. Validate the output shape before accepting it.
 
 ## Required Inputs
 
 - Profile baseline: pull-ups, push-ups, plank seconds.
 - Goal targets: pull-ups, push-ups, plank seconds.
+- Profile pain, injury, or limitation notes.
 - Week start date.
 - Target date.
 - Available equipment.
 - Requested sessions per week.
-- Raw performance logs, including which exercises were actually logged.
+- Raw performance logs, including which exercises were actually logged and the athlete's workout notes.
 - Planned or completed sessions when available.
 
 ## Context Requirements
@@ -41,6 +42,7 @@ Before planning, run `scripts/build-coach-context.ts` and use its output. The co
 - `adherence`: planned/completed/missed/deload counts when planned sessions are available.
 - `riskFlags`: pain, fatigue, missed-session, sudden-volume, or insufficient-history warnings.
 - `weekStart`: the Monday/Sunday app-provided start date for scheduling this plan.
+- `profileNotes` and recent log `notes`: human context for limitations, form issues, soreness, or unusual circumstances.
 
 Do not ask the model to infer these summaries from raw logs.
 
@@ -61,8 +63,8 @@ Do not ask the model to infer these summaries from raw logs.
 6. Include a short purpose for every session.
 7. Mark logging fields only for goal exercises actually trained or tested in the session.
 8. Return only JSON matching `weekly-plan.schema.json`.
-9. Run `scripts/validate-week-plan.ts`.
-10. If validation fails, repair once. If validation still fails, return an error to the app instead of accepting an unsafe plan.
+9. Run `scripts/validate-week-plan.ts` for technical output checks.
+10. If technical validation fails, repair once. If validation still fails, return an error to the app instead of accepting malformed output.
 
 ## Weekly Structure Policy
 
@@ -89,6 +91,7 @@ For `recovery_needed`:
 - Never treat an unlogged exercise as zero performance.
 - Never prescribe catch-up volume after a missed session.
 - Never increase stress when recent pain or fatigue requires deload.
+- Never ignore profile or recent workout notes that mention pain, injury, form breakdown, or equipment limitations.
 - Never prescribe pull-up-bar exercises when no pull-up bar is available.
 - Never label a session `mixed` unless it actually combines the required movement patterns.
 - Avoid max testing during recovery or deload states.
