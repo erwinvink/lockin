@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct WorkoutInfoPopover<Label: View>: View {
     var prescription: SetPrescription
@@ -41,6 +42,7 @@ struct WorkoutInfoContent: View {
     var prescription: SetPrescription
     var block: WorkoutBlock?
     var onDone: () -> Void = {}
+    @State private var previousIdleTimerDisabled: Bool?
 
     var body: some View {
         ScrollView {
@@ -66,6 +68,20 @@ struct WorkoutInfoContent: View {
             .frame(maxWidth: 360, alignment: .leading)
         }
         .background(AppTheme.background)
+        .onAppear(perform: disableIdleTimer)
+        .onDisappear(perform: restoreIdleTimer)
+    }
+
+    private func disableIdleTimer() {
+        guard previousIdleTimerDisabled == nil else { return }
+        previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    private func restoreIdleTimer() {
+        guard let previousIdleTimerDisabled else { return }
+        UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        self.previousIdleTimerDisabled = nil
     }
 }
 
@@ -109,6 +125,7 @@ private struct WorkoutTimerCard: View {
     @State private var remainingSeconds = 0
     @State private var isRunning = false
     @State private var isFinished = false
+    @State private var hasStartedSequence = false
 
     private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -148,24 +165,34 @@ private struct WorkoutTimerCard: View {
     }
 
     private var phaseControls: some View {
-        HStack(alignment: .center, spacing: 10) {
-            PhaseControlButton(
-                systemImage: "backward.end.fill",
-                accessibilityLabel: "Previous phase",
-                isEnabled: canGoToPreviousPhase,
-                action: goToPreviousPhase
-            )
+        VStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                PhaseControlButton(
+                    systemImage: "backward.end.fill",
+                    accessibilityLabel: "Previous phase",
+                    isEnabled: canGoToPreviousPhase,
+                    action: goToPreviousPhase
+                )
 
-            phaseValueLabel
-                .accessibilityLabel(accessibilityTimerLabel)
-                .frame(maxWidth: .infinity, alignment: .center)
+                phaseValueLabel
+                    .accessibilityLabel(accessibilityTimerLabel)
+                    .frame(maxWidth: .infinity, alignment: .center)
 
-            PhaseControlButton(
-                systemImage: isFinalPhase ? "checkmark.circle.fill" : "forward.end.fill",
-                accessibilityLabel: nextControlAccessibilityLabel,
-                isEnabled: true,
-                action: goToNextPhase
-            )
+                PhaseControlButton(
+                    systemImage: isFinalPhase ? "checkmark.circle.fill" : "forward.end.fill",
+                    accessibilityLabel: nextControlAccessibilityLabel,
+                    isEnabled: true,
+                    action: goToNextPhase
+                )
+            }
+
+            if canStartSequence {
+                TimerPlaybackButton(
+                    title: "Start",
+                    systemImage: "play.fill",
+                    action: startSequence
+                )
+            }
         }
     }
 
@@ -229,6 +256,10 @@ private struct WorkoutTimerCard: View {
         isFinished || (!phases.isEmpty && phaseIndex == phases.count - 1)
     }
 
+    private var canStartSequence: Bool {
+        phaseIndex == 0 && currentPhase?.isTimed == true && !hasStartedSequence && !isFinished
+    }
+
     private var nextControlAccessibilityLabel: String {
         if isFinalPhase {
             return "Finish exercise"
@@ -252,6 +283,7 @@ private struct WorkoutTimerCard: View {
         if isFinalPhase {
             finishExercise()
         } else {
+            hasStartedSequence = true
             advanceTimer(autoStartTimedPhase: true)
         }
     }
@@ -264,21 +296,23 @@ private struct WorkoutTimerCard: View {
     private func resetTimer() {
         phaseIndex = 0
         isFinished = false
-        activateCurrentPhase(autoStartTimedPhase: true)
+        hasStartedSequence = false
+        activateCurrentPhase(autoStartTimedPhase: false)
     }
 
     private func selectPhase(at index: Int) {
         guard phases.indices.contains(index) else { return }
         phaseIndex = index
         isFinished = false
-        activateCurrentPhase(autoStartTimedPhase: true)
+        let shouldAutoStart = hasStartedSequence || index > 0
+        activateCurrentPhase(autoStartTimedPhase: shouldAutoStart)
     }
 
     private func tickTimer() {
         guard isRunning, let currentPhase, currentPhase.isTimed else { return }
 
         if remainingSeconds <= 1 {
-            advanceTimer()
+            advanceTimer(autoStartTimedPhase: true)
         } else {
             remainingSeconds -= 1
         }
@@ -306,9 +340,35 @@ private struct WorkoutTimerCard: View {
         isRunning = autoStartTimedPhase && currentPhase.isTimed
     }
 
+    private func startSequence() {
+        guard canStartSequence else { return }
+        hasStartedSequence = true
+        isRunning = true
+    }
+
     private func finishExercise() {
         onDone()
         dismiss()
+    }
+}
+
+private struct TimerPlaybackButton: View {
+    var title: String
+    var systemImage: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.text)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(AppTheme.surface))
+                .overlay(Capsule().stroke(AppTheme.divider, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 
@@ -472,7 +532,7 @@ func workoutTimerPhases(for prescription: SetPrescription) -> [WorkoutTimerPhase
             )
         )
 
-        if setNumber < prescription.sets, prescription.restSeconds > 0 {
+        if prescription.restSeconds > 0 {
             phases.append(
                 WorkoutTimerPhase(
                     kind: .rest,

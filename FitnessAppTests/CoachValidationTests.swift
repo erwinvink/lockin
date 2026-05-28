@@ -83,6 +83,52 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(CoachModelCatalog.normalized(" gpt-5.5 "), "gpt-5.5")
     }
 
+    func testCoachVerdictFreshnessUsesSourceLogIDWhenAvailable() {
+        let latestLog = PerformanceLog(
+            sessionId: UUID(),
+            completedAt: Date(timeIntervalSince1970: 200),
+            pullUps: 5,
+            pushUps: 20,
+            plankSeconds: 60,
+            rpe: 7,
+            painLevel: 0,
+            fatigueLevel: 5,
+            notes: "Latest session"
+        )
+        let currentVerdict = coachVerdictFixture(
+            sourceLogId: latestLog.id,
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let oldVerdict = coachVerdictFixture(
+            sourceLogId: UUID(),
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+
+        XCTAssertFalse(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: currentVerdict))
+        XCTAssertTrue(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: oldVerdict))
+        XCTAssertTrue(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: nil))
+        XCTAssertFalse(coachVerdictNeedsRefresh(latestLog: nil, latestVerdict: currentVerdict))
+    }
+
+    func testCoachVerdictFreshnessFallsBackToTimestampsForLegacyVerdicts() {
+        let latestLog = PerformanceLog(
+            sessionId: UUID(),
+            completedAt: Date(timeIntervalSince1970: 200),
+            pullUps: 5,
+            pushUps: 20,
+            plankSeconds: 60,
+            rpe: 7,
+            painLevel: 0,
+            fatigueLevel: 5,
+            notes: "Latest session"
+        )
+        let staleLegacyVerdict = coachVerdictFixture(sourceLogId: nil, createdAt: Date(timeIntervalSince1970: 100))
+        let currentLegacyVerdict = coachVerdictFixture(sourceLogId: nil, createdAt: Date(timeIntervalSince1970: 300))
+
+        XCTAssertTrue(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: staleLegacyVerdict))
+        XCTAssertFalse(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: currentLegacyVerdict))
+    }
+
     func testAcceptsAIPlanAboveFormerProgressionCapsWhenTechnicallyValid() {
         let response = CoachPlanResponse(
             summary: "Too hot",
@@ -214,6 +260,20 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(plan.weekStart, windowStart)
         XCTAssertTrue(plan.sessions.allSatisfy { $0.date >= windowStart && $0.date < windowEnd })
     }
+}
+
+private func coachVerdictFixture(sourceLogId: UUID?, createdAt: Date) -> CoachVerdict {
+    CoachVerdict(
+        createdAt: createdAt,
+        sourceLogId: sourceLogId,
+        headline: "Current",
+        summary: "Summary",
+        latestChange: "Latest change",
+        recommendation: "Recommendation",
+        shouldUpdatePlan: false,
+        contextState: "building",
+        safetyFlags: []
+    )
 }
 
 extension CoachPlanResponse {

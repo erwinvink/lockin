@@ -74,7 +74,7 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(duePlannedSession(from: [future, dueToday, overdue], now: now, calendar: calendar)?.id, dueToday.id)
     }
 
-    func testWorkoutTimerPhasesIncludeManualRepSetsAndTimedRest() {
+    func testWorkoutTimerPhasesIncludeManualRepSetsAndFinalRest() {
         let prescription = SetPrescription(
             sessionId: UUID(),
             blockId: UUID(),
@@ -88,10 +88,11 @@ final class TrainingEngineTests: XCTestCase {
 
         let phases = workoutTimerPhases(for: prescription)
 
-        XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work, .rest, .work])
-        XCTAssertEqual(phases.map(\.target), [.reps(20), .seconds(60), .reps(20), .seconds(60), .reps(20)])
+        XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work, .rest, .work, .rest])
+        XCTAssertEqual(phases.map(\.target), [.reps(20), .seconds(60), .reps(20), .seconds(60), .reps(20), .seconds(60)])
         XCTAssertTrue(phases[0].isManual)
         XCTAssertFalse(phases[1].isManual)
+        XCTAssertEqual(phases.last?.setNumber, 3)
     }
 
     func testWorkoutTimerPhasesKeepTimedWorkForHolds() {
@@ -108,8 +109,8 @@ final class TrainingEngineTests: XCTestCase {
 
         let phases = workoutTimerPhases(for: prescription)
 
-        XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work])
-        XCTAssertEqual(phases.map(\.target), [.seconds(45), .seconds(30), .seconds(45)])
+        XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work, .rest])
+        XCTAssertEqual(phases.map(\.target), [.seconds(45), .seconds(30), .seconds(45), .seconds(30)])
         XCTAssertTrue(phases.allSatisfy { !$0.isManual })
     }
 }

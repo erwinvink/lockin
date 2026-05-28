@@ -43,9 +43,7 @@ struct CoachView: View {
     }
 
     private var latestVerdictIsStale: Bool {
-        guard let latestLog else { return false }
-        guard let latestVerdict else { return true }
-        return latestLog.completedAt > latestVerdict.createdAt
+        coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: latestVerdict)
     }
 
     var body: some View {
@@ -56,7 +54,6 @@ struct CoachView: View {
                     latestPlan: latestPlan,
                     profile: profile,
                     historyCount: historyLogs.count,
-                    latestLog: latestLog,
                     isRefreshing: isRefreshingVerdict,
                     needsRefresh: needsVerdictRefresh || latestVerdictIsStale,
                     status: verdictStatus,
@@ -209,7 +206,6 @@ private struct CoachVerdictCard: View {
     var latestPlan: CoachPlan?
     var profile: UserProfile
     var historyCount: Int
-    var latestLog: PerformanceLog?
     var isRefreshing: Bool
     var needsRefresh: Bool
     var status: String?
@@ -238,9 +234,9 @@ private struct CoachVerdictCard: View {
                 SwiftUI.ProgressView("Reading latest session")
                     .font(.caption)
                     .foregroundStyle(AppTheme.muted)
-            } else if needsRefresh || latestLog != nil {
+            } else if needsRefresh {
                 Button(action: onRefresh) {
-                    Label(needsRefresh ? "Refresh coach read" : "Refresh from latest session", systemImage: "arrow.clockwise")
+                    Label("Read new session", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SecondaryActionButtonStyle())
@@ -264,6 +260,9 @@ private struct CoachVerdictCard: View {
                 .foregroundStyle(AppTheme.text)
             CoachReadSection(title: "Latest change", bodyText: verdict.latestChange)
             CoachReadSection(title: "Recommendation", bodyText: verdict.recommendation)
+            if verdict.shouldUpdatePlan {
+                CoachReadSection(title: "Plan signal", bodyText: "Current read recommends adapting the plan. Generate an AI week when you want the next sessions updated.")
+            }
             if !verdict.safetyFlags.isEmpty {
                 CoachReadSection(title: "Watch", bodyText: verdict.safetyFlags.joined(separator: " "))
             }
@@ -305,8 +304,8 @@ private struct CoachVerdictCard: View {
 
     private var pillText: String {
         if isRefreshing { return "Reading" }
-        if needsRefresh { return "Needs read" }
-        if verdict?.shouldUpdatePlan == true { return "Update?" }
+        if needsRefresh { return "New data" }
+        if verdict?.shouldUpdatePlan == true { return "Plan update" }
         return historyCount == 0 ? "Starter" : "Current"
     }
 
@@ -317,9 +316,19 @@ private struct CoachVerdictCard: View {
 
     private var pillIcon: String {
         if isRefreshing { return "hourglass" }
-        if needsRefresh || verdict?.shouldUpdatePlan == true { return "arrow.triangle.2.circlepath" }
+        if needsRefresh { return "arrow.triangle.2.circlepath" }
+        if verdict?.shouldUpdatePlan == true { return "exclamationmark.triangle.fill" }
         return "checkmark.circle.fill"
     }
+}
+
+func coachVerdictNeedsRefresh(latestLog: PerformanceLog?, latestVerdict: CoachVerdict?) -> Bool {
+    guard let latestLog else { return false }
+    guard let latestVerdict else { return true }
+    if let sourceLogId = latestVerdict.sourceLogId {
+        return sourceLogId != latestLog.id
+    }
+    return latestLog.completedAt > latestVerdict.createdAt
 }
 
 private struct CoachReadSection: View {
