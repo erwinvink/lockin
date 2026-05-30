@@ -308,6 +308,8 @@ func makeCoachRequest(
     modelID: String,
     logs: [PerformanceLog],
     sessions: [WorkoutSession],
+    runningLogs: [RunningLog] = [],
+    runningSessions: [WorkoutSession] = [],
     weekStart: Date = rollingPlanStart()
 ) -> CoachPlanRequest {
     let baseline = Baseline(
@@ -328,7 +330,7 @@ func makeCoachRequest(
             pushUps: profile.goalPushUps,
             plankSeconds: profile.goalPlankSeconds
         ),
-        profileNotes: profile.painNotes,
+        profileNotes: mergedProfileNotes(profile.painNotes, runningLogs: runningLogs, runningSessions: runningSessions),
         weekStart: weekStart,
         weeklySessions: profile.weeklySessions,
         equipment: profile.equipment.map(\.rawValue).sorted(),
@@ -350,7 +352,7 @@ func makeCoachRequest(
                 notes: $0.notes
             )
         },
-        plannedSessions: coachPlannedSessions(from: sessions).map {
+        plannedSessions: coachPlannedSessions(from: sessions, domain: .strength).map {
             CoachPlannedSession(
                 id: $0.id.uuidString,
                 scheduledDate: $0.scheduledDate,
@@ -362,6 +364,18 @@ func makeCoachRequest(
     )
 }
 
+private func mergedProfileNotes(
+    _ baseNotes: String,
+    runningLogs: [RunningLog],
+    runningSessions: [WorkoutSession]
+) -> String {
+    let runningSummary = runningContextSummary(from: runningLogs, sessions: runningSessions)
+    guard runningSummary != "No running data yet" else { return baseNotes }
+    let trimmed = baseNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+    let runNote = "Ultra running context for strength planning: \(runningSummary). Keep pull/push/core load compatible with run durability."
+    return trimmed.isEmpty ? runNote : "\(trimmed)\n\(runNote)"
+}
+
 func coachHistoryLogs(from logs: [PerformanceLog], now: Date = Date()) -> [PerformanceLog] {
     let cutoff = Calendar.current.date(byAdding: .month, value: -3, to: now) ?? Date.distantPast
     return logs
@@ -369,11 +383,15 @@ func coachHistoryLogs(from logs: [PerformanceLog], now: Date = Date()) -> [Perfo
         .sorted { $0.completedAt < $1.completedAt }
 }
 
-func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -> [WorkoutSession] {
+func coachPlannedSessions(
+    from sessions: [WorkoutSession],
+    domain: TrainingDomain? = nil,
+    now: Date = Date()
+) -> [WorkoutSession] {
     let start = Calendar.current.date(byAdding: .month, value: -2, to: now) ?? Date.distantPast
     let end = Calendar.current.date(byAdding: .month, value: 1, to: now) ?? Date.distantFuture
     return sessions
-        .filter { $0.scheduledDate >= start && $0.scheduledDate <= end }
+        .filter { $0.scheduledDate >= start && $0.scheduledDate <= end && (domain == nil || $0.domain == domain) }
         .sorted { $0.scheduledDate < $1.scheduledDate }
 }
 

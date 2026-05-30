@@ -6,15 +6,17 @@ struct TodayView: View {
     @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
+    @Query(sort: \RunningLog.completedAt, order: .reverse) private var runLogs: [RunningLog]
+    @Query private var runningWorkouts: [RunningWorkout]
     @Query private var ranks: [RankState]
 
     var profile: UserProfile
-    @State private var loggingSession: WorkoutSession?
+    @State private var loggingSheet: TrainingLogSheet?
     @State private var pendingLoggingSessionID: UUID?
     @State private var workoutCardResetID = UUID()
 
-    private var dueSession: WorkoutSession? {
-        duePlannedSession(from: sessions)
+    private var dueSessions: [WorkoutSession] {
+        duePlannedSessions(from: sessions)
     }
 
     private var futureSession: WorkoutSession? {
@@ -29,22 +31,41 @@ struct TodayView: View {
         logs.first
     }
 
+    private var latestRunLog: RunningLog? {
+        runLogs.first
+    }
+
     var body: some View {
         NavigationStack {
             ScreenBackground {
                 BrandHeader()
 
-                TodayHeroCard(rank: rank)
+                TodayStateCard(
+                    rank: rank,
+                    nextSession: dueSessions.first ?? futureSession,
+                    strengthLog: latestLog,
+                    runLog: latestRunLog
+                )
 
-                if let session = dueSession {
-                    WorkoutPrescriptionCard(
-                        session: session,
-                        prescriptions: prescriptionsForSession(session),
-                        blocks: blocksForSession(session),
-                        onComplete: { beginLogging(session) }
-                    )
-                    .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
-                    ReadinessSummary(log: latestLog)
+                if !dueSessions.isEmpty {
+                    ForEach(dueSessions) { session in
+                        if session.domain == .ultraRunning {
+                            RunPrescriptionCard(
+                                session: session,
+                                workout: runningWorkout(for: session),
+                                onComplete: { beginLogging(session) }
+                            )
+                            .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
+                        } else {
+                            WorkoutPrescriptionCard(
+                                session: session,
+                                prescriptions: prescriptionsForSession(session),
+                                blocks: blocksForSession(session),
+                                onComplete: { beginLogging(session) }
+                            )
+                            .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
+                        }
+                    }
                 } else if sessions.isEmpty {
                     EmptyPlanCard()
                 } else if let session = futureSession {
@@ -53,8 +74,13 @@ struct TodayView: View {
                     WeekCompleteCard()
                 }
             }
-            .sheet(item: $loggingSession, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { session in
-                LogWorkoutView(session: session, profile: profile)
+            .sheet(item: $loggingSheet, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { sheet in
+                switch sheet {
+                case .strength(let session):
+                    LogWorkoutView(session: session, profile: profile)
+                case .ultraRunning(let session, let workout):
+                    LogRunView(session: session, workout: workout)
+                }
             }
         }
     }
@@ -71,10 +97,19 @@ struct TodayView: View {
             .sorted { $0.orderIndex < $1.orderIndex }
     }
 
+    private func runningWorkout(for session: WorkoutSession) -> RunningWorkout? {
+        runningWorkouts.first { $0.sessionId == session.id }
+    }
+
     private func beginLogging(_ session: WorkoutSession) {
         guard session.status == .planned else { return }
+        if session.domain == .ultraRunning, runningWorkout(for: session) == nil { return }
         pendingLoggingSessionID = session.id
-        loggingSession = session
+        if session.domain == .ultraRunning, let workout = runningWorkout(for: session) {
+            loggingSheet = .ultraRunning(session, workout)
+        } else {
+            loggingSheet = .strength(session)
+        }
     }
 
     private func resetCheckedWorkoutIfLogWasCancelled() {
@@ -87,39 +122,165 @@ struct TodayView: View {
     }
 }
 
-private struct TodayHeroCard: View {
+private enum TrainingLogSheet: Identifiable {
+    case strength(WorkoutSession)
+    case ultraRunning(WorkoutSession, RunningWorkout)
+
+    var id: String {
+        switch self {
+        case .strength(let session):
+            "strength-\(session.id.uuidString)"
+        case .ultraRunning(let session, _):
+            "ultra-\(session.id.uuidString)"
+        }
+    }
+}
+
+private struct TodayStateCard: View {
     var rank: RankState
+    var nextSession: WorkoutSession?
+    var strengthLog: PerformanceLog?
+    var runLog: RunningLog?
+
+    private var state: TodayState {
+        if (strengthLog?.painLevel ?? 0) >= 4 || (runLog?.painLevel ?? 0) >= 4 || (strengthLog?.fatigueLevel ?? 0) >= 9 || (runLog?.fatigueLevel ?? 0) >= 9 || runLog?.hadGIIssues == true {
+            return .recovery
+        }
+        if (strengthLog?.rpe ?? 5) >= 8 || (runLog?.rpe ?? 5) >= 8 {
+            return .careful
+        }
+        return .green
+    }
 
     var body: some View {
-        HStack(spacing: 14) {
-            RankBadge(rank: rank.rank)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(rank.rank.title)
-                    .font(.system(.title3, design: .rounded, weight: .bold))
-                    .foregroundStyle(AppTheme.accent)
-                Text("Rank")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                RankBadge(rank: rank.rank)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Today state")
+                        .font(.system(.title3, design: .rounded, weight: .bold))
+                    Text(nextSession.map { "\($0.domain.title): \($0.title)" } ?? "No training due today")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(2)
+                }
+                Spacer()
+                StatusPill(text: state.title, color: state.color, systemImage: state.icon)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 8) {
-                Text("XP \(rank.xp)")
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+
+            HStack(spacing: 7) {
+                SignalChip(title: "Effort", value: effortValue, color: effortColor)
+                SignalChip(title: "Pain", value: painValue, color: painColor)
+                SignalChip(title: "Fatigue", value: fatigueValue, color: fatigueColor)
+                SignalChip(title: "Fuel", value: fuelValue, color: fuelColor)
+            }
+
+            HStack {
+                InfoLine(title: "Rank", value: "\(rank.rank.title) · XP \(rank.xp)")
                 Gauge(value: Double(rank.xp), in: 0...Double(nextRankTarget(for: rank))) {
                     EmptyView()
                 }
                 .tint(AppTheme.gold)
-                Text("\(rank.xp) / \(nextRankTarget(for: rank))")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
+                .frame(width: 92)
             }
-            .frame(width: 128)
         }
         .card()
     }
 
+    private var effortValue: String {
+        "S \(strengthLog?.rpe ?? 5) · R \(runLog?.rpe ?? 5)"
+    }
+
+    private var painValue: String {
+        "S \(strengthLog?.painLevel ?? 0) · R \(runLog?.painLevel ?? 0)"
+    }
+
+    private var fatigueValue: String {
+        "S \(strengthLog?.fatigueLevel ?? 5) · R \(runLog?.fatigueLevel ?? 5)"
+    }
+
+    private var fuelValue: String {
+        guard let runLog else { return "No run" }
+        if runLog.hadGIIssues { return "GI flag" }
+        return runLog.carbsPerHour > 0 ? "\(runLog.carbsPerHour)g/hr" : "Not logged"
+    }
+
+    private var effortColor: Color {
+        (strengthLog?.rpe ?? 5) >= 8 || (runLog?.rpe ?? 5) >= 8 ? AppTheme.warning : AppTheme.accent
+    }
+
+    private var painColor: Color {
+        (strengthLog?.painLevel ?? 0) >= 4 || (runLog?.painLevel ?? 0) >= 4 ? AppTheme.warning : AppTheme.accent
+    }
+
+    private var fatigueColor: Color {
+        (strengthLog?.fatigueLevel ?? 5) >= 9 || (runLog?.fatigueLevel ?? 5) >= 9 ? AppTheme.warning : AppTheme.gold
+    }
+
+    private var fuelColor: Color {
+        runLog?.hadGIIssues == true ? AppTheme.warning : AppTheme.gold
+    }
+
     private func nextRankTarget(for rankState: RankState) -> Int {
         CalisthenicsRank.allCases.first(where: { $0.minimumXP > rankState.xp })?.minimumXP ?? max(rankState.xp, CalisthenicsRank.apex.minimumXP)
+    }
+}
+
+private enum TodayState {
+    case green
+    case careful
+    case recovery
+
+    var title: String {
+        switch self {
+        case .green: "Green"
+        case .careful: "Careful"
+        case .recovery: "Recovery"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .green: AppTheme.accent
+        case .careful: AppTheme.gold
+        case .recovery: AppTheme.warning
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .green: "checkmark.circle.fill"
+        case .careful: "exclamationmark.circle.fill"
+        case .recovery: "heart.fill"
+        }
+    }
+}
+
+private struct SignalChip: View {
+    var title: String
+    var value: String
+    var color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(AppTheme.muted)
+            Text(value)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 8)
+        .background(AppTheme.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                .stroke(color.opacity(0.16), lineWidth: 1)
+        )
     }
 }
 
@@ -242,6 +403,7 @@ private struct UpcomingSessionCard: View {
                 StatusPill(text: "Scheduled", systemImage: "calendar")
             }
             InfoLine(title: "Next session", value: session.title)
+            InfoLine(title: "Coach", value: session.domain.title)
             InfoLine(title: "Date", value: session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
             Text("Future sessions stay in Log until their scheduled day.")
                 .font(.caption)
@@ -251,47 +413,72 @@ private struct UpcomingSessionCard: View {
     }
 }
 
-private struct ReadinessSummary: View {
-    var log: PerformanceLog?
+private struct RunPrescriptionCard: View {
+    var session: WorkoutSession
+    var workout: RunningWorkout?
+    var onComplete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Readiness")
-                .font(.headline)
-            HStack(spacing: 8) {
-                ReadinessTile(title: "RPE", value: "\(log?.rpe ?? 7)", status: rpeStatus, color: rpeColor)
-                ReadinessTile(title: "Pain", value: "\(log?.painLevel ?? 0)", status: painStatus, color: painColor)
-                ReadinessTile(title: "Fatigue", value: "\(log?.fatigueLevel ?? 5)", status: fatigueStatus, color: fatigueColor)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(session.title)
+                        .font(.system(.title3, design: .rounded, weight: .bold))
+                    Text(workout?.runType.title ?? session.focus.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.accent)
+                }
+                Spacer()
+                StatusPill(text: "Ultra", systemImage: "figure.run")
+            }
+
+            if let workout {
+                VStack(spacing: 8) {
+                    InfoLine(title: "Target", value: "\(distanceText(km: workout.targetDistanceKm)) · \(minutesText(workout.targetDurationMinutes))")
+                    InfoLine(title: "HR", value: "\(workout.targetHeartRateLow)-\(workout.targetHeartRateHigh) bpm")
+                    InfoLine(title: "Pace guide", value: paceText(secondsPerKm: workout.targetPaceSecondsPerKm))
+                    InfoLine(title: "Terrain", value: "\(workout.terrain.title) · \(workout.targetElevationMeters)m up")
+                    InfoLine(title: "Walk plan", value: shortWalkPlan(workout.runWalkStrategy))
+                }
+
+                Text(workout.purpose)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+
+                Text(workout.fuelingPlan)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.gold)
+
+                Button(action: onComplete) {
+                    Label("Log run", systemImage: "checkmark.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryActionButtonStyle())
+            } else {
+                Text("This ultra session is missing its run prescription. Regenerate the ultra week from Coach.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.warning)
             }
         }
+        .card(padding: 14)
     }
+}
 
-    private var rpeStatus: String {
-        guard let rpe = log?.rpe else { return "Baseline" }
-        return rpe >= 8 ? "Hard" : "Moderate"
+private func shortWalkPlan(_ strategy: String) -> String {
+    let normalized = strategy.lowercased()
+    if normalized.contains("climb") {
+        return "Walk climbs early"
     }
-
-    private var painStatus: String {
-        guard let pain = log?.painLevel else { return "None" }
-        return pain >= 4 ? "Flag" : "None"
+    if normalized.contains("power") || normalized.contains("hike") {
+        return "Power-hike steep climbs"
     }
-
-    private var fatigueStatus: String {
-        guard let fatigue = log?.fatigueLevel else { return "Some" }
-        return fatigue >= 9 ? "Flag" : fatigue >= 6 ? "Some" : "Low"
+    if normalized.contains("run") && normalized.contains("steady") {
+        return "Run steady"
     }
-
-    private var rpeColor: Color {
-        (log?.rpe ?? 7) >= 9 ? AppTheme.warning : AppTheme.accent
+    if normalized.contains("run") && normalized.contains("easy") {
+        return "Run easy"
     }
-
-    private var painColor: Color {
-        (log?.painLevel ?? 0) >= 4 ? AppTheme.warning : AppTheme.accent
-    }
-
-    private var fatigueColor: Color {
-        (log?.fatigueLevel ?? 5) >= 9 ? AppTheme.warning : AppTheme.gold
-    }
+    return strategy
 }
 
 private struct EmptyPlanCard: View {

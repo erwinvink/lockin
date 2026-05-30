@@ -113,4 +113,70 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(phases.map(\.target), [.seconds(45), .seconds(30), .seconds(45), .seconds(30)])
         XCTAssertTrue(phases.allSatisfy { !$0.isManual })
     }
+
+    func testUltraRunningEngineBuildsConservativeWeekForStrugglingRunner() {
+        let profile = RunningTrainingProfile(
+            userProfileId: UUID(),
+            weeklyRunSessions: 4,
+            currentWeeklyDistanceKm: 25,
+            currentLongRunKm: 10,
+            easyPaceSecondsPerKm: 420,
+            easyHeartRate: 140,
+            thresholdHeartRate: 165,
+            ability: .struggling,
+            terrain: .mixed
+        )
+
+        let plan = UltraRunningEngine().generateWeek(
+            start: Date(timeIntervalSince1970: 0),
+            weekIndex: 1,
+            profile: profile,
+            recentRunLogs: []
+        )
+
+        XCTAssertEqual(plan.sessions.count, 4)
+        XCTAssertTrue(plan.sessions.contains { $0.runType == .long })
+        XCTAssertTrue(plan.sessions.contains { $0.runType == .hillHike })
+        XCTAssertTrue(plan.sessions.allSatisfy { $0.targetHeartRateHigh < profile.thresholdHeartRate })
+        XCTAssertLessThanOrEqual(plan.sessions.first(where: { $0.runType == .long })?.targetDistanceKm ?? 100, 10.6)
+        XCTAssertTrue(plan.summary.contains("easy volume"))
+    }
+
+    func testUltraRunningEngineDeloadsAfterRunPainOrGIFlag() {
+        let profile = RunningTrainingProfile(
+            userProfileId: UUID(),
+            weeklyRunSessions: 4,
+            currentWeeklyDistanceKm: 40,
+            currentLongRunKm: 18,
+            ability: .struggling
+        )
+        let flaggedLog = RunningLog(
+            sessionId: UUID(),
+            durationMinutes: 120,
+            distanceKm: 14,
+            elevationGainMeters: 100,
+            averageHeartRate: 148,
+            maxHeartRate: 172,
+            averagePaceSecondsPerKm: 510,
+            rpe: 8,
+            painLevel: 4,
+            fatigueLevel: 6,
+            carbsPerHour: 35,
+            fluidMlPerHour: 500,
+            sodiumMgPerHour: 400,
+            hadGIIssues: true,
+            notes: "Knee got ugly."
+        )
+
+        let plan = UltraRunningEngine().generateWeek(
+            start: Date(timeIntervalSince1970: 0),
+            weekIndex: 1,
+            profile: profile,
+            recentRunLogs: [flaggedLog]
+        )
+
+        XCTAssertEqual(plan.readiness, "Recovery needed")
+        XCTAssertTrue(plan.summary.contains("deload"))
+        XCTAssertLessThan(plan.sessions.map(\.targetDistanceKm).reduce(0, +), 40)
+    }
 }

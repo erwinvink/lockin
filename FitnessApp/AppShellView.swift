@@ -7,6 +7,8 @@ struct AppShellView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @Query private var ranks: [RankState]
+    @Query(sort: \RunningTrainingProfile.createdAt) private var runningProfiles: [RunningTrainingProfile]
+    @Query private var runningWorkouts: [RunningWorkout]
 
     var profile: UserProfile
 
@@ -28,6 +30,8 @@ struct AppShellView: View {
                 .tabItem { Label("Profile", systemImage: "person.crop.circle") }
         }
         .tint(AppTheme.accent)
+        .toolbarBackground(AppTheme.surface, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .onAppear(perform: refreshTrainingPlanState)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
@@ -37,7 +41,9 @@ struct AppShellView: View {
     }
 
     private func refreshTrainingPlanState() {
-        let retainedSessions = sessions.filter { $0.status != .planned || $0.summary.hasPrefix("AI:") }
+        _ = try? ensureRunningProfile(for: profile, from: runningProfiles, in: modelContext)
+        normalizeLegacyRunningData(runningProfiles: runningProfiles, runningWorkouts: runningWorkouts, in: modelContext)
+        let retainedSessions = sessions.filter { $0.status != .planned || $0.summary.hasPrefix("AI:") || $0.domain == .ultraRunning }
         _ = try? deleteNonAIPlannedSessions(from: sessions, in: modelContext)
         _ = try? markOverduePlannedSessionsMissed(
             from: retainedSessions,

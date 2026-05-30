@@ -1,29 +1,51 @@
 import SwiftData
 import SwiftUI
 
+private enum CoachTab: String, CaseIterable, Identifiable {
+    case strength
+    case ultra
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .strength: "Strength"
+        case .ultra: "Ultra"
+        }
+    }
+}
+
 struct CoachView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
+    @Query(sort: \RunningLog.completedAt, order: .reverse) private var runLogs: [RunningLog]
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
+    @Query(sort: \RunningTrainingProfile.createdAt) private var runningProfiles: [RunningTrainingProfile]
     @Query(sort: \CoachPlan.generatedAt, order: .reverse) private var plans: [CoachPlan]
     @Query(sort: \CoachVerdict.createdAt, order: .reverse) private var verdicts: [CoachVerdict]
     @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @AppStorage(CoachVerdictRefreshFlag.needsRefreshKey) private var needsVerdictRefresh = false
     @State private var generationStatus: String?
+    @State private var ultraGenerationStatus: String?
     @State private var verdictStatus: String?
     @State private var isGeneratingPlan = false
     @State private var isRefreshingVerdict = false
     @State private var isAdvancedExpanded = false
+    @State private var selectedCoach: CoachTab = .strength
 
     var profile: UserProfile
 
     private var latestPlan: CoachPlan? {
-        plans.first
+        plans.first { $0.domain == .strength }
+    }
+
+    private var latestUltraPlan: CoachPlan? {
+        plans.first { $0.domain == .ultraRunning }
     }
 
     private var latestVerdict: CoachVerdict? {
-        verdicts.first
+        verdicts.first { $0.domain == .strength }
     }
 
     private var latestLog: PerformanceLog? {
@@ -39,7 +61,15 @@ struct CoachView: View {
     }
 
     private var plannedContextSessions: [WorkoutSession] {
-        coachPlannedSessions(from: sessions)
+        coachPlannedSessions(from: sessions, domain: .strength)
+    }
+
+    private var plannedRunSessions: [WorkoutSession] {
+        coachPlannedSessions(from: sessions, domain: .ultraRunning)
+    }
+
+    private var runningProfile: RunningTrainingProfile {
+        displayRunningProfile(for: profile, from: runningProfiles)
     }
 
     private var latestVerdictIsStale: Bool {
@@ -48,48 +78,32 @@ struct CoachView: View {
 
     var body: some View {
         NavigationStack {
-            ScreenBackground(title: "AI Coach") {
-                CoachVerdictCard(
-                    verdict: latestVerdict,
-                    latestPlan: latestPlan,
-                    profile: profile,
-                    historyCount: historyLogs.count,
-                    isRefreshing: isRefreshingVerdict,
-                    needsRefresh: needsVerdictRefresh || latestVerdictIsStale,
-                    status: verdictStatus,
-                    onRefresh: refreshCoachVerdict
-                )
-
-                Button(action: generateAIWeek) {
-                    Label(isGeneratingPlan ? "Generating" : "Generate AI week", systemImage: "sparkles")
+            ScreenBackground(title: "Coach") {
+                Picker("Coach", selection: $selectedCoach) {
+                    ForEach(CoachTab.allCases) { tab in
+                        Text(tab.title).tag(tab)
+                    }
                 }
-                .buttonStyle(PrimaryActionButtonStyle())
-                .disabled(isGeneratingPlan)
-                .opacity(isGeneratingPlan ? 0.55 : 1)
+                .pickerStyle(.segmented)
 
-                if let generationStatus {
-                    Text(generationStatus)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.muted)
-                        .card()
+                SharedAthleteContextCard(
+                    strengthCount: plannedContextSessions.count,
+                    runContext: runningContextSummary(from: runLogs, sessions: plannedRunSessions),
+                    runningProfile: runningProfile
+                )
+
+                switch selectedCoach {
+                case .strength:
+                    strengthCoachContent
+                case .ultra:
+                    ultraCoachContent
                 }
-
-                CoachInputsCard(
-                    profile: profile,
-                    historyCount: historyLogs.count,
-                    plannedCount: plannedContextSessions.count
-                )
-
-                AdvancedCoachControls(
-                    endpoint: endpoint,
-                    selectedModelID: $selectedModelID,
-                    isExpanded: $isAdvancedExpanded
-                )
             }
             .navigationTitle("Coach")
             .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
+            _ = try? ensureRunningProfile(for: profile, from: runningProfiles, in: modelContext)
             enforceHostedEndpoint()
             refreshCoachVerdictIfNeeded()
         }
@@ -99,6 +113,60 @@ struct CoachView: View {
         .onChange(of: latestLogID) { _, _ in
             refreshCoachVerdictIfNeeded()
         }
+    }
+
+    private var strengthCoachContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            CoachVerdictCard(
+                verdict: latestVerdict,
+                latestPlan: latestPlan,
+                profile: profile,
+                historyCount: historyLogs.count,
+                isRefreshing: isRefreshingVerdict,
+                needsRefresh: needsVerdictRefresh || latestVerdictIsStale,
+                status: verdictStatus,
+                onRefresh: refreshCoachVerdict
+            )
+
+            Button(action: generateAIWeek) {
+                Label(isGeneratingPlan ? "Generating" : "Generate strength week", systemImage: "sparkles")
+            }
+            .buttonStyle(PrimaryActionButtonStyle())
+            .disabled(isGeneratingPlan)
+            .opacity(isGeneratingPlan ? 0.55 : 1)
+
+            if let generationStatus {
+                Text(generationStatus)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+                    .card()
+            }
+
+            CoachInputsCard(
+                profile: profile,
+                historyCount: historyLogs.count,
+                plannedCount: plannedContextSessions.count,
+                runContext: runningContextSummary(from: runLogs, sessions: plannedRunSessions)
+            )
+
+            AdvancedCoachControls(
+                endpoint: endpoint,
+                selectedModelID: $selectedModelID,
+                isExpanded: $isAdvancedExpanded
+            )
+        }
+    }
+
+    private var ultraCoachContent: some View {
+        UltraRunnerCoachCard(
+            runningProfile: runningProfile,
+            latestPlan: latestUltraPlan,
+            runLogCount: runLogs.count,
+            plannedRunCount: plannedRunSessions.count,
+            strengthLoadCount: plannedContextSessions.count,
+            status: ultraGenerationStatus,
+            onGenerate: generateUltraWeek
+        )
     }
 
     private func generateAIWeek() {
@@ -144,6 +212,8 @@ struct CoachView: View {
                 modelID: selectedModelID,
                 logs: logs,
                 sessions: sessions,
+                runningLogs: runLogs,
+                runningSessions: plannedRunSessions,
                 weekStart: rollingPlanStart()
             )
             let response = try await LocalCoachClient(endpointString: endpoint).generatePlan(
@@ -176,6 +246,8 @@ struct CoachView: View {
                 modelID: selectedModelID,
                 logs: logs,
                 sessions: sessions,
+                runningLogs: runLogs,
+                runningSessions: plannedRunSessions,
                 weekStart: rollingPlanStart()
             )
             let response = try await LocalCoachClient(endpointString: endpoint).generateVerdict(request: request)
@@ -186,6 +258,26 @@ struct CoachView: View {
         } catch {
             needsVerdictRefresh = true
             verdictStatus = coachReadErrorMessage(error)
+        }
+    }
+
+    private func generateUltraWeek() {
+        do {
+            let storedProfile = try ensureRunningProfile(for: profile, from: runningProfiles, in: modelContext)
+            let weekStart = rollingPlanStart()
+            let weekIndex = plans.filter { $0.domain == .ultraRunning }.count + 1
+            let plan = UltraRunningEngine().generateWeek(
+                start: weekStart,
+                weekIndex: weekIndex,
+                profile: storedProfile,
+                recentRunLogs: runLogs,
+                strengthSessions: sessions
+            )
+            try persist(ultraPlan: plan, in: modelContext, replacingFuturePlannedRuns: true)
+            try modelContext.save()
+            ultraGenerationStatus = "Saved \(plan.sessions.count) ultra sessions. \(plan.readiness): \(plan.summary)"
+        } catch {
+            ultraGenerationStatus = error.localizedDescription
         }
     }
 
@@ -351,6 +443,7 @@ private struct CoachInputsCard: View {
     var profile: UserProfile
     var historyCount: Int
     var plannedCount: Int
+    var runContext: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -361,12 +454,109 @@ private struct CoachInputsCard: View {
             InfoLine(title: "Week shape", value: "\(profile.weeklySessions) sessions per week until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
             InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
             InfoLine(title: "Log context", value: plannedCount == 0 ? "No sessions in Log yet" : "\(plannedCount) recent or upcoming sessions from Log")
+            InfoLine(title: "Ultra context", value: runContext)
             if !profile.painNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 CoachReadSection(title: "Notes", bodyText: profile.painNotes)
             }
         }
         .card()
     }
+}
+
+private struct SharedAthleteContextCard: View {
+    var strengthCount: Int
+    var runContext: String
+    var runningProfile: RunningTrainingProfile
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Shared athlete context", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.headline)
+                Spacer()
+                StatusPill(text: "Synced", systemImage: "checkmark.circle.fill")
+            }
+            InfoLine(title: "Strength load", value: strengthCount == 0 ? "No planned sessions" : "\(strengthCount) planned sessions")
+            InfoLine(title: "Running load", value: runContext)
+            InfoLine(title: "Run profile", value: "\(runningProfile.background.title) · \(runningProfile.durability.title)")
+            Text("Strength planning sees running load. Ultra planning sees strength load. Journal signals can plug into this same shared context later.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.muted)
+        }
+        .card()
+    }
+}
+
+private struct UltraRunnerCoachCard: View {
+    var runningProfile: RunningTrainingProfile
+    var latestPlan: CoachPlan?
+    var runLogCount: Int
+    var plannedRunCount: Int
+    var strengthLoadCount: Int
+    var status: String?
+    var onGenerate: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Ultra Runner", systemImage: "figure.run")
+                    .font(.headline)
+                Spacer()
+                StatusPill(text: "\(runningProfile.targetRaceKm) km", color: AppTheme.gold, systemImage: "mountain.2.fill")
+            }
+
+            Text("Manual-first coach for \(runningProfile.targetRaceKm) km durability: easy volume, HR discipline, walk strategy, hills, long time-on-feet, and fueling practice.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.text)
+
+            VStack(spacing: 8) {
+                InfoLine(title: "Current load", value: "\(runningProfile.currentWeeklyDistanceKm) km/week · long \(runningProfile.currentLongRunKm) km")
+                InfoLine(title: "Background", value: runningProfile.background.title)
+                InfoLine(title: "Durability", value: runningProfile.durability.title)
+                InfoLine(title: "Easy target", value: "\(paceText(secondsPerKm: runningProfile.easyPaceSecondsPerKm)) · HR \(runningProfile.easyHeartRate)")
+                InfoLine(title: "Terrain", value: "\(runningProfile.terrain.title) · target \(runningProfile.targetElevationMeters)m")
+                InfoLine(title: "Strength context", value: strengthLoadCount == 0 ? "No planned strength load" : "\(strengthLoadCount) planned strength sessions")
+                InfoLine(title: "Run history", value: runLogCount == 0 ? "No run logs yet" : "\(runLogCount) logged runs")
+                InfoLine(title: "Planned runs", value: plannedRunCount == 0 ? "No planned runs" : "\(plannedRunCount) run sessions in Log")
+            }
+
+            if let latestPlan {
+                CoachReadSection(title: "Latest ultra plan", bodyText: latestPlan.summary)
+            }
+
+            Button(action: onGenerate) {
+                Label("Generate ultra week", systemImage: "point.3.connected.trianglepath.dotted")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryActionButtonStyle())
+
+            if let status {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
+        }
+        .card()
+    }
+}
+
+func runningContextSummary(from logs: [RunningLog], sessions: [WorkoutSession]) -> String {
+    let recentKm = logs.prefix(7).map(\.distanceKm).reduce(0, +)
+    let flags = logs.prefix(5).filter { $0.painLevel >= 4 || $0.fatigueLevel >= 9 || $0.hadGIIssues }.count
+    if logs.isEmpty && sessions.isEmpty {
+        return "No running data yet"
+    }
+    var parts: [String] = []
+    if recentKm > 0 {
+        parts.append("\(distanceText(km: recentKm)) recent")
+    }
+    if !sessions.isEmpty {
+        parts.append("\(sessions.count) planned runs")
+    }
+    if flags > 0 {
+        parts.append("\(flags) run flags")
+    }
+    return parts.isEmpty ? "\(logs.count) run logs" : parts.joined(separator: " · ")
 }
 
 private struct AdvancedCoachControls: View {

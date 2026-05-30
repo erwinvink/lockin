@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CalendarView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
+    @Query private var runningWorkouts: [RunningWorkout]
 
     private var historySessions: [WorkoutSession] {
         sessions.filter { $0.status != .planned }
@@ -22,7 +23,7 @@ struct CalendarView: View {
                             .foregroundStyle(AppTheme.muted)
                     } else {
                         ForEach(historySessions) { session in
-                            CalendarSessionRow(session: session)
+                            CalendarSessionRow(session: session, workout: runningWorkout(for: session))
                         }
                     }
                 }
@@ -30,10 +31,15 @@ struct CalendarView: View {
             }
         }
     }
+
+    private func runningWorkout(for session: WorkoutSession) -> RunningWorkout? {
+        runningWorkouts.first { $0.sessionId == session.id }
+    }
 }
 
 private struct CalendarSessionRow: View {
     var session: WorkoutSession
+    var workout: RunningWorkout?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -50,6 +56,15 @@ private struct CalendarSessionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.title)
                     .font(.subheadline.weight(.semibold))
+                if let workout {
+                    Text("\(distanceText(km: workout.targetDistanceKm)) · \(minutesText(workout.targetDurationMinutes)) · \(workout.runType.title)")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.muted)
+                } else {
+                    Text(session.domain.title)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.muted)
+                }
             }
             Spacer()
             WorkoutStatusIcon(status: session.status)

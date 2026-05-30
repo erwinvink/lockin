@@ -180,7 +180,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - Add UI test for Coach proxy error display:
   - Point proxy URL to an unavailable endpoint.
-  - Tap `Generate AI week`.
+  - Tap `Generate strength week`.
   - Verify the user-facing error explains how to start the proxy.
 
 ### Medium Priority

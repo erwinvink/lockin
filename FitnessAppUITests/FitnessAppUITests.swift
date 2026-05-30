@@ -18,9 +18,10 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Coach"].tap()
         XCTAssertTrue(app.navigationBars["Coach"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Shared athlete context"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Ready for the first week"].exists)
-        XCTAssertTrue(app.buttons["Generate AI week"].exists)
+        XCTAssertTrue(app.buttons["Generate strength week"].exists)
         XCTAssertTrue(app.staticTexts["What I'll use"].exists)
     }
 
@@ -43,6 +44,8 @@ final class FitnessAppUITests: XCTestCase {
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Progress"].exists)
+        XCTAssertTrue(app.staticTexts["Athlete overview"].waitForExistence(timeout: 5))
+        app.buttons["Strength"].tap()
         XCTAssertTrue(app.staticTexts["PULL-UPS"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["XP"].exists)
         XCTAssertTrue(app.staticTexts["PENALTIES"].exists)
@@ -73,6 +76,22 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Technical checks"].exists)
     }
 
+    func testUltraRunnerCoachGeneratesVisibleRunWeek() {
+        let app = launchFreshApp()
+        onboardDefault(app)
+
+        app.tabBars.buttons["Coach"].tap()
+        app.buttons["Ultra"].tap()
+        XCTAssertTrue(app.staticTexts["Ultra Runner"].waitForExistence(timeout: 5))
+        tapWhenReady(app.buttons["Generate ultra week"], in: app)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Saved'")).firstMatch.waitForExistence(timeout: 5))
+
+        app.tabBars.buttons["Log"].tap()
+        XCTAssertTrue(app.staticTexts["Log"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Long Time-on-Feet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Ultra"].exists)
+    }
+
     func testProfileResetFlowUsesAIOnlyPlanCreation() {
         let app = launchFreshApp()
         onboardDefault(app)
@@ -82,7 +101,7 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Profile"].exists)
         XCTAssertFalse(app.staticTexts["Local fallback plan"].exists)
         XCTAssertFalse(app.buttons["Regenerate local fallback week"].exists)
-        XCTAssertTrue(app.buttons["Request and schedule"].exists)
+        XCTAssertTrue(app.buttons["Add reminder time"].exists)
         tapWhenReady(app.buttons["Wipe all app data"], in: app)
         XCTAssertTrue(app.alerts["Wipe all app data?"].waitForExistence(timeout: 5))
         app.alerts["Wipe all app data?"].buttons["Wipe everything"].tap()

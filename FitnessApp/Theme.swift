@@ -103,7 +103,7 @@ struct ScreenBackground<Content: View>: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-            .padding(.bottom, 28)
+            .padding(.bottom, 88)
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.background.ignoresSafeArea())

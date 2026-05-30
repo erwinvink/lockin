@@ -3,7 +3,7 @@ import UserNotifications
 
 protocol NotificationScheduling {
     func requestAuthorization() async -> Bool
-    func scheduleWorkoutReminders(for sessions: [WorkoutSession]) async
+    func scheduleWorkoutReminders(for sessions: [WorkoutSession], minutesAfterMidnight: Int) async
     func clearWorkoutReminders()
 }
 
@@ -18,16 +18,21 @@ struct WorkoutNotificationScheduler: NotificationScheduling {
         }
     }
 
-    func scheduleWorkoutReminders(for sessions: [WorkoutSession]) async {
+    func scheduleWorkoutReminders(for sessions: [WorkoutSession], minutesAfterMidnight: Int) async {
         clearWorkoutReminders()
+        guard minutesAfterMidnight >= 0 else { return }
+        let hour = minutesAfterMidnight / 60
+        let minute = minutesAfterMidnight % 60
+
         for session in sessions where session.status == .planned {
             let content = UNMutableNotificationContent()
             content.title = "Training due"
-            content.body = "\(session.title): skip it and the score pays."
+            content.body = session.title
             content.sound = .default
 
-            let reminderDate = Calendar.current.date(byAdding: .minute, value: -30, to: session.scheduledDate) ?? session.scheduledDate
-            let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: reminderDate)
+            var components = Calendar.current.dateComponents([.year, .month, .day], from: session.scheduledDate)
+            components.hour = hour
+            components.minute = minute
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
             let request = UNNotificationRequest(identifier: "workout-\(session.id.uuidString)", content: content, trigger: trigger)
             try? await center.add(request)
@@ -39,4 +44,3 @@ struct WorkoutNotificationScheduler: NotificationScheduling {
         center.removeAllPendingNotificationRequests()
     }
 }
-

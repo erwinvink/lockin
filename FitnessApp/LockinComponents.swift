@@ -251,7 +251,7 @@ struct WeekPlanTable: View {
             }
 
             if sessions.isEmpty {
-                Text("No planned sessions yet.")
+                Text("No sessions yet.")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -290,6 +290,9 @@ struct WeekPlanRow: View {
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
             Spacer()
+            Text(session.domain.title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(session.domain == .ultraRunning ? AppTheme.gold : AppTheme.muted)
             WorkoutStatusIcon(status: session.status)
         }
         .padding(.horizontal, 10)
@@ -426,6 +429,39 @@ struct IntegerField: View {
                     .font(.caption)
                     .foregroundStyle(AppTheme.muted)
             }
+        }
+    }
+}
+
+struct PaceField: View {
+    var title: String
+    @Binding var secondsPerKm: Int
+    var range: ClosedRange<Int> = 240...900
+
+    private var clampedValue: Binding<Double> {
+        Binding(
+            get: { Double(secondsPerKm) },
+            set: { newValue in
+                secondsPerKm = min(range.upperBound, max(range.lowerBound, Int(newValue.rounded())))
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.text)
+                Spacer()
+                Text(paceText(secondsPerKm: secondsPerKm))
+                    .font(.system(.body, design: .rounded, weight: .bold))
+                    .foregroundStyle(AppTheme.text)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            Slider(value: clampedValue, in: Double(range.lowerBound)...Double(range.upperBound), step: 5)
+                .tint(AppTheme.accent)
         }
     }
 }

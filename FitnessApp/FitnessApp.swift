@@ -6,6 +6,12 @@ struct FitnessApp: App {
     private let modelContainer: ModelContainer
 
     init() {
+        let tabBarAppearance = UITabBarAppearance()
+        tabBarAppearance.configureWithOpaqueBackground()
+        tabBarAppearance.backgroundColor = UIColor(AppTheme.surface)
+        UITabBar.appearance().standardAppearance = tabBarAppearance
+        UITabBar.appearance().scrollEdgeAppearance = tabBarAppearance
+
         do {
             let isUITesting = ProcessInfo.processInfo.arguments.contains("UITesting")
             let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
