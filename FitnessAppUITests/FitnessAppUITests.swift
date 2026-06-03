@@ -30,13 +30,15 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Log"].tap()
         XCTAssertTrue(app.staticTexts["Log"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No open activities."].exists)
         XCTAssertTrue(app.staticTexts["Session history"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["No sessions yet."].exists)
+        XCTAssertTrue(app.staticTexts["No history yet."].exists)
         XCTAssertFalse(app.navigationBars["Log"].exists)
         XCTAssertFalse(app.staticTexts["DONE"].exists)
     }
 
-    func testProgressAndRanksScreensAfterOnboarding() {
+    func testProgressAndConsistencyScreensAfterOnboarding() {
         let app = launchFreshApp()
         onboardDefault(app)
 
@@ -44,13 +46,12 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Progress"].exists)
         XCTAssertTrue(app.staticTexts["PULL-UPS"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["XP"].exists)
         XCTAssertTrue(app.staticTexts["PENALTIES"].exists)
         XCTAssertFalse(app.buttons["History"].exists)
-        tapWhenReady(app.buttons["Rank details and benchmarks"], in: app)
-        XCTAssertTrue(app.navigationBars["Ranks"].waitForExistence(timeout: 5))
+        tapWhenReady(app.buttons["Consistency details and benchmarks"], in: app)
+        XCTAssertTrue(app.navigationBars["Consistency"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Real-world anchors"].waitForExistence(timeout: 5))
-        app.navigationBars["Ranks"].buttons.element(boundBy: 0).tap()
+        app.navigationBars["Consistency"].buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Progress"].exists)
     }

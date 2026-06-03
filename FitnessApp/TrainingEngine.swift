@@ -14,6 +14,7 @@ struct GoalTargets: Equatable {
 
 struct TrainingPreferences: Equatable {
     var weeklySessions: Int
+    var trainingDays: Set<TrainingWeekday> = []
     var equipment: Set<EquipmentKind>
     var targetDate: Date
 }
@@ -67,7 +68,6 @@ struct SessionLogInput: Equatable {
 }
 
 struct ScoreOutcome: Equatable {
-    var xpDelta: Int
     var consistencyDelta: Int
     var penaltyDelta: Int
     var streakDelta: Int
@@ -83,7 +83,6 @@ struct PlanValidationResult: Equatable {
 struct TrainingEngine {
     static let defaultGoals = GoalTargets(pullUps: 50, pushUps: 100, plankSeconds: 300)
     static let missedSessionPenaltyPoints = 25
-    static let missedSessionXPDelta = -70
     static let missedSessionConsistencyDelta = -12
 
     func generateWeek(
@@ -99,9 +98,13 @@ struct TrainingEngine {
         let readiness = readinessMultiplier(from: baseline, goals: goals, targetDate: preferences.targetDate, weekIndex: weekIndex)
         let multiplier = deload ? max(0.55, readiness * 0.65) : readiness
         let focuses = focusSequence(count: sessionCount)
+        let selectedDayOffsets = preferences.trainingDays.isEmpty
+            ? []
+            : TrainingWeekday.dayOffsets(for: preferences.trainingDays, weeklySessions: sessionCount, weekStart: start)
 
         let sessions = (0..<sessionCount).map { index in
-            let date = Calendar.current.date(byAdding: .day, value: index * max(1, 7 / sessionCount), to: start) ?? start
+            let offset = selectedDayOffsets.indices.contains(index) ? selectedDayOffsets[index] : index * max(1, 7 / sessionCount)
+            let date = Calendar.current.date(byAdding: .day, value: offset, to: start) ?? start
             return makeSession(
                 date: date,
                 index: index,
@@ -126,18 +129,16 @@ struct TrainingEngine {
     func score(log: SessionLogInput, plannedSession: TrainingSessionPlan?) -> ScoreOutcome {
         guard log.completed else {
             return ScoreOutcome(
-                xpDelta: Self.missedSessionXPDelta,
                 consistencyDelta: Self.missedSessionConsistencyDelta,
                 penaltyDelta: Self.missedSessionPenaltyPoints,
                 streakDelta: -1,
                 didTriggerDeload: false,
-                reason: "Missed session: +\(Self.missedSessionPenaltyPoints) penalty points, \(Self.missedSessionXPDelta) XP, streak reset. No unsafe make-up volume added."
+                reason: "Missed session: +\(Self.missedSessionPenaltyPoints) penalty points, consistency drops, streak reset. No unsafe make-up volume added."
             )
         }
 
         if log.painLevel >= 4 || log.fatigueLevel >= 9 {
             return ScoreOutcome(
-                xpDelta: 20,
                 consistencyDelta: 4,
                 penaltyDelta: 0,
                 streakDelta: 1,
@@ -148,17 +149,12 @@ struct TrainingEngine {
 
         let effortBonus = log.rpe >= 8 ? 20 : 0
         return ScoreOutcome(
-            xpDelta: 90 + effortBonus,
-            consistencyDelta: 10,
+            consistencyDelta: 10 + effortBonus / 10,
             penaltyDelta: 0,
             streakDelta: 1,
             didTriggerDeload: false,
-            reason: "Completed with strict form. XP and consistency climb."
+            reason: "Completed with strict form. Consistency climbs."
         )
-    }
-
-    func rank(for xp: Int) -> CalisthenicsRank {
-        CalisthenicsRank.allCases.last(where: { xp >= $0.minimumXP }) ?? .recruit
     }
 
     private func readinessMultiplier(from baseline: Baseline, goals: GoalTargets, targetDate: Date, weekIndex: Int) -> Double {

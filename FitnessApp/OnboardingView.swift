@@ -10,11 +10,17 @@ struct OnboardingView: View {
     @State private var goalPullUps = 50
     @State private var goalPushUps = 100
     @State private var goalPlankSeconds = 300
-    @State private var weeklySessions = 4
+    @State private var selectedTrainingDays: Set<TrainingWeekday> = TrainingWeekday.defaultTrainingDays(for: 4)
     @State private var targetDate = Calendar.current.date(byAdding: .year, value: 1, to: Date()) ?? Date()
     @State private var selectedEquipment: Set<EquipmentKind> = [.pullUpBar, .yogaMat]
     @State private var strictForm = true
     @State private var painNotes = ""
+
+    private var canCreateProfile: Bool {
+        strictForm &&
+        selectedEquipment.contains(.pullUpBar) &&
+        (2...6).contains(selectedTrainingDays.count)
+    }
 
     var body: some View {
         NavigationStack {
@@ -37,7 +43,7 @@ struct OnboardingView: View {
 
                 ScheduleCard(
                     targetDate: $targetDate,
-                    weeklySessions: $weeklySessions
+                    selectedTrainingDays: $selectedTrainingDays
                 )
 
                 EquipmentCard(selectedEquipment: $selectedEquipment)
@@ -51,8 +57,8 @@ struct OnboardingView: View {
                     Label("Create profile", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(PrimaryActionButtonStyle())
-                .disabled(!strictForm || !selectedEquipment.contains(.pullUpBar))
-                .opacity(strictForm && selectedEquipment.contains(.pullUpBar) ? 1 : 0.48)
+                .disabled(!canCreateProfile)
+                .opacity(canCreateProfile ? 1 : 0.48)
             }
             .navigationTitle("Setup")
             .navigationBarTitleDisplayMode(.inline)
@@ -64,7 +70,8 @@ struct OnboardingView: View {
         let profile = UserProfile(
             name: name.isEmpty ? "Athlete" : name,
             targetDate: targetDate,
-            weeklySessions: weeklySessions,
+            weeklySessions: selectedTrainingDays.count,
+            trainingDays: selectedTrainingDays,
             equipment: selectedEquipment,
             baselinePullUps: pullUps,
             baselinePushUps: pushUps,
@@ -121,19 +128,68 @@ private struct GoalTargetCard: View {
 
 private struct ScheduleCard: View {
     @Binding var targetDate: Date
-    @Binding var weeklySessions: Int
+    @Binding var selectedTrainingDays: Set<TrainingWeekday>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Training shape")
                 .font(.headline)
             DatePicker("Target date", selection: $targetDate, displayedComponents: .date)
-            IntegerField(title: "Sessions per week", value: $weeklySessions, range: 2...6)
+            TrainingDaysPicker(selectedDays: $selectedTrainingDays)
             Text("Session length follows the generated prescription for that week.")
                 .font(.caption)
                 .foregroundStyle(AppTheme.muted)
         }
         .card()
+    }
+}
+
+private struct TrainingDaysPicker: View {
+    @Binding var selectedDays: Set<TrainingWeekday>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Training days")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(selectedDays.count) per week")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle((2...6).contains(selectedDays.count) ? AppTheme.muted : AppTheme.warning)
+            }
+            HStack(spacing: 6) {
+                ForEach(TrainingWeekday.allCases) { day in
+                    Button {
+                        toggle(day)
+                    } label: {
+                        Text(day.shortTitle)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(selectedDays.contains(day) ? .white : AppTheme.text)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 34)
+                            .background(selectedDays.contains(day) ? AppTheme.accent : AppTheme.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(AppTheme.divider, lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!selectedDays.contains(day) && selectedDays.count >= 6)
+                }
+            }
+            Text("Pick 2 to 6 days. The AI coach will only schedule future sessions on those selected days.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.muted)
+        }
+    }
+
+    private func toggle(_ day: TrainingWeekday) {
+        if selectedDays.contains(day) {
+            selectedDays.remove(day)
+        } else if selectedDays.count < 6 {
+            selectedDays.insert(day)
+        }
     }
 }
 

@@ -50,15 +50,15 @@ Do not ask the model to infer these summaries from raw logs.
 
 - Use `references/progression-policy.md` for progression and deload rules.
 - Use `references/exercise-library.json` for available exercise variants and equipment constraints.
-- Use `references/real-world-standards.md` when comparing app goals or ranks to external standards.
+- Use `references/real-world-standards.md` when comparing app goals or consistency scores to external standards.
 - Use `references/weekly-plan.schema.json` as the output contract.
 
 ## Planning Workflow
 
 1. Read the built coach context.
 2. Classify the state as one of: `building`, `plateau`, `overreaching`, `recovery_needed`, or `insufficient_history`.
-3. Generate exactly the requested number of sessions.
-4. Assign each session a `dayOffset` from `0` through `6`, in strictly increasing order, relative to `weekStart`.
+3. Generate exactly the requested number of future sessions.
+4. Assign each session a `dayOffset` from `1` through `6`, in strictly increasing order, relative to `weekStart`. `dayOffset: 0` is today and is locked.
 5. Derive session length from prescribed work; do not use a fixed minutes-per-session input.
 6. Include a short purpose for every session.
 7. Mark logging fields only for goal exercises actually trained or tested in the session.
@@ -96,7 +96,7 @@ For `recovery_needed`:
 - Never label a session `mixed` unless it actually combines the required movement patterns.
 - Avoid max testing during recovery or deload states.
 - Prefer repeatable progression over heroic one-week jumps.
-- Keep app XP ranks separate from real-world benchmarks.
+- Keep app consistency scores separate from real-world benchmarks.
 
 ## Output
 

@@ -44,7 +44,7 @@ final class PersistenceResetTests: XCTestCase {
             fatigueLevel: 5,
             notes: "Temporary"
         )
-        let rank = RankState(xp: 100)
+        let rank = RankState(consistencyScore: 10)
         let plan = CoachPlan(weekStart: Date(), summary: "Temporary", source: .rules, validationStatus: .accepted)
         let decision = CoachDecision(planId: plan.id, rationale: "Temporary", safetyFlags: ["temporary"])
         let verdict = CoachVerdict(
@@ -226,7 +226,7 @@ final class PersistenceResetTests: XCTestCase {
             baselinePushUps: 12,
             baselinePlankSeconds: 45
         )
-        let rank = RankState(xp: 500, consistencyScore: 30, streak: 4)
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
         let overdue = WorkoutSession(scheduledDate: yesterday, title: "Past work", weekIndex: 1, focus: .pull, summary: "Past")
         let dueToday = WorkoutSession(scheduledDate: today, title: "Today work", weekIndex: 1, focus: .mixed, summary: "Today")
         let future = WorkoutSession(scheduledDate: tomorrow, title: "Future work", weekIndex: 1, focus: .push, summary: "Future")
@@ -254,7 +254,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(future.status, .planned)
         XCTAssertEqual(rank.penaltyPoints, TrainingEngine.missedSessionPenaltyPoints)
         XCTAssertEqual(rank.streak, 0)
-        XCTAssertEqual(rank.xp, 430)
+        XCTAssertEqual(rank.consistencyScore, 18)
     }
 
     func testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards() throws {
@@ -345,7 +345,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<PerformanceLog>()).count, 9)
         XCTAssertEqual(rank.penaltyPoints, 75)
         XCTAssertEqual(rank.streak, 9)
-        XCTAssertEqual(rank.xp, 810)
-        XCTAssertEqual(rank.rank, .grinder)
+        XCTAssertEqual(rank.consistencyScore, 90)
+        XCTAssertEqual(rank.bestStreak, 9)
     }
 }

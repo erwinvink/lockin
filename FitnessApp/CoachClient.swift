@@ -7,6 +7,8 @@ struct CoachPlanRequest: Codable, Equatable {
     var profileNotes: String
     var weekStart: Date
     var weeklySessions: Int
+    var trainingDays: [String]
+    var trainingDayOffsets: [Int]
     var equipment: [String]
     var targetDate: Date
     var trainingLogs: [CoachLog]
@@ -202,22 +204,35 @@ struct CoachPlanValidator {
     private let validContextStates: Set<String> = ["building", "plateau", "overreaching", "recovery_needed", "insufficient_history"]
     private let validLoggingFields: Set<String> = ["pullUps", "pushUps", "plankSeconds"]
 
-    func validate(response: CoachPlanResponse, baseline _: Baseline, preferences: TrainingPreferences, weekStart _: Date) -> PlanValidationResult {
+    func validate(response: CoachPlanResponse, baseline _: Baseline, preferences: TrainingPreferences, weekStart: Date) -> PlanValidationResult {
         var messages: [String] = []
+        let hasExplicitTrainingDays = !preferences.trainingDays.isEmpty
+        let selectedDays = TrainingWeekday.normalized(preferences.trainingDays, weeklySessions: preferences.weeklySessions)
+        let explicitDayOffsets = TrainingWeekday.dayOffsets(
+            for: Set(selectedDays),
+            weeklySessions: selectedDays.count,
+            weekStart: weekStart
+        ).filter { (1...6).contains($0) }
+        let expectedSessionCount = hasExplicitTrainingDays ? explicitDayOffsets.count : preferences.weeklySessions
+        let allowedDayOffsets = hasExplicitTrainingDays ? Set(explicitDayOffsets) : []
 
         if !validContextStates.contains(response.contextState) {
             messages.append("AI plan has an unknown context state.")
         }
 
-        if response.sessions.count != preferences.weeklySessions {
-            messages.append("AI plan must contain exactly \(preferences.weeklySessions) sessions.")
+        if response.sessions.count != expectedSessionCount {
+            messages.append("AI plan must contain exactly \(expectedSessionCount) sessions.")
         }
 
         var previousDayOffset = -1
 
         for (index, session) in response.sessions.enumerated() {
-            if !(0...6).contains(session.dayOffset) {
-                messages.append("AI session \(index + 1) must have a day offset from 0 through 6.")
+            if !(1...6).contains(session.dayOffset) {
+                messages.append("AI session \(index + 1) must have a day offset from 1 through 6; day offset 0 is today and cannot be planned during a refresh.")
+            }
+
+            if hasExplicitTrainingDays, (1...6).contains(session.dayOffset), !allowedDayOffsets.contains(session.dayOffset) {
+                messages.append("AI session \(index + 1) is scheduled on a rest day.")
             }
 
             if session.dayOffset <= previousDayOffset {
@@ -315,6 +330,12 @@ func makeCoachRequest(
         pushUps: profile.baselinePushUps,
         plankSeconds: profile.baselinePlankSeconds
     )
+    let selectedDays = TrainingWeekday.normalized(profile.trainingDays, weeklySessions: profile.weeklySessions)
+    let dayOffsets = TrainingWeekday.dayOffsets(
+        for: Set(selectedDays),
+        weeklySessions: selectedDays.count,
+        weekStart: weekStart
+    ).filter { (1...6).contains($0) }
 
     return CoachPlanRequest(
         model: CoachModelCatalog.normalized(modelID),
@@ -330,7 +351,9 @@ func makeCoachRequest(
         ),
         profileNotes: profile.painNotes,
         weekStart: weekStart,
-        weeklySessions: profile.weeklySessions,
+        weeklySessions: selectedDays.count,
+        trainingDays: selectedDays.map(\.rawValue),
+        trainingDayOffsets: dayOffsets,
         equipment: profile.equipment.map(\.rawValue).sorted(),
         targetDate: profile.targetDate,
         trainingLogs: coachHistoryLogs(from: logs).map {

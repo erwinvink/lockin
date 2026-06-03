@@ -19,6 +19,8 @@ export type CoachRequest = {
   profileNotes: string;
   weekStart: string;
   weeklySessions: number;
+  trainingDays?: string[];
+  trainingDayOffsets?: number[];
   equipment: string[];
   targetDate: string;
   trainingLogs: TrainingLog[];
@@ -82,6 +84,8 @@ export type CoachContext = {
     profileNotes: string;
     weekStart: string;
     weeklySessions: number;
+    trainingDays: string[];
+    trainingDayOffsets: number[];
     equipment: string[];
     targetDate: string;
   };

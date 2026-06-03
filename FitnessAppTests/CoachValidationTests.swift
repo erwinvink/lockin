@@ -47,6 +47,8 @@ final class CoachValidationTests: XCTestCase {
             profileNotes: "Left elbow gets cranky after high pull volume.",
             weekStart: Date(timeIntervalSince1970: 0),
             weeklySessions: 3,
+            trainingDays: ["monday", "wednesday", "friday"],
+            trainingDayOffsets: [1, 3, 5],
             equipment: ["pullUpBar"],
             targetDate: Date(timeIntervalSince1970: 86_400),
             trainingLogs: [
@@ -74,6 +76,8 @@ final class CoachValidationTests: XCTestCase {
 
         XCTAssertEqual(object["model"] as? String, "gpt-5.5")
         XCTAssertEqual(object["profileNotes"] as? String, "Left elbow gets cranky after high pull volume.")
+        XCTAssertEqual(object["trainingDays"] as? [String], ["monday", "wednesday", "friday"])
+        XCTAssertEqual(object["trainingDayOffsets"] as? [Int], [1, 3, 5])
         let logs = try XCTUnwrap(object["trainingLogs"] as? [[String: Any]])
         XCTAssertEqual(logs.first?["notes"] as? String, "Felt shoulder tightness near the end.")
     }
@@ -137,7 +141,7 @@ final class CoachValidationTests: XCTestCase {
             sessions: [
                 CoachSessionResponse(
                     title: "Bad pull day",
-                    dayOffset: 0,
+                    dayOffset: 1,
                     focus: "pull",
                     purpose: "Too much work",
                     estimatedDurationMinutes: 20,
@@ -166,14 +170,57 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(result.messages.isEmpty)
     }
 
+    func testRejectsAIPlanForToday() {
+        var response = CoachPlanResponse.balancedFixture()
+        response.sessions[0].dayOffset = 0
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: Date()
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.messages.contains { $0.contains("day offset 0 is today") })
+    }
+
+    func testRejectsAIPlanOutsideSelectedTrainingDays() {
+        var response = CoachPlanResponse.balancedFixture()
+        response.sessions = [
+            CoachPlanResponse.mixedFixture(title: "Monday", dayOffset: 1),
+            CoachPlanResponse.mixedFixture(title: "Rest day leak", dayOffset: 4),
+            CoachPlanResponse.mixedFixture(title: "Friday", dayOffset: 5)
+        ]
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 3,
+                trainingDays: [.monday, .wednesday, .friday],
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: Date(timeIntervalSince1970: 0)
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.messages.contains { $0.contains("rest day") })
+    }
+
     func testAcceptsAIPlanWithoutLocalMovementBalancePolicy() {
         let response = CoachPlanResponse(
             summary: "Too narrow",
             contextState: "building",
             safetyFlags: [],
-            sessions: (0..<4).map {
+            sessions: (1...4).map {
                 CoachSessionResponse(
-                    title: "Pull only \($0 + 1)",
+                    title: "Pull only \($0)",
                     dayOffset: $0,
                     focus: "pull",
                     purpose: "Only pull",
@@ -246,7 +293,7 @@ final class CoachValidationTests: XCTestCase {
 
         XCTAssertEqual(result.status, .accepted)
         XCTAssertEqual(plan.sessions.count, 4)
-        XCTAssertEqual(plan.sessions[2].date, Calendar.current.date(byAdding: .day, value: 4, to: Calendar.current.startOfDay(for: weekStart)))
+        XCTAssertEqual(plan.sessions[2].date, Calendar.current.date(byAdding: .day, value: 5, to: Calendar.current.startOfDay(for: weekStart)))
         XCTAssertTrue(plan.sessions.allSatisfy { $0.summary.contains("AI:") })
     }
 
@@ -283,10 +330,10 @@ extension CoachPlanResponse {
             contextState: "building",
             safetyFlags: [],
             sessions: [
-                mixedFixture(title: "Full-body base", dayOffset: 0),
+                mixedFixture(title: "Full-body base", dayOffset: 1),
                 CoachSessionResponse(
                     title: "Pull emphasis",
-                    dayOffset: 2,
+                    dayOffset: 3,
                     focus: "pull",
                     purpose: "Build strict pull-up capacity with core support.",
                     estimatedDurationMinutes: 35,
@@ -298,7 +345,7 @@ extension CoachPlanResponse {
                         CoachExerciseResponse(exercise: "plank", sets: 3, reps: 0, seconds: 30, restSeconds: 75, intensity: "Support")
                     ]
                 ),
-                mixedFixture(title: "Full-body practice", dayOffset: 4),
+                mixedFixture(title: "Full-body practice", dayOffset: 5),
                 CoachSessionResponse(
                     title: "Core and push support",
                     dayOffset: 6,
@@ -317,7 +364,7 @@ extension CoachPlanResponse {
         )
     }
 
-    private static func mixedFixture(title: String, dayOffset: Int) -> CoachSessionResponse {
+    static func mixedFixture(title: String, dayOffset: Int) -> CoachSessionResponse {
         CoachSessionResponse(
             title: title,
             dayOffset: dayOffset,

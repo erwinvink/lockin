@@ -51,6 +51,94 @@ enum EquipmentKind: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum TrainingWeekday: String, CaseIterable, Codable, Identifiable {
+    case monday
+    case tuesday
+    case wednesday
+    case thursday
+    case friday
+    case saturday
+    case sunday
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .monday: "Monday"
+        case .tuesday: "Tuesday"
+        case .wednesday: "Wednesday"
+        case .thursday: "Thursday"
+        case .friday: "Friday"
+        case .saturday: "Saturday"
+        case .sunday: "Sunday"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .monday: "Mo"
+        case .tuesday: "Tu"
+        case .wednesday: "We"
+        case .thursday: "Th"
+        case .friday: "Fr"
+        case .saturday: "Sa"
+        case .sunday: "Su"
+        }
+    }
+
+    var calendarWeekday: Int {
+        switch self {
+        case .sunday: 1
+        case .monday: 2
+        case .tuesday: 3
+        case .wednesday: 4
+        case .thursday: 5
+        case .friday: 6
+        case .saturday: 7
+        }
+    }
+
+    static func defaultTrainingDays(for sessionCount: Int) -> Set<TrainingWeekday> {
+        let ordered: [TrainingWeekday]
+        switch sessionCount {
+        case 1:
+            ordered = [.monday]
+        case 2:
+            ordered = [.monday, .thursday]
+        case 3:
+            ordered = [.monday, .wednesday, .saturday]
+        case 4:
+            ordered = [.monday, .wednesday, .friday, .saturday]
+        case 5:
+            ordered = [.monday, .tuesday, .thursday, .friday, .saturday]
+        case 6:
+            ordered = [.monday, .tuesday, .wednesday, .thursday, .friday, .saturday]
+        default:
+            ordered = Array(Self.allCases.prefix(max(1, min(6, sessionCount))))
+        }
+        return Set(ordered)
+    }
+
+    static func normalized(_ days: Set<TrainingWeekday>, weeklySessions: Int) -> [TrainingWeekday] {
+        let selected = days.isEmpty ? defaultTrainingDays(for: weeklySessions) : days
+        let capped = selected.intersection(Self.allCases)
+        return Self.allCases.filter { capped.contains($0) }.prefix(6).map { $0 }
+    }
+
+    static func dayOffsets(for days: Set<TrainingWeekday>, weeklySessions: Int, weekStart: Date, calendar: Calendar = .current) -> [Int] {
+        let startWeekday = calendar.component(.weekday, from: calendar.startOfDay(for: weekStart))
+        return normalized(days, weeklySessions: weeklySessions)
+            .map { ($0.calendarWeekday - startWeekday + 7) % 7 }
+            .sorted()
+    }
+
+    static func storageValue(for days: Set<TrainingWeekday>, weeklySessions: Int) -> String {
+        normalized(days, weeklySessions: weeklySessions)
+            .map(\.rawValue)
+            .joined(separator: ",")
+    }
+}
+
 enum SessionStatus: String, Codable {
     case planned
     case completed
@@ -66,37 +154,6 @@ enum SessionFocus: String, Codable {
     case recovery
 
     var title: String { rawValue.capitalized }
-}
-
-enum CalisthenicsRank: String, CaseIterable, Codable {
-    case recruit
-    case grinder
-    case operatorRank
-    case specialist
-    case elite
-    case apex
-
-    var title: String {
-        switch self {
-        case .recruit: "Recruit"
-        case .grinder: "Grinder"
-        case .operatorRank: "Operator"
-        case .specialist: "Specialist"
-        case .elite: "Elite"
-        case .apex: "Apex"
-        }
-    }
-
-    var minimumXP: Int {
-        switch self {
-        case .recruit: 0
-        case .grinder: 400
-        case .operatorRank: 1_000
-        case .specialist: 2_000
-        case .elite: 3_500
-        case .apex: 5_500
-        }
-    }
 }
 
 enum PlanSource: String, Codable {
@@ -118,6 +175,7 @@ final class UserProfile {
     var targetDate: Date = Date()
     var weeklySessions: Int = 4
     var sessionMinutes: Int = 0
+    var trainingDaysRaw: String = ""
     var equipmentRaw: String = ""
     var baselinePullUps: Int = 0
     var baselinePushUps: Int = 0
@@ -136,6 +194,7 @@ final class UserProfile {
         targetDate: Date,
         weeklySessions: Int,
         sessionMinutes: Int = 0,
+        trainingDays: Set<TrainingWeekday> = [],
         equipment: Set<EquipmentKind>,
         baselinePullUps: Int,
         baselinePushUps: Int,
@@ -153,6 +212,8 @@ final class UserProfile {
         self.targetDate = targetDate
         self.weeklySessions = weeklySessions
         self.sessionMinutes = sessionMinutes
+        let resolvedTrainingDays = trainingDays.isEmpty ? TrainingWeekday.defaultTrainingDays(for: weeklySessions) : trainingDays
+        self.trainingDaysRaw = TrainingWeekday.storageValue(for: resolvedTrainingDays, weeklySessions: weeklySessions)
         self.equipmentRaw = equipment.map(\.rawValue).sorted().joined(separator: ",")
         self.baselinePullUps = baselinePullUps
         self.baselinePushUps = baselinePushUps
@@ -167,6 +228,22 @@ final class UserProfile {
 
     var equipment: Set<EquipmentKind> {
         Set(equipmentRaw.split(separator: ",").compactMap { EquipmentKind(rawValue: String($0)) })
+    }
+
+    var trainingDays: Set<TrainingWeekday> {
+        get {
+            let parsed = Set(trainingDaysRaw.split(separator: ",").compactMap { TrainingWeekday(rawValue: String($0)) })
+            return Set(TrainingWeekday.normalized(parsed, weeklySessions: weeklySessions))
+        }
+        set {
+            let resolved = Set(TrainingWeekday.normalized(newValue, weeklySessions: newValue.count))
+            weeklySessions = resolved.count
+            trainingDaysRaw = TrainingWeekday.storageValue(for: resolved, weeklySessions: weeklySessions)
+        }
+    }
+
+    var trainingDayLabels: [String] {
+        TrainingWeekday.normalized(trainingDays, weeklySessions: weeklySessions).map(\.shortTitle)
     }
 }
 
@@ -318,34 +395,26 @@ final class PerformanceLog {
 @Model
 final class RankState {
     var id: UUID = UUID()
-    var rankRaw: String = CalisthenicsRank.recruit.rawValue
-    var xp: Int = 0
     var consistencyScore: Int = 0
     var streak: Int = 0
+    var bestStreak: Int = 0
     var penaltyPoints: Int = 0
     var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),
-        rank: CalisthenicsRank = .recruit,
-        xp: Int = 0,
         consistencyScore: Int = 0,
         streak: Int = 0,
+        bestStreak: Int = 0,
         penaltyPoints: Int = 0,
         updatedAt: Date = Date()
     ) {
         self.id = id
-        self.rankRaw = rank.rawValue
-        self.xp = xp
         self.consistencyScore = consistencyScore
         self.streak = streak
+        self.bestStreak = bestStreak
         self.penaltyPoints = penaltyPoints
         self.updatedAt = updatedAt
-    }
-
-    var rank: CalisthenicsRank {
-        get { CalisthenicsRank(rawValue: rankRaw) ?? .recruit }
-        set { rankRaw = newValue.rawValue }
     }
 }
 
@@ -477,7 +546,7 @@ struct RealWorldBenchmark: Identifiable {
         RealWorldBenchmark(
             title: "ExRx strength tiers",
             value: "Frail to Elite",
-            detail: "Bodyweight strength comparisons depend on age, sex, body weight, and strict form, so the app treats them as external references instead of direct XP ranks.",
+            detail: "Bodyweight strength comparisons depend on age, sex, body weight, and strict form, so the app treats them as external references instead of app scores.",
             sourceLabel: "ExRx strength standards",
             sourceURL: "https://exrx.net/WorkoutTools/StrengthStandards"
         )

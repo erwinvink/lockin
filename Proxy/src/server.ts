@@ -288,12 +288,27 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
 }
 
 function buildCoachPromptPayload(context: CoachContext, repair?: RepairInput): Record<string, unknown> {
+  const hasSelectedOffsets = context.profile.trainingDayOffsets.length > 0;
+  const basePayload = {
+    coachContext: context,
+    outputRules: {
+      todayIsLocked: true,
+      selectedTrainingDays: context.profile.trainingDays,
+      allowedDayOffsets: context.profile.trainingDayOffsets,
+      selectedFutureTrainingDayCount: hasSelectedOffsets ? context.profile.trainingDayOffsets.length : null,
+      scheduling:
+        hasSelectedOffsets
+          ? "Schedule exactly one strength session on each selected future training day. Use only allowedDayOffsets and treat all other offsets as rest days. Never schedule dayOffset 0 because today is locked."
+          : "Schedule exactly the requested number of strength sessions across dayOffset 1 through 6. Never schedule dayOffset 0 because today is locked."
+    }
+  };
+
   if (!repair) {
-    return { coachContext: context };
+    return basePayload;
   }
 
   return {
-    coachContext: context,
+    ...basePayload,
     repairRequest: {
       instruction:
         "The previous plan failed technical validation. Repair it once by changing only what is needed, then return schema-valid JSON only.",

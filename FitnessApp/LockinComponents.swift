@@ -22,32 +22,6 @@ struct BrandHeader: View {
     }
 }
 
-struct RankBadge: View {
-    var rank: CalisthenicsRank
-
-    var body: some View {
-        ZStack {
-            Hexagon()
-                .fill(
-                    LinearGradient(
-                        colors: [AppTheme.goldSoft, AppTheme.gold],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            Hexagon()
-                .stroke(Color.white.opacity(0.75), lineWidth: 2)
-                .padding(5)
-            Image(systemName: "figure.strengthtraining.traditional")
-                .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-        }
-        .frame(width: 58, height: 58)
-        .accessibilityLabel("\(rank.title) rank badge")
-    }
-}
-
 struct GoalStrip: View {
     var profile: UserProfile
 
@@ -245,13 +219,13 @@ struct WeekPlanTable: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Week plan".uppercased())
+                Text("Open activities".uppercased())
                     .font(.caption.weight(.bold))
                     .foregroundStyle(AppTheme.text)
             }
 
             if sessions.isEmpty {
-                Text("No planned sessions yet.")
+                Text("No open activities.")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -9,58 +9,48 @@ struct RanksView: View {
     }
 
     var body: some View {
-        ScreenBackground(title: "Ranks") {
+        ScreenBackground(title: "Consistency") {
             HStack(spacing: 14) {
-                RankBadge(rank: rank.rank)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(rank.rank.title)
+                    Text("\(rank.consistencyScore)")
                         .font(.system(.largeTitle, design: .rounded, weight: .black))
-                        .foregroundStyle(AppTheme.gold)
-                    Text("Consistency and execution layer")
+                        .foregroundStyle(AppTheme.accent)
+                    Text("Consistency score")
                         .font(.caption)
                         .foregroundStyle(AppTheme.muted)
                 }
                 Spacer()
+                Image(systemName: "chart.line.uptrend.xyaxis.circle.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(AppTheme.accent)
             }
             .card()
 
             HStack(spacing: 8) {
-                MetricCard(title: "XP", value: "\(rank.xp)", subtitle: "Execution")
-                MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Sessions")
+                MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Current sessions")
+                MetricCard(title: "Best", value: "\(rank.bestStreak)", subtitle: "Best streak")
             }
             HStack(spacing: 8) {
                 MetricCard(title: "Consistency", value: "\(rank.consistencyScore)", subtitle: "Long-term score")
                 MetricCard(title: "Penalties", value: "\(rank.penaltyPoints)", subtitle: "Misses visible", color: AppTheme.warning)
             }
 
-            RankDetailLadder(current: rank)
+            ConsistencyRulesCard()
             BenchmarkAnchorsCard()
         }
-        .navigationTitle("Ranks")
+        .navigationTitle("Consistency")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
 
-private struct RankDetailLadder: View {
-    var current: RankState
-
+private struct ConsistencyRulesCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("XP ladder")
+            Text("How it works")
                 .font(.headline)
-            ForEach(CalisthenicsRank.allCases, id: \.self) { rank in
-                HStack {
-                    Text(rank.title)
-                        .font(.subheadline.weight(.medium))
-                    Spacer()
-                    Text("\(rank.minimumXP) XP")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(current.xp >= rank.minimumXP ? AppTheme.accent : AppTheme.muted)
-                }
-                if rank != CalisthenicsRank.allCases.last {
-                    Divider()
-                }
-            }
+            Text("Completed sessions add consistency. Missed sessions reduce it, add visible penalty points, and reset the current streak. No unsafe make-up volume is added.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.muted)
         }
         .card()
     }

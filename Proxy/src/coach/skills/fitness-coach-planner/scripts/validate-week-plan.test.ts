@@ -10,6 +10,8 @@ const baseContext: CoachContext = {
     profileNotes: "",
     weekStart: "2026-05-11T00:00:00Z",
     weeklySessions: 4,
+    trainingDays: [],
+    trainingDayOffsets: [],
     equipment: ["pullUpBar", "yogaMat"],
     targetDate: "2027-05-11T00:00:00Z"
   },
@@ -65,6 +67,39 @@ test("rejects invalid or unordered day offsets", () => {
   assert.ok(result.messages.some((message) => message.includes("strictly later")));
 });
 
+test("rejects a plan that creates a new session for today", () => {
+  const plan = balancedPlan();
+  plan.sessions[0] = { ...plan.sessions[0], dayOffset: 0 };
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("dayOffset 0 is today")));
+});
+
+test("rejects sessions outside selected future training day offsets", () => {
+  const plan = balancedPlan();
+  const context: CoachContext = {
+    ...baseContext,
+    profile: {
+      ...baseContext.profile,
+      weeklySessions: 3,
+      trainingDays: ["monday", "wednesday", "friday"],
+      trainingDayOffsets: [1, 3, 5]
+    }
+  };
+  plan.sessions = [
+    mixedSession("Monday work", 1),
+    mixedSession("Rest-day leak", 4),
+    mixedSession("Friday work", 5)
+  ];
+
+  const result = validateWeeklyPlan(plan, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("selected future training days")));
+});
+
 test("rejects non-renderable exercise values", () => {
   const plan = balancedPlan();
   plan.sessions[0].exercises[0] = { ...plan.sessions[0].exercises[0], sets: 0, reps: -1 };
@@ -82,10 +117,10 @@ function balancedPlan(): WeeklyPlan {
     contextState: "insufficient_history",
     safetyFlags: [],
     sessions: [
-      mixedSession("Full-body base", 0),
+      mixedSession("Full-body base", 1),
       {
         title: "Pull emphasis",
-        dayOffset: 2,
+        dayOffset: 3,
         focus: "pull",
         purpose: "Build strict pull-up capacity with core support.",
         estimatedDurationMinutes: 35,
@@ -97,7 +132,7 @@ function balancedPlan(): WeeklyPlan {
           { exercise: "plank", sets: 3, reps: 0, seconds: 30, restSeconds: 75, intensity: "Support" }
         ]
       },
-      mixedSession("Full-body practice", 4),
+      mixedSession("Full-body practice", 5),
       {
         title: "Core and push support",
         dayOffset: 6,

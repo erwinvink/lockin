@@ -27,7 +27,7 @@ final class TrainingEngineTests: XCTestCase {
         )
 
         XCTAssertTrue(outcome.didTriggerDeload)
-        XCTAssertGreaterThanOrEqual(outcome.xpDelta, 0)
+        XCTAssertGreaterThanOrEqual(outcome.consistencyDelta, 0)
         XCTAssertEqual(outcome.penaltyDelta, 0)
     }
 
@@ -37,13 +37,13 @@ final class TrainingEngineTests: XCTestCase {
             plannedSession: nil
         )
 
-        XCTAssertLessThan(outcome.xpDelta, 0)
+        XCTAssertLessThan(outcome.consistencyDelta, 0)
         XCTAssertEqual(outcome.penaltyDelta, TrainingEngine.missedSessionPenaltyPoints)
         XCTAssertFalse(outcome.didTriggerDeload)
     }
 
     func testMissedSessionResetsConsistencyStreakImmediately() {
-        let rank = RankState(xp: 500, consistencyScore: 40, streak: 6)
+        let rank = RankState(consistencyScore: 40, streak: 6, bestStreak: 6)
         let outcome = TrainingEngine().score(
             log: SessionLogInput(completed: false, pullUps: 0, pushUps: 0, plankSeconds: 0, rpe: 1, painLevel: 0, fatigueLevel: 1),
             plannedSession: nil
@@ -53,6 +53,7 @@ final class TrainingEngineTests: XCTestCase {
 
         XCTAssertEqual(rank.streak, 0)
         XCTAssertEqual(rank.penaltyPoints, TrainingEngine.missedSessionPenaltyPoints)
+        XCTAssertEqual(rank.consistencyScore, 28)
     }
 
     func testTodayOnlyTreatsCurrentDaySessionsAsDue() throws {

@@ -135,7 +135,8 @@ struct CoachView: View {
                 plankSeconds: profile.baselinePlankSeconds
             )
             let preferences = TrainingPreferences(
-                weeklySessions: profile.weeklySessions,
+                weeklySessions: profile.trainingDays.count,
+                trainingDays: profile.trainingDays,
                 equipment: profile.equipment,
                 targetDate: profile.targetDate
             )
@@ -154,7 +155,7 @@ struct CoachView: View {
             let plan = response.weeklyPlan(weekStart: request.weekStart)
             try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
             try modelContext.save()
-            generationStatus = "Saved \(plan.sessions.count) sessions for the next 7 days. Open Log to view them."
+            generationStatus = "Saved \(plan.sessions.count) future sessions. Today was left untouched."
         } catch {
             generationStatus = error.localizedDescription
         }
@@ -278,7 +279,7 @@ private struct CoachVerdictCard: View {
                 .foregroundStyle(AppTheme.text)
             CoachReadSection(
                 title: "Starting point",
-                bodyText: "I will keep the first week conservative and use your baseline, available sessions, equipment, target date, and any pain notes."
+                bodyText: "I will keep the first week conservative and use your baseline, selected training days, equipment, target date, and any pain notes."
             )
         }
     }
@@ -358,7 +359,7 @@ private struct CoachInputsCard: View {
                 .font(.headline)
             InfoLine(title: "Starting point", value: "\(profile.baselinePullUps) pull-ups, \(profile.baselinePushUps) push-ups, \(format(seconds: profile.baselinePlankSeconds)) plank")
             InfoLine(title: "Goal", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
-            InfoLine(title: "Week shape", value: "\(profile.weeklySessions) sessions per week until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
+            InfoLine(title: "Week shape", value: "\(profile.trainingDayLabels.joined(separator: ", ")) until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
             InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
             InfoLine(title: "Log context", value: plannedCount == 0 ? "No sessions in Log yet" : "\(plannedCount) recent or upcoming sessions from Log")
             if !profile.painNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

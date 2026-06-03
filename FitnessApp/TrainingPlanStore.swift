@@ -194,7 +194,6 @@ func wipeAllData(in modelContext: ModelContext) throws {
 }
 
 func applyScoreOutcome(_ outcome: ScoreOutcome, to rank: RankState) {
-    rank.xp = max(0, rank.xp + outcome.xpDelta)
     rank.consistencyScore = max(0, rank.consistencyScore + outcome.consistencyDelta)
     rank.penaltyPoints = max(0, rank.penaltyPoints + outcome.penaltyDelta)
     if outcome.streakDelta < 0 {
@@ -202,7 +201,7 @@ func applyScoreOutcome(_ outcome: ScoreOutcome, to rank: RankState) {
     } else {
         rank.streak = max(0, rank.streak + outcome.streakDelta)
     }
-    rank.rank = TrainingEngine().rank(for: rank.xp)
+    rank.bestStreak = max(rank.bestStreak, rank.streak)
     rank.updatedAt = Date()
 }
 

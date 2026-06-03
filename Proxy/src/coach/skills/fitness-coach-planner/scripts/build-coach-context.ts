@@ -33,6 +33,8 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       profileNotes: trimNote(request.profileNotes),
       weekStart: request.weekStart,
       weeklySessions: clampInt(request.weeklySessions, 1, 7),
+      trainingDays: Array.isArray(request.trainingDays) ? request.trainingDays.filter((day) => typeof day === "string") : [],
+      trainingDayOffsets: normalizeFutureDayOffsets(request.trainingDayOffsets),
       equipment: [...request.equipment].sort(),
       targetDate: request.targetDate
     },
@@ -124,6 +126,14 @@ function latestKnownBest(
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeFutureDayOffsets(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(
+    value
+      .filter((offset): offset is number => typeof offset === "number" && Number.isInteger(offset) && offset >= 1 && offset <= 6)
+  )].sort((a, b) => a - b);
 }
 
 function validLogCount(logs: TrainingLog[], start: Date, end: Date): number {

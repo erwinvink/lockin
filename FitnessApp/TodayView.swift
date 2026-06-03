@@ -91,35 +91,11 @@ private struct TodayHeroCard: View {
     var rank: RankState
 
     var body: some View {
-        HStack(spacing: 14) {
-            RankBadge(rank: rank.rank)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(rank.rank.title)
-                    .font(.system(.title3, design: .rounded, weight: .bold))
-                    .foregroundStyle(AppTheme.accent)
-                Text("Rank")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 8) {
-                Text("XP \(rank.xp)")
-                    .font(.system(.body, design: .rounded, weight: .semibold))
-                Gauge(value: Double(rank.xp), in: 0...Double(nextRankTarget(for: rank))) {
-                    EmptyView()
-                }
-                .tint(AppTheme.gold)
-                Text("\(rank.xp) / \(nextRankTarget(for: rank))")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
-            }
-            .frame(width: 128)
+        HStack(spacing: 10) {
+            MetricCard(title: "Consistency", value: "\(rank.consistencyScore)", subtitle: "Only score that matters", systemImage: "chart.line.uptrend.xyaxis")
+            MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Current sessions", systemImage: "flame.fill")
+            MetricCard(title: "Best", value: "\(rank.bestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
         }
-        .card()
-    }
-
-    private func nextRankTarget(for rankState: RankState) -> Int {
-        CalisthenicsRank.allCases.first(where: { $0.minimumXP > rankState.xp })?.minimumXP ?? max(rankState.xp, CalisthenicsRank.apex.minimumXP)
     }
 }
 

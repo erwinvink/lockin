@@ -1,6 +1,6 @@
 # Real-World Standards
 
-Use these as external comparison anchors, not as the app's XP rank definitions.
+Use these as external comparison anchors, not as the app's consistency score definitions.
 
 ## Marine Corps PFT Anchors
 
@@ -34,8 +34,8 @@ Source:
 
 ## App Interpretation
 
-The app's XP rank is artificial and should be labeled as a consistency/execution game layer.
-Do not present XP ranks as official military, sport, or medical classifications.
+The app's consistency score is artificial and should be labeled as an app-specific adherence signal.
+Do not present consistency scores as official military, sport, or medical classifications.
 
 When comparing goals:
 

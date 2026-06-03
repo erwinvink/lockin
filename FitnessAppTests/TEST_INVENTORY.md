@@ -16,7 +16,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Confirms deload credit does not create penalty points.
 
 - `testMissedSessionCreatesScorePenaltyWithoutExtraLoad`
-  - Verifies a missed session creates a negative XP outcome.
+  - Verifies a missed session creates a negative consistency outcome.
   - Confirms missed sessions create penalty points.
   - Confirms missed sessions do not trigger unsafe extra training load.
 
@@ -47,7 +47,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Verifies loopback proxy hosts are rejected instead of normalized.
 
 - `testCoachPlanRequestEncodesSelectedModel`
-  - Verifies the app sends the selected AI model ID in coach-generation requests.
+  - Verifies the app sends the selected AI model ID and training days in coach-generation requests.
 
 - `testCoachModelCatalogFallsBackForEmptySelection`
   - Verifies empty model settings fall back to the app default model ID.
@@ -62,6 +62,12 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testRejectsAIPlanWithInvalidTechnicalShape`
   - Verifies malformed schedules, logging fields, and exercise values are rejected.
+
+- `testRejectsAIPlanForToday`
+  - Verifies AI generation cannot create a refreshed session for today.
+
+- `testRejectsAIPlanOutsideSelectedTrainingDays`
+  - Verifies AI generation honors selected future training days.
 
 - `testAcceptedAIPlanConvertsToVisibleWeeklyPlan`
   - Verifies a balanced AI plan is accepted.
@@ -89,7 +95,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Generates 3 weeks of sessions.
   - Marks some days missed and fills in the remaining days as completed.
   - Verifies no planned sessions remain.
-  - Verifies missed/completed counts, performance logs, penalty points, streak, XP, and rank.
+  - Verifies missed/completed counts, performance logs, penalty points, streak, and consistency.
 
 ## Current Automated UI Tests
 
@@ -108,9 +114,9 @@ This file is the durable human-readable test list for the lockin app. It records
   - Completes onboarding.
   - Verifies Log starts empty until an AI plan is generated.
 
-- `testProgressAndRanksScreensAfterOnboarding`
+- `testProgressAndConsistencyScreensAfterOnboarding`
   - Completes onboarding.
-  - Tests Progress overview, embedded lift rings, XP, penalties, and Ranks/benchmarks.
+  - Tests Progress overview, embedded lift rings, consistency, penalties, and benchmarks.
 
 - `testCoachTabsAfterOnboarding`
   - Completes onboarding.
@@ -128,7 +134,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Still useful: UI-level editing of all numeric onboarding fields.
 
 - Today
-  - Covered: AI-only empty state, rank card.
+  - Covered: AI-only empty state, consistency card.
   - Still useful: AI-generated prescription card, log session, mark missed, week processed.
   - Still useful: popover copy for every exercise info button.
 
@@ -137,12 +143,12 @@ This file is the durable human-readable test list for the lockin app. It records
   - Still useful: editing numeric log fields, support-only sessions, pain/fatigue deload UI path.
 
 - Progress
-  - Covered: overview, XP, penalties, Lifts, History, Ranks navigation.
+  - Covered: overview, consistency, penalties, Lifts, History, Consistency navigation.
   - Still useful: progress rings after varied pull-up/push-up/plank values.
 
-- Ranks
-  - Covered: rank details screen and benchmark anchors.
-  - Still useful: all rank thresholds from Recruit through Apex.
+- Consistency
+  - Covered: consistency details screen and benchmark anchors.
+  - Still useful: score behavior after varied completion and miss patterns.
 
 - Coach
   - Covered: generator surface, Context model settings, Rules.
@@ -193,8 +199,8 @@ This file is the durable human-readable test list for the lockin app. It records
   - Verify replacement does not delete past planned sessions.
   - Verify replacement does not delete future completed sessions.
 
-- Add unit test for rank thresholds:
-  - Verify XP values map to Recruit, Grinder, Operator, Specialist, Elite, and Apex.
+- Add unit test for consistency score boundaries:
+  - Verify missed and completed sessions clamp consistency at zero and update streaks correctly.
 
 - Add UI test for reset cancellation:
   - Tap reset.
@@ -218,11 +224,11 @@ When doing manual QA on the simulator, use this sequence:
 2. Create a zero-baseline profile with goals 3 weeks out.
 3. Open Today and verify the AI-only empty state.
 4. Generate a week from Coach through the hosted proxy.
-5. Return to Today and inspect rank, compact prescription rows, checkboxes, and readiness.
+5. Return to Today and inspect consistency, compact prescription rows, checkboxes, and readiness.
 6. Check off the due session.
 7. Let the next due day roll forward or use test data to verify missed automation.
 8. Verify `Week processed`.
-9. Inspect Progress overview, embedded lift rings, and Ranks.
+9. Inspect Progress overview, embedded lift rings, and Consistency.
 10. Inspect Coach generator, Context, Rules.
 11. Inspect Log session history.
 12. Inspect Profile/Settings and reset.

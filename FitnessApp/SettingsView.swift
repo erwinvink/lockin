@@ -30,7 +30,7 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Wipe everything", role: .destructive, action: resetAllData)
             } message: {
-                Text("This removes every measurement, workout, log, rank, and coach record from the app.")
+                Text("This removes every measurement, workout, log, consistency, and coach record from the app.")
             }
         }
     }
@@ -71,7 +71,7 @@ private struct ProfileSummaryCard: View {
             }
             Divider()
             InfoLine(title: "Goals", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
-            InfoLine(title: "Sessions/week", value: "\(profile.weeklySessions)")
+            InfoLine(title: "Training days", value: profile.trainingDayLabels.joined(separator: ", "))
             InfoLine(title: "iCloud container", value: ModelContainerFactory.cloudKitContainerIdentifier)
         }
         .card()
@@ -125,7 +125,7 @@ private struct ResetCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Reset")
                 .font(.headline)
-            Text("Deletes profile, measurements, goals, sessions, logs, rank, coach plans, coach decisions, and pending workout reminders.")
+            Text("Deletes profile, measurements, goals, sessions, logs, consistency, coach plans, coach decisions, and pending workout reminders.")
                 .font(.caption)
                 .foregroundStyle(AppTheme.muted)
             Button(role: .destructive, action: onResetTap) {

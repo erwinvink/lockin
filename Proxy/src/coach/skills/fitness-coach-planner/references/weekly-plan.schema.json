@@ -29,7 +29,7 @@
         ],
         "properties": {
           "title": { "type": "string" },
-          "dayOffset": { "type": "integer", "minimum": 0, "maximum": 6 },
+          "dayOffset": { "type": "integer", "minimum": 1, "maximum": 6 },
           "focus": { "enum": ["pull", "push", "core", "mixed", "recovery"] },
           "purpose": { "type": "string" },
           "estimatedDurationMinutes": { "type": "integer" },
