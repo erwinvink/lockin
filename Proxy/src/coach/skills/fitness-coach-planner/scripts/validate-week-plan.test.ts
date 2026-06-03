@@ -10,6 +10,8 @@ const baseContext: CoachContext = {
     profileNotes: "",
     weekStart: "2026-05-11T00:00:00Z",
     weeklySessions: 4,
+    trainingDays: ["monday", "tuesday", "thursday", "saturday"],
+    trainingDayOffsets: [1, 2, 4, 6],
     equipment: ["pullUpBar", "yogaMat"],
     targetDate: "2027-05-11T00:00:00Z"
   },
@@ -35,6 +37,16 @@ test("accepts a balanced four-session plan with mixed exposure", () => {
   const result = validateWeeklyPlan(balancedPlan(), baseContext);
 
   assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("rejects a plan that creates a new session for today", () => {
+  const plan = balancedPlan();
+  plan.sessions[0] = { ...plan.sessions[0], dayOffset: 0 };
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("dayOffset 0 is today")));
 });
 
 test("accepts coach-policy decisions when the technical shape is valid", () => {
@@ -65,6 +77,16 @@ test("rejects invalid or unordered day offsets", () => {
   assert.ok(result.messages.some((message) => message.includes("strictly later")));
 });
 
+test("rejects sessions outside selected future training day offsets", () => {
+  const plan = balancedPlan();
+  plan.sessions[1] = { ...plan.sessions[1], dayOffset: 3 };
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("selected future training days")));
+});
+
 test("rejects non-renderable exercise values", () => {
   const plan = balancedPlan();
   plan.sessions[0].exercises[0] = { ...plan.sessions[0].exercises[0], sets: 0, reps: -1 };
@@ -82,7 +104,7 @@ function balancedPlan(): WeeklyPlan {
     contextState: "insufficient_history",
     safetyFlags: [],
     sessions: [
-      mixedSession("Full-body base", 0),
+      mixedSession("Full-body base", 1),
       {
         title: "Pull emphasis",
         dayOffset: 2,

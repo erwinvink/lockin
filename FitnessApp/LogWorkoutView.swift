@@ -7,26 +7,14 @@ private enum LogMetricField: Hashable {
     case plankSeconds
 }
 
-private enum RunLogMetricField: Hashable {
-    case duration
-    case distance
-    case elevation
-    case averageHeartRate
-    case maxHeartRate
-    case averagePace
-    case carbs
-    case fluid
-    case sodium
-}
-
 struct LogWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query private var ranks: [RankState]
+    @Query private var achievements: [AchievementState]
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var previousLogs: [PerformanceLog]
-    @Query(sort: \RunningLog.completedAt, order: .reverse) private var runningLogs: [RunningLog]
     @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
 
@@ -174,6 +162,7 @@ struct LogWorkoutView: View {
         let rank = ranks.first ?? RankState()
         if ranks.isEmpty { modelContext.insert(rank) }
         applyScoreOutcome(outcome, to: rank)
+        updateAchievements(after: log, rank: rank, states: achievements, in: modelContext)
 
         if outcome.didTriggerDeload {
             let coachPlan = CoachPlan(weekStart: Date(), summary: outcome.reason, source: .rules, validationStatus: .clamped)
@@ -197,8 +186,6 @@ struct LogWorkoutView: View {
             modelID: selectedModelID,
             logs: logsIncludingSavedLog,
             sessions: sessions,
-            runningLogs: runningLogs,
-            runningSessions: coachPlannedSessions(from: sessions, domain: .ultraRunning),
             weekStart: rollingPlanStart()
         )
 
@@ -222,276 +209,6 @@ struct LogWorkoutView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = Int(trimmed) else { return nil }
         return min(range.upperBound, max(range.lowerBound, value))
-    }
-}
-
-struct LogRunView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
-
-    var session: WorkoutSession
-    var workout: RunningWorkout
-
-    @FocusState private var focusedField: RunLogMetricField?
-    @State private var durationMinutes: Int
-    @State private var distanceKm: Double
-    @State private var elevationGainMeters: Int
-    @State private var averageHeartRate: Int
-    @State private var maxHeartRate: Int
-    @State private var averagePaceSecondsPerKm: Int
-    @State private var rpe = 5
-    @State private var painLevel = 0
-    @State private var fatigueLevel = 5
-    @State private var carbsPerHour = 0
-    @State private var fluidMlPerHour = 0
-    @State private var sodiumMgPerHour = 0
-    @State private var hadGIIssues = false
-    @State private var notes = ""
-
-    init(session: WorkoutSession, workout: RunningWorkout) {
-        self.session = session
-        self.workout = workout
-        _durationMinutes = State(initialValue: max(1, workout.targetDurationMinutes))
-        _distanceKm = State(initialValue: max(0.1, workout.targetDistanceKm))
-        _elevationGainMeters = State(initialValue: max(0, workout.targetElevationMeters))
-        _averageHeartRate = State(initialValue: max(0, workout.targetHeartRateHigh - 5))
-        _maxHeartRate = State(initialValue: max(0, workout.targetHeartRateHigh))
-        _averagePaceSecondsPerKm = State(initialValue: max(1, workout.targetPaceSecondsPerKm))
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScreenBackground {
-                RunLoggedWorkCard(
-                    durationMinutes: $durationMinutes,
-                    distanceKm: $distanceKm,
-                    elevationGainMeters: $elevationGainMeters,
-                    averageHeartRate: $averageHeartRate,
-                    maxHeartRate: $maxHeartRate,
-                    averagePaceSecondsPerKm: $averagePaceSecondsPerKm,
-                    focusedField: $focusedField
-                )
-
-                RunFuelingCard(
-                    carbsPerHour: $carbsPerHour,
-                    fluidMlPerHour: $fluidMlPerHour,
-                    sodiumMgPerHour: $sodiumMgPerHour,
-                    hadGIIssues: $hadGIIssues,
-                    focusedField: $focusedField
-                )
-
-                ReadinessInputCard(
-                    rpe: $rpe,
-                    painLevel: $painLevel,
-                    fatigueLevel: $fatigueLevel
-                )
-
-                NotesCard(notes: $notes)
-
-                Button("Save run", action: save)
-                    .buttonStyle(PrimaryActionButtonStyle())
-                    .disabled(!logIsValid)
-                    .opacity(logIsValid ? 1 : 0.45)
-            }
-            .navigationTitle("Log run")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        focusedField = nil
-                    }
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-        }
-    }
-
-    private var logIsValid: Bool {
-        durationMinutes > 0 &&
-            distanceKm > 0 &&
-            averagePaceSecondsPerKm > 0 &&
-            averageHeartRate >= 0 &&
-            maxHeartRate >= averageHeartRate
-    }
-
-    private func save() {
-        focusedField = nil
-        guard logIsValid else { return }
-
-        let log = RunningLog(
-            sessionId: session.id,
-            durationMinutes: durationMinutes,
-            distanceKm: distanceKm,
-            elevationGainMeters: elevationGainMeters,
-            averageHeartRate: averageHeartRate,
-            maxHeartRate: maxHeartRate,
-            averagePaceSecondsPerKm: averagePaceSecondsPerKm,
-            rpe: rpe,
-            painLevel: painLevel,
-            fatigueLevel: fatigueLevel,
-            carbsPerHour: carbsPerHour,
-            fluidMlPerHour: fluidMlPerHour,
-            sodiumMgPerHour: sodiumMgPerHour,
-            hadGIIssues: hadGIIssues,
-            notes: notes
-        )
-        modelContext.insert(log)
-        session.status = painLevel >= 4 || fatigueLevel >= 9 ? .deload : .completed
-
-        if painLevel >= 4 || fatigueLevel >= 9 || hadGIIssues {
-            let reason = ultraDeloadReason
-            let coachPlan = CoachPlan(weekStart: Date(), summary: reason, domain: .ultraRunning, source: .rules, validationStatus: .clamped)
-            modelContext.insert(coachPlan)
-            modelContext.insert(CoachDecision(planId: coachPlan.id, rationale: reason, safetyFlags: ultraSafetyFlags))
-        }
-
-        do {
-            try modelContext.save()
-        } catch {
-            return
-        }
-        dismiss()
-    }
-
-    private var ultraDeloadReason: String {
-        if painLevel >= 4 {
-            return "Ultra run logged pain above the safety line. Next ultra generation should reduce load."
-        }
-        if fatigueLevel >= 9 {
-            return "Ultra run logged high fatigue. Next ultra generation should reduce load."
-        }
-        return "Ultra run logged fueling or GI trouble. Keep long-run fueling conservative until it is stable."
-    }
-
-    private var ultraSafetyFlags: [String] {
-        var flags: [String] = []
-        if painLevel >= 4 { flags.append("run-pain") }
-        if fatigueLevel >= 9 { flags.append("run-fatigue") }
-        if hadGIIssues { flags.append("gi-issues") }
-        return flags
-    }
-}
-
-private struct RunLoggedWorkCard: View {
-    @Binding var durationMinutes: Int
-    @Binding var distanceKm: Double
-    @Binding var elevationGainMeters: Int
-    @Binding var averageHeartRate: Int
-    @Binding var maxHeartRate: Int
-    @Binding var averagePaceSecondsPerKm: Int
-    @FocusState.Binding var focusedField: RunLogMetricField?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Run result")
-                .font(.headline)
-            RunIntegerField(title: "Duration", value: $durationMinutes, range: 1...1_500, suffix: "min", focusedField: $focusedField, focusID: .duration)
-            RunDistanceField(distanceKm: $distanceKm, focusedField: $focusedField)
-            RunIntegerField(title: "Elevation", value: $elevationGainMeters, range: 0...12_000, suffix: "m", focusedField: $focusedField, focusID: .elevation)
-            RunIntegerField(title: "Average HR", value: $averageHeartRate, range: 0...230, suffix: "bpm", focusedField: $focusedField, focusID: .averageHeartRate)
-            RunIntegerField(title: "Max HR", value: $maxHeartRate, range: 0...240, suffix: "bpm", focusedField: $focusedField, focusID: .maxHeartRate)
-            PaceField(title: "Average pace", secondsPerKm: $averagePaceSecondsPerKm, range: 180...1_500)
-        }
-        .card(padding: 12)
-    }
-}
-
-private struct RunFuelingCard: View {
-    @Binding var carbsPerHour: Int
-    @Binding var fluidMlPerHour: Int
-    @Binding var sodiumMgPerHour: Int
-    @Binding var hadGIIssues: Bool
-    @FocusState.Binding var focusedField: RunLogMetricField?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Fueling")
-                .font(.headline)
-            RunIntegerField(title: "Carbs/hour", value: $carbsPerHour, range: 0...120, suffix: "g", focusedField: $focusedField, focusID: .carbs)
-            RunIntegerField(title: "Fluid/hour", value: $fluidMlPerHour, range: 0...1_500, suffix: "ml", focusedField: $focusedField, focusID: .fluid)
-            RunIntegerField(title: "Sodium/hour", value: $sodiumMgPerHour, range: 0...2_000, suffix: "mg", focusedField: $focusedField, focusID: .sodium)
-            Toggle("GI issues", isOn: $hadGIIssues)
-                .tint(AppTheme.warning)
-        }
-        .card(padding: 12)
-    }
-}
-
-private struct RunIntegerField: View {
-    var title: String
-    @Binding var value: Int
-    var range: ClosedRange<Int>
-    var suffix: String
-    @FocusState.Binding var focusedField: RunLogMetricField?
-    var focusID: RunLogMetricField
-
-    private var clampedValue: Binding<Int> {
-        Binding(
-            get: { value },
-            set: { value = min(range.upperBound, max(range.lowerBound, $0)) }
-        )
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-            Spacer()
-            TextField("", value: clampedValue, format: .number)
-                .keyboardType(.numberPad)
-                .multilineTextAlignment(.trailing)
-                .font(.system(.body, design: .rounded, weight: .semibold))
-                .frame(width: 76)
-                .focused($focusedField, equals: focusID)
-            Text(suffix)
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(AppTheme.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                .stroke(focusedField == focusID ? AppTheme.accent.opacity(0.7) : AppTheme.divider, lineWidth: 1)
-        )
-    }
-}
-
-private struct RunDistanceField: View {
-    @Binding var distanceKm: Double
-    @FocusState.Binding var focusedField: RunLogMetricField?
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text("Distance")
-                .font(.subheadline.weight(.medium))
-            Spacer()
-            TextField("", value: $distanceKm, format: .number.precision(.fractionLength(1)))
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.trailing)
-                .font(.system(.body, design: .rounded, weight: .semibold))
-                .frame(width: 76)
-                .focused($focusedField, equals: .distance)
-                .onChange(of: distanceKm) { _, newValue in
-                    distanceKm = min(300, max(0, newValue))
-                }
-            Text("km")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(AppTheme.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                .stroke(focusedField == .distance ? AppTheme.accent.opacity(0.7) : AppTheme.divider, lineWidth: 1)
-        )
     }
 }
 

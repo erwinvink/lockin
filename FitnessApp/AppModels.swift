@@ -1,20 +1,6 @@
 import Foundation
 import SwiftData
 
-enum TrainingDomain: String, CaseIterable, Codable, Identifiable {
-    case strength
-    case ultraRunning
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .strength: "Strength"
-        case .ultraRunning: "Ultra"
-        }
-    }
-}
-
 enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
     case pullUp
     case pushUp
@@ -65,6 +51,100 @@ enum EquipmentKind: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum TrainingWeekday: String, CaseIterable, Codable, Identifiable {
+    case monday
+    case tuesday
+    case wednesday
+    case thursday
+    case friday
+    case saturday
+    case sunday
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .monday: "Monday"
+        case .tuesday: "Tuesday"
+        case .wednesday: "Wednesday"
+        case .thursday: "Thursday"
+        case .friday: "Friday"
+        case .saturday: "Saturday"
+        case .sunday: "Sunday"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .monday: "Mo"
+        case .tuesday: "Tu"
+        case .wednesday: "We"
+        case .thursday: "Th"
+        case .friday: "Fr"
+        case .saturday: "Sa"
+        case .sunday: "Su"
+        }
+    }
+
+    var calendarWeekday: Int {
+        switch self {
+        case .sunday: 1
+        case .monday: 2
+        case .tuesday: 3
+        case .wednesday: 4
+        case .thursday: 5
+        case .friday: 6
+        case .saturday: 7
+        }
+    }
+
+    static func defaultTrainingDays(for sessionCount: Int) -> Set<TrainingWeekday> {
+        let ordered: [TrainingWeekday]
+        switch sessionCount {
+        case 1:
+            ordered = [.monday]
+        case 2:
+            ordered = [.monday, .thursday]
+        case 3:
+            ordered = [.monday, .wednesday, .saturday]
+        case 4:
+            ordered = [.monday, .wednesday, .friday, .saturday]
+        case 5:
+            ordered = [.monday, .tuesday, .thursday, .friday, .saturday]
+        case 6:
+            ordered = [.monday, .tuesday, .wednesday, .thursday, .friday, .saturday]
+        default:
+            ordered = Array(Self.allCases.prefix(max(1, min(6, sessionCount))))
+        }
+        return Set(ordered)
+    }
+
+    static func normalized(_ days: Set<TrainingWeekday>, weeklySessions: Int) -> [TrainingWeekday] {
+        let selected = days.isEmpty ? defaultTrainingDays(for: weeklySessions) : days
+        let capped = selected.intersection(Self.allCases)
+        let limited: Set<TrainingWeekday>
+        if capped.count > 6 {
+            limited = Set(Self.allCases.prefix(6))
+        } else {
+            limited = capped
+        }
+        return Self.allCases.filter { limited.contains($0) }
+    }
+
+    static func dayOffsets(for days: Set<TrainingWeekday>, weeklySessions: Int, weekStart: Date, calendar: Calendar = .current) -> [Int] {
+        let startWeekday = calendar.component(.weekday, from: calendar.startOfDay(for: weekStart))
+        return normalized(days, weeklySessions: weeklySessions)
+            .map { ($0.calendarWeekday - startWeekday + 7) % 7 }
+            .sorted()
+    }
+
+    static func storageValue(for days: Set<TrainingWeekday>, weeklySessions: Int) -> String {
+        normalized(days, weeklySessions: weeklySessions)
+            .map(\.rawValue)
+            .joined(separator: ",")
+    }
+}
+
 enum SessionStatus: String, Codable {
     case planned
     case completed
@@ -78,163 +158,70 @@ enum SessionFocus: String, Codable {
     case core
     case mixed
     case recovery
-    case easyRun
-    case longRun
-    case hillHike
-    case steadyRun
-    case recoveryRun
 
-    var title: String {
-        switch self {
-        case .pull: "Pull"
-        case .push: "Push"
-        case .core: "Core"
-        case .mixed: "Mixed"
-        case .recovery: "Recovery"
-        case .easyRun: "Easy run"
-        case .longRun: "Long run"
-        case .hillHike: "Hill hike"
-        case .steadyRun: "Steady run"
-        case .recoveryRun: "Recovery run"
-        }
-    }
+    var title: String { rawValue.capitalized }
 }
 
-enum RunningAbility: String, CaseIterable, Codable, Identifiable {
-    case struggling
-    case steady
-    case experienced
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .struggling: "Fragile / rebuilding"
-        case .steady: "Stable"
-        case .experienced: "Robust"
-        }
-    }
-}
-
-enum RunningBackground: String, CaseIterable, Codable, Identifiable {
-    case newRunner
-    case marathoner
-    case triathleteIronman
-    case ultraRunner
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .newRunner: "New runner"
-        case .marathoner: "Marathoner"
-        case .triathleteIronman: "Triathlete / Ironman"
-        case .ultraRunner: "Ultra runner"
-        }
-    }
-}
-
-enum RunningDurability: String, CaseIterable, Codable, Identifiable {
-    case fragile
-    case stable
-    case robust
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .fragile: "Fragile / rebuilding"
-        case .stable: "Stable"
-        case .robust: "Robust"
-        }
-    }
-}
-
-enum WalkStrategy: String, CaseIterable, Codable, Identifiable {
-    case none
-    case climbsOnly
-    case timed
-    case custom
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .none: "None"
-        case .climbsOnly: "Climbs only"
-        case .timed: "Timed run-walk"
-        case .custom: "Custom"
-        }
-    }
-}
-
-enum RunningTerrain: String, CaseIterable, Codable, Identifiable {
-    case flat
-    case rolling
-    case hills
-    case trails
-    case mixed
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .flat: "Flat"
-        case .rolling: "Rolling"
-        case .hills: "Hills"
-        case .trails: "Trails"
-        case .mixed: "Mixed"
-        }
-    }
-}
-
-enum RunWorkoutType: String, CaseIterable, Codable, Identifiable {
+enum RunningWorkoutKind: String, CaseIterable, Codable, Identifiable {
     case easy
     case long
-    case hillHike
-    case steady
     case recovery
+    case hills
+    case tempo
+    case intervals
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .easy: "Easy run"
-        case .long: "Long run"
-        case .hillHike: "Hill hike"
-        case .steady: "Steady run"
-        case .recovery: "Recovery run"
+        case .easy: "Easy Run"
+        case .long: "Long Run"
+        case .recovery: "Recovery Run"
+        case .hills: "Hill Session"
+        case .tempo: "Tempo Run"
+        case .intervals: "Intervals"
         }
     }
 }
 
-enum CalisthenicsRank: String, CaseIterable, Codable {
-    case recruit
-    case grinder
-    case operatorRank
-    case specialist
-    case elite
-    case apex
+enum RunningWorkoutStatus: String, Codable {
+    case planned
+    case completed
+    case missed
+}
+
+enum LockinAchievementKind: String, CaseIterable, Codable, Identifiable {
+    case consistencyKing
+    case earlyRiser
+    case unbroken
+    case plankMaster
+
+    var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .recruit: "Recruit"
-        case .grinder: "Grinder"
-        case .operatorRank: "Operator"
-        case .specialist: "Specialist"
-        case .elite: "Elite"
-        case .apex: "Apex"
+        case .consistencyKing: "Consistency King"
+        case .earlyRiser: "Early Riser"
+        case .unbroken: "Unbroken"
+        case .plankMaster: "Plank Master"
         }
     }
 
-    var minimumXP: Int {
+    var detail: String {
         switch self {
-        case .recruit: 0
-        case .grinder: 400
-        case .operatorRank: 1_000
-        case .specialist: 2_000
-        case .elite: 3_500
-        case .apex: 5_500
+        case .consistencyKing: "Train 14 days in a row"
+        case .earlyRiser: "Log a workout before 8am"
+        case .unbroken: "Complete 50 pull-ups in a day"
+        case .plankMaster: "Hold a 5 minute plank"
+        }
+    }
+
+    var target: Int {
+        switch self {
+        case .consistencyKing: 14
+        case .earlyRiser: 1
+        case .unbroken: 50
+        case .plankMaster: 300
         }
     }
 }
@@ -257,6 +244,7 @@ final class UserProfile {
     var name: String = "Athlete"
     var targetDate: Date = Date()
     var weeklySessions: Int = 4
+    var trainingDaysRaw: String = ""
     var sessionMinutes: Int = 0
     var equipmentRaw: String = ""
     var baselinePullUps: Int = 0
@@ -267,7 +255,6 @@ final class UserProfile {
     var goalPlankSeconds: Int = 300
     var strictFormAccepted: Bool = true
     var remindersEnabled: Bool = true
-    var reminderMinutesAfterMidnight: Int = -1
     var painNotes: String = ""
 
     init(
@@ -276,6 +263,7 @@ final class UserProfile {
         name: String = "Athlete",
         targetDate: Date,
         weeklySessions: Int,
+        trainingDays: Set<TrainingWeekday> = [],
         sessionMinutes: Int = 0,
         equipment: Set<EquipmentKind>,
         baselinePullUps: Int,
@@ -286,14 +274,16 @@ final class UserProfile {
         goalPlankSeconds: Int = 300,
         strictFormAccepted: Bool = true,
         remindersEnabled: Bool = true,
-        reminderMinutesAfterMidnight: Int = -1,
         painNotes: String = ""
     ) {
         self.id = id
         self.createdAt = createdAt
         self.name = name
         self.targetDate = targetDate
-        self.weeklySessions = weeklySessions
+        let boundedWeeklySessions = max(1, min(6, weeklySessions))
+        let resolvedTrainingDays = Set(TrainingWeekday.normalized(trainingDays, weeklySessions: boundedWeeklySessions))
+        self.weeklySessions = resolvedTrainingDays.count
+        self.trainingDaysRaw = TrainingWeekday.storageValue(for: resolvedTrainingDays, weeklySessions: self.weeklySessions)
         self.sessionMinutes = sessionMinutes
         self.equipmentRaw = equipment.map(\.rawValue).sorted().joined(separator: ",")
         self.baselinePullUps = baselinePullUps
@@ -304,12 +294,20 @@ final class UserProfile {
         self.goalPlankSeconds = goalPlankSeconds
         self.strictFormAccepted = strictFormAccepted
         self.remindersEnabled = remindersEnabled
-        self.reminderMinutesAfterMidnight = reminderMinutesAfterMidnight
         self.painNotes = painNotes
     }
 
     var equipment: Set<EquipmentKind> {
         Set(equipmentRaw.split(separator: ",").compactMap { EquipmentKind(rawValue: String($0)) })
+    }
+
+    var trainingDays: Set<TrainingWeekday> {
+        let parsed = Set(trainingDaysRaw.split(separator: ",").compactMap { TrainingWeekday(rawValue: String($0)) })
+        return parsed.isEmpty ? TrainingWeekday.defaultTrainingDays(for: weeklySessions) : parsed
+    }
+
+    var trainingDayLabels: [String] {
+        TrainingWeekday.normalized(trainingDays, weeklySessions: weeklySessions).map(\.shortTitle)
     }
 }
 
@@ -321,7 +319,6 @@ final class WorkoutSession {
     var weekIndex: Int = 0
     var focusRaw: String = SessionFocus.mixed.rawValue
     var statusRaw: String = SessionStatus.planned.rawValue
-    var domainRaw: String = TrainingDomain.strength.rawValue
     var scoreImpact: Int = 0
     var summary: String = ""
     var createdAt: Date = Date()
@@ -332,7 +329,6 @@ final class WorkoutSession {
         title: String,
         weekIndex: Int,
         focus: SessionFocus,
-        domain: TrainingDomain = .strength,
         status: SessionStatus = .planned,
         scoreImpact: Int = 0,
         summary: String,
@@ -343,7 +339,6 @@ final class WorkoutSession {
         self.title = title
         self.weekIndex = weekIndex
         self.focusRaw = focus.rawValue
-        self.domainRaw = domain.rawValue
         self.statusRaw = status.rawValue
         self.scoreImpact = scoreImpact
         self.summary = summary
@@ -351,174 +346,10 @@ final class WorkoutSession {
     }
 
     var focus: SessionFocus { SessionFocus(rawValue: focusRaw) ?? .mixed }
-    var domain: TrainingDomain {
-        get { TrainingDomain(rawValue: domainRaw) ?? .strength }
-        set { domainRaw = newValue.rawValue }
-    }
     var status: SessionStatus {
         get { SessionStatus(rawValue: statusRaw) ?? .planned }
         set { statusRaw = newValue.rawValue }
     }
-}
-
-@Model
-final class RunningTrainingProfile {
-    var id: UUID = UUID()
-    var userProfileIdRaw: String = ""
-    var createdAt: Date = Date()
-    var targetRaceMiles: Int = 100
-    var targetRaceKm: Int = 160
-    var targetRaceDate: Date = Calendar.current.date(byAdding: .year, value: 2, to: Date()) ?? Date()
-    var weeklyRunSessions: Int = 4
-    var currentWeeklyDistanceKm: Int = 25
-    var currentLongRunKm: Int = 10
-    var easyPaceSecondsPerKm: Int = 420
-    var easyHeartRate: Int = 140
-    var maxHeartRate: Int = 185
-    var thresholdHeartRate: Int = 165
-    var targetElevationMeters: Int = 800
-    var abilityRaw: String = RunningAbility.struggling.rawValue
-    var backgroundRaw: String = RunningBackground.triathleteIronman.rawValue
-    var durabilityRaw: String = RunningDurability.fragile.rawValue
-    var terrainRaw: String = RunningTerrain.mixed.rawValue
-    var walkStrategyRaw: String = WalkStrategy.climbsOnly.rawValue
-    var runWalkStrategy: String = "Walk climbs early to keep heart rate controlled."
-    var injuryNotes: String = ""
-
-    init(
-        id: UUID = UUID(),
-        userProfileId: UUID,
-        createdAt: Date = Date(),
-        targetRaceMiles: Int = 100,
-        targetRaceKm: Int = 160,
-        targetRaceDate: Date = Calendar.current.date(byAdding: .year, value: 2, to: Date()) ?? Date(),
-        weeklyRunSessions: Int = 4,
-        currentWeeklyDistanceKm: Int = 25,
-        currentLongRunKm: Int = 10,
-        easyPaceSecondsPerKm: Int = 420,
-        easyHeartRate: Int = 140,
-        maxHeartRate: Int = 185,
-        thresholdHeartRate: Int = 165,
-        targetElevationMeters: Int = 800,
-        ability: RunningAbility = .struggling,
-        background: RunningBackground = .triathleteIronman,
-        durability: RunningDurability = .fragile,
-        terrain: RunningTerrain = .mixed,
-        walkStrategy: WalkStrategy = .climbsOnly,
-        runWalkStrategy: String = "Walk climbs early to keep heart rate controlled.",
-        injuryNotes: String = ""
-    ) {
-        self.id = id
-        self.userProfileIdRaw = userProfileId.uuidString
-        self.createdAt = createdAt
-        self.targetRaceMiles = targetRaceMiles
-        self.targetRaceKm = targetRaceKm
-        self.targetRaceDate = targetRaceDate
-        self.weeklyRunSessions = weeklyRunSessions
-        self.currentWeeklyDistanceKm = currentWeeklyDistanceKm
-        self.currentLongRunKm = currentLongRunKm
-        self.easyPaceSecondsPerKm = easyPaceSecondsPerKm
-        self.easyHeartRate = easyHeartRate
-        self.maxHeartRate = maxHeartRate
-        self.thresholdHeartRate = thresholdHeartRate
-        self.targetElevationMeters = targetElevationMeters
-        self.abilityRaw = ability.rawValue
-        self.backgroundRaw = background.rawValue
-        self.durabilityRaw = durability.rawValue
-        self.terrainRaw = terrain.rawValue
-        self.walkStrategyRaw = walkStrategy.rawValue
-        self.runWalkStrategy = runWalkStrategy
-        self.injuryNotes = injuryNotes
-    }
-
-    var userProfileId: UUID? {
-        UUID(uuidString: userProfileIdRaw)
-    }
-
-    var ability: RunningAbility {
-        get { RunningAbility(rawValue: abilityRaw) ?? .struggling }
-        set { abilityRaw = newValue.rawValue }
-    }
-
-    var background: RunningBackground {
-        get { RunningBackground(rawValue: backgroundRaw) ?? .triathleteIronman }
-        set { backgroundRaw = newValue.rawValue }
-    }
-
-    var durability: RunningDurability {
-        get { RunningDurability(rawValue: durabilityRaw) ?? .fragile }
-        set {
-            durabilityRaw = newValue.rawValue
-            abilityRaw = switch newValue {
-            case .fragile: RunningAbility.struggling.rawValue
-            case .stable: RunningAbility.steady.rawValue
-            case .robust: RunningAbility.experienced.rawValue
-            }
-        }
-    }
-
-    var terrain: RunningTerrain {
-        get { RunningTerrain(rawValue: terrainRaw) ?? .mixed }
-        set { terrainRaw = newValue.rawValue }
-    }
-
-    var walkStrategy: WalkStrategy {
-        get { WalkStrategy(rawValue: walkStrategyRaw) ?? .climbsOnly }
-        set { walkStrategyRaw = newValue.rawValue }
-    }
-}
-
-@Model
-final class RunningWorkout {
-    var id: UUID = UUID()
-    var sessionId: UUID = UUID()
-    var runTypeRaw: String = RunWorkoutType.easy.rawValue
-    var targetDurationMinutes: Int = 0
-    var targetDistanceKm: Double = 0
-    var targetElevationMeters: Int = 0
-    var targetHeartRateLow: Int = 0
-    var targetHeartRateHigh: Int = 0
-    var targetPaceSecondsPerKm: Int = 0
-    var terrainRaw: String = RunningTerrain.mixed.rawValue
-    var runWalkStrategy: String = ""
-    var fuelingPlan: String = ""
-    var purpose: String = ""
-    var safetyNotes: String = ""
-
-    init(
-        id: UUID = UUID(),
-        sessionId: UUID,
-        runType: RunWorkoutType,
-        targetDurationMinutes: Int,
-        targetDistanceKm: Double,
-        targetElevationMeters: Int,
-        targetHeartRateLow: Int,
-        targetHeartRateHigh: Int,
-        targetPaceSecondsPerKm: Int,
-        terrain: RunningTerrain,
-        runWalkStrategy: String,
-        fuelingPlan: String,
-        purpose: String,
-        safetyNotes: String
-    ) {
-        self.id = id
-        self.sessionId = sessionId
-        self.runTypeRaw = runType.rawValue
-        self.targetDurationMinutes = targetDurationMinutes
-        self.targetDistanceKm = targetDistanceKm
-        self.targetElevationMeters = targetElevationMeters
-        self.targetHeartRateLow = targetHeartRateLow
-        self.targetHeartRateHigh = targetHeartRateHigh
-        self.targetPaceSecondsPerKm = targetPaceSecondsPerKm
-        self.terrainRaw = terrain.rawValue
-        self.runWalkStrategy = runWalkStrategy
-        self.fuelingPlan = fuelingPlan
-        self.purpose = purpose
-        self.safetyNotes = safetyNotes
-    }
-
-    var runType: RunWorkoutType { RunWorkoutType(rawValue: runTypeRaw) ?? .easy }
-    var terrain: RunningTerrain { RunningTerrain(rawValue: terrainRaw) ?? .mixed }
 }
 
 @Model
@@ -626,60 +457,149 @@ final class PerformanceLog {
 }
 
 @Model
+final class RunningProfile {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var targetRaceName: String = "Comrades Marathon"
+    var raceDate: Date = Date()
+    var weeklyDistanceTargetKm: Double = 42
+    var longRunTargetKm: Double = 28
+    var easyPaceSecondsPerKm: Int = 360
+    var preferredTerrain: String = "Road and trail"
+    var injuryNotes: String = ""
+    var runningDaysRaw: String = ""
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = Date(),
+        targetRaceName: String = "Comrades Marathon",
+        raceDate: Date,
+        weeklyDistanceTargetKm: Double = 42,
+        longRunTargetKm: Double = 28,
+        easyPaceSecondsPerKm: Int = 360,
+        preferredTerrain: String = "Road and trail",
+        injuryNotes: String = "",
+        runningDays: Set<TrainingWeekday> = TrainingWeekday.defaultTrainingDays(for: 4)
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.targetRaceName = targetRaceName
+        self.raceDate = raceDate
+        self.weeklyDistanceTargetKm = weeklyDistanceTargetKm
+        self.longRunTargetKm = longRunTargetKm
+        self.easyPaceSecondsPerKm = easyPaceSecondsPerKm
+        self.preferredTerrain = preferredTerrain
+        self.injuryNotes = injuryNotes
+        self.runningDaysRaw = TrainingWeekday.storageValue(for: runningDays, weeklySessions: runningDays.count)
+    }
+
+    var runningDays: Set<TrainingWeekday> {
+        get {
+            let parsed = Set(runningDaysRaw.split(separator: ",").compactMap { TrainingWeekday(rawValue: String($0)) })
+            return parsed.isEmpty ? TrainingWeekday.defaultTrainingDays(for: 4) : parsed
+        }
+        set {
+            let resolved = newValue.isEmpty ? TrainingWeekday.defaultTrainingDays(for: 4) : newValue
+            runningDaysRaw = TrainingWeekday.storageValue(for: resolved, weeklySessions: resolved.count)
+        }
+    }
+
+    var runningDayLabels: [String] {
+        TrainingWeekday.normalized(runningDays, weeklySessions: runningDays.count).map(\.shortTitle)
+    }
+}
+
+@Model
+final class RunningWorkout {
+    var id: UUID = UUID()
+    var scheduledDate: Date = Date()
+    var title: String = ""
+    var kindRaw: String = RunningWorkoutKind.easy.rawValue
+    var statusRaw: String = RunningWorkoutStatus.planned.rawValue
+    var distanceKm: Double = 0
+    var durationSeconds: Int = 0
+    var elevationMeters: Int = 0
+    var zone: String = ""
+    var notes: String = ""
+    var createdAt: Date = Date()
+
+    init(
+        id: UUID = UUID(),
+        scheduledDate: Date,
+        title: String,
+        kind: RunningWorkoutKind,
+        status: RunningWorkoutStatus = .planned,
+        distanceKm: Double,
+        durationSeconds: Int,
+        elevationMeters: Int,
+        zone: String,
+        notes: String = "",
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.scheduledDate = scheduledDate
+        self.title = title
+        self.kindRaw = kind.rawValue
+        self.statusRaw = status.rawValue
+        self.distanceKm = distanceKm
+        self.durationSeconds = durationSeconds
+        self.elevationMeters = elevationMeters
+        self.zone = zone
+        self.notes = notes
+        self.createdAt = createdAt
+    }
+
+    var kind: RunningWorkoutKind {
+        get { RunningWorkoutKind(rawValue: kindRaw) ?? .easy }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    var status: RunningWorkoutStatus {
+        get { RunningWorkoutStatus(rawValue: statusRaw) ?? .planned }
+        set { statusRaw = newValue.rawValue }
+    }
+}
+
+@Model
 final class RunningLog {
     var id: UUID = UUID()
-    var sessionId: UUID = UUID()
+    var workoutId: UUID = UUID()
     var completedAt: Date = Date()
-    var durationMinutes: Int = 0
     var distanceKm: Double = 0
-    var elevationGainMeters: Int = 0
+    var durationSeconds: Int = 0
+    var elevationMeters: Int = 0
     var averageHeartRate: Int = 0
-    var maxHeartRate: Int = 0
-    var averagePaceSecondsPerKm: Int = 0
-    var rpe: Int = 5
-    var painLevel: Int = 0
-    var fatigueLevel: Int = 5
-    var carbsPerHour: Int = 0
-    var fluidMlPerHour: Int = 0
-    var sodiumMgPerHour: Int = 0
-    var hadGIIssues: Bool = false
+    var calories: Int = 0
+    var carbsGrams: Int = 0
+    var fluidMl: Int = 0
+    var sodiumMg: Int = 0
     var notes: String = ""
 
     init(
         id: UUID = UUID(),
-        sessionId: UUID,
+        workoutId: UUID,
         completedAt: Date = Date(),
-        durationMinutes: Int,
         distanceKm: Double,
-        elevationGainMeters: Int,
-        averageHeartRate: Int,
-        maxHeartRate: Int,
-        averagePaceSecondsPerKm: Int,
-        rpe: Int,
-        painLevel: Int,
-        fatigueLevel: Int,
-        carbsPerHour: Int,
-        fluidMlPerHour: Int,
-        sodiumMgPerHour: Int,
-        hadGIIssues: Bool,
-        notes: String
+        durationSeconds: Int,
+        elevationMeters: Int,
+        averageHeartRate: Int = 0,
+        calories: Int = 0,
+        carbsGrams: Int = 0,
+        fluidMl: Int = 0,
+        sodiumMg: Int = 0,
+        notes: String = ""
     ) {
         self.id = id
-        self.sessionId = sessionId
+        self.workoutId = workoutId
         self.completedAt = completedAt
-        self.durationMinutes = durationMinutes
         self.distanceKm = distanceKm
-        self.elevationGainMeters = elevationGainMeters
+        self.durationSeconds = durationSeconds
+        self.elevationMeters = elevationMeters
         self.averageHeartRate = averageHeartRate
-        self.maxHeartRate = maxHeartRate
-        self.averagePaceSecondsPerKm = averagePaceSecondsPerKm
-        self.rpe = rpe
-        self.painLevel = painLevel
-        self.fatigueLevel = fatigueLevel
-        self.carbsPerHour = carbsPerHour
-        self.fluidMlPerHour = fluidMlPerHour
-        self.sodiumMgPerHour = sodiumMgPerHour
-        self.hadGIIssues = hadGIIssues
+        self.calories = calories
+        self.carbsGrams = carbsGrams
+        self.fluidMl = fluidMl
+        self.sodiumMg = sodiumMg
         self.notes = notes
     }
 }
@@ -687,34 +607,54 @@ final class RunningLog {
 @Model
 final class RankState {
     var id: UUID = UUID()
-    var rankRaw: String = CalisthenicsRank.recruit.rawValue
-    var xp: Int = 0
     var consistencyScore: Int = 0
     var streak: Int = 0
+    var bestStreak: Int = 0
     var penaltyPoints: Int = 0
     var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),
-        rank: CalisthenicsRank = .recruit,
-        xp: Int = 0,
         consistencyScore: Int = 0,
         streak: Int = 0,
+        bestStreak: Int = 0,
         penaltyPoints: Int = 0,
         updatedAt: Date = Date()
     ) {
         self.id = id
-        self.rankRaw = rank.rawValue
-        self.xp = xp
         self.consistencyScore = consistencyScore
         self.streak = streak
+        self.bestStreak = bestStreak
         self.penaltyPoints = penaltyPoints
         self.updatedAt = updatedAt
     }
+}
 
-    var rank: CalisthenicsRank {
-        get { CalisthenicsRank(rawValue: rankRaw) ?? .recruit }
-        set { rankRaw = newValue.rawValue }
+@Model
+final class AchievementState {
+    var id: UUID = UUID()
+    var kindRaw: String = LockinAchievementKind.consistencyKing.rawValue
+    var progress: Int = 0
+    var completedAt: Date?
+    var updatedAt: Date = Date()
+
+    init(
+        id: UUID = UUID(),
+        kind: LockinAchievementKind,
+        progress: Int = 0,
+        completedAt: Date? = nil,
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.kindRaw = kind.rawValue
+        self.progress = progress
+        self.completedAt = completedAt
+        self.updatedAt = updatedAt
+    }
+
+    var kind: LockinAchievementKind {
+        get { LockinAchievementKind(rawValue: kindRaw) ?? .consistencyKing }
+        set { kindRaw = newValue.rawValue }
     }
 }
 
@@ -723,7 +663,6 @@ final class CoachPlan {
     var id: UUID = UUID()
     var weekStart: Date = Date()
     var summary: String = ""
-    var domainRaw: String = TrainingDomain.strength.rawValue
     var sourceRaw: String = PlanSource.rules.rawValue
     var validationStatusRaw: String = ValidationStatus.accepted.rawValue
     var generatedAt: Date = Date()
@@ -732,7 +671,6 @@ final class CoachPlan {
         id: UUID = UUID(),
         weekStart: Date,
         summary: String,
-        domain: TrainingDomain = .strength,
         source: PlanSource,
         validationStatus: ValidationStatus,
         generatedAt: Date = Date()
@@ -740,15 +678,9 @@ final class CoachPlan {
         self.id = id
         self.weekStart = weekStart
         self.summary = summary
-        self.domainRaw = domain.rawValue
         self.sourceRaw = source.rawValue
         self.validationStatusRaw = validationStatus.rawValue
         self.generatedAt = generatedAt
-    }
-
-    var domain: TrainingDomain {
-        get { TrainingDomain(rawValue: domainRaw) ?? .strength }
-        set { domainRaw = newValue.rawValue }
     }
 }
 
@@ -774,7 +706,6 @@ final class CoachVerdict {
     var id: UUID = UUID()
     var createdAt: Date = Date()
     var sourceLogIdRaw: String = ""
-    var domainRaw: String = TrainingDomain.strength.rawValue
     var headline: String = ""
     var summary: String = ""
     var latestChange: String = ""
@@ -787,7 +718,6 @@ final class CoachVerdict {
         id: UUID = UUID(),
         createdAt: Date = Date(),
         sourceLogId: UUID?,
-        domain: TrainingDomain = .strength,
         headline: String,
         summary: String,
         latestChange: String,
@@ -799,7 +729,6 @@ final class CoachVerdict {
         self.id = id
         self.createdAt = createdAt
         self.sourceLogIdRaw = sourceLogId?.uuidString ?? ""
-        self.domainRaw = domain.rawValue
         self.headline = headline
         self.summary = summary
         self.latestChange = latestChange
@@ -824,11 +753,6 @@ final class CoachVerdict {
 
     var sourceLogId: UUID? {
         UUID(uuidString: sourceLogIdRaw)
-    }
-
-    var domain: TrainingDomain {
-        get { TrainingDomain(rawValue: domainRaw) ?? .strength }
-        set { domainRaw = newValue.rawValue }
     }
 
     var safetyFlags: [String] {
@@ -862,7 +786,7 @@ struct RealWorldBenchmark: Identifiable {
         RealWorldBenchmark(
             title: "ExRx strength tiers",
             value: "Frail to Elite",
-            detail: "Bodyweight strength comparisons depend on age, sex, body weight, and strict form, so the app treats them as external references instead of direct XP ranks.",
+            detail: "Bodyweight strength comparisons depend on age, sex, body weight, and strict form, so the app treats them as external references instead of consistency scores.",
             sourceLabel: "ExRx strength standards",
             sourceURL: "https://exrx.net/WorkoutTools/StrengthStandards"
         )

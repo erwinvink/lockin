@@ -16,6 +16,7 @@ struct TrainingPreferences: Equatable {
     var weeklySessions: Int
     var equipment: Set<EquipmentKind>
     var targetDate: Date
+    var trainingDays: Set<TrainingWeekday> = []
 }
 
 struct ExerciseSetPlan: Identifiable, Equatable {
@@ -67,7 +68,6 @@ struct SessionLogInput: Equatable {
 }
 
 struct ScoreOutcome: Equatable {
-    var xpDelta: Int
     var consistencyDelta: Int
     var penaltyDelta: Int
     var streakDelta: Int
@@ -80,38 +80,9 @@ struct PlanValidationResult: Equatable {
     var messages: [String]
 }
 
-struct RunningSessionPlan: Identifiable, Equatable {
-    var id = UUID()
-    var date: Date
-    var title: String
-    var runType: RunWorkoutType
-    var focus: SessionFocus
-    var weekIndex: Int
-    var targetDurationMinutes: Int
-    var targetDistanceKm: Double
-    var targetElevationMeters: Int
-    var targetHeartRateLow: Int
-    var targetHeartRateHigh: Int
-    var targetPaceSecondsPerKm: Int
-    var terrain: RunningTerrain
-    var runWalkStrategy: String
-    var fuelingPlan: String
-    var purpose: String
-    var safetyNotes: String
-}
-
-struct UltraWeekPlan: Equatable {
-    var weekStart: Date
-    var weekIndex: Int
-    var sessions: [RunningSessionPlan]
-    var summary: String
-    var readiness: String
-}
-
 struct TrainingEngine {
     static let defaultGoals = GoalTargets(pullUps: 50, pushUps: 100, plankSeconds: 300)
     static let missedSessionPenaltyPoints = 25
-    static let missedSessionXPDelta = -70
     static let missedSessionConsistencyDelta = -12
 
     func generateWeek(
@@ -122,14 +93,21 @@ struct TrainingEngine {
         preferences: TrainingPreferences,
         recentLogs: [SessionLogInput] = []
     ) -> WeeklyPlan {
-        let sessionCount = min(max(preferences.weeklySessions, 2), 6)
+        let selectedDays = TrainingWeekday.normalized(preferences.trainingDays, weeklySessions: preferences.weeklySessions)
+        let sessionCount = min(max(selectedDays.count, 1), 6)
+        let dayOffsets = TrainingWeekday.dayOffsets(
+            for: Set(selectedDays),
+            weeklySessions: sessionCount,
+            weekStart: start
+        )
         let deload = recentLogs.contains { $0.painLevel >= 4 || $0.fatigueLevel >= 9 }
         let readiness = readinessMultiplier(from: baseline, goals: goals, targetDate: preferences.targetDate, weekIndex: weekIndex)
         let multiplier = deload ? max(0.55, readiness * 0.65) : readiness
         let focuses = focusSequence(count: sessionCount)
 
         let sessions = (0..<sessionCount).map { index in
-            let date = Calendar.current.date(byAdding: .day, value: index * max(1, 7 / sessionCount), to: start) ?? start
+            let dayOffset = dayOffsets.indices.contains(index) ? dayOffsets[index] : index
+            let date = Calendar.current.date(byAdding: .day, value: dayOffset, to: start) ?? start
             return makeSession(
                 date: date,
                 index: index,
@@ -154,18 +132,16 @@ struct TrainingEngine {
     func score(log: SessionLogInput, plannedSession: TrainingSessionPlan?) -> ScoreOutcome {
         guard log.completed else {
             return ScoreOutcome(
-                xpDelta: Self.missedSessionXPDelta,
                 consistencyDelta: Self.missedSessionConsistencyDelta,
                 penaltyDelta: Self.missedSessionPenaltyPoints,
                 streakDelta: -1,
                 didTriggerDeload: false,
-                reason: "Missed session: +\(Self.missedSessionPenaltyPoints) penalty points, \(Self.missedSessionXPDelta) XP, streak reset. No unsafe make-up volume added."
+                reason: "Missed session: +\(Self.missedSessionPenaltyPoints) penalty points, consistency drops, streak reset. No unsafe make-up volume added."
             )
         }
 
         if log.painLevel >= 4 || log.fatigueLevel >= 9 {
             return ScoreOutcome(
-                xpDelta: 20,
                 consistencyDelta: 4,
                 penaltyDelta: 0,
                 streakDelta: 1,
@@ -176,17 +152,12 @@ struct TrainingEngine {
 
         let effortBonus = log.rpe >= 8 ? 20 : 0
         return ScoreOutcome(
-            xpDelta: 90 + effortBonus,
-            consistencyDelta: 10,
+            consistencyDelta: 10 + effortBonus / 10,
             penaltyDelta: 0,
             streakDelta: 1,
             didTriggerDeload: false,
-            reason: "Completed with strict form. XP and consistency climb."
+            reason: "Completed with strict form. Consistency climbs."
         )
-    }
-
-    func rank(for xp: Int) -> CalisthenicsRank {
-        CalisthenicsRank.allCases.last(where: { xp >= $0.minimumXP }) ?? .recruit
     }
 
     private func readinessMultiplier(from baseline: Baseline, goals: GoalTargets, targetDate: Date, weekIndex: Int) -> Double {
@@ -275,7 +246,7 @@ struct TrainingEngine {
                     ExerciseSetPlan(exercise: .plank, sets: 3, reps: 0, seconds: max(15, plankHold - 10), restSeconds: 60, intensity: "Moderate")
                 ]
             )
-        case .recovery, .easyRun, .longRun, .hillHike, .steadyRun, .recoveryRun:
+        case .recovery:
             main = WorkoutBlockPlan(
                 name: "Recovery Debt",
                 detail: "Low-risk work. Penalties live in score, not reckless volume.",
@@ -299,269 +270,5 @@ struct TrainingEngine {
 
     private func capped(value: Double, minimum: Int, maximum: Int) -> Int {
         min(maximum, max(minimum, Int(value.rounded(.down))))
-    }
-}
-
-struct UltraRunningEngine {
-    func generateWeek(
-        start: Date,
-        weekIndex: Int,
-        profile: RunningTrainingProfile,
-        recentRunLogs: [RunningLog],
-        strengthSessions: [WorkoutSession] = []
-    ) -> UltraWeekPlan {
-        let calendar = Calendar.current
-        let sessionCount = min(max(profile.weeklyRunSessions, 3), 6)
-        let readiness = readinessState(profile: profile, recentRunLogs: recentRunLogs, strengthSessions: strengthSessions)
-        let deload = readiness == "Recovery needed"
-        let baseWeeklyKm = baselineWeeklyDistance(profile: profile, recentRunLogs: recentRunLogs)
-        let abilityCap = weeklyBuildCap(for: profile.durability)
-        let targetWeeklyKm = deload ? max(12, baseWeeklyKm * 0.72) : min(baseWeeklyKm * abilityCap, baseWeeklyKm + 6)
-        let longRunKm = longRunTarget(profile: profile, targetWeeklyKm: targetWeeklyKm, deload: deload)
-        let easyHeartRate = max(95, profile.easyHeartRate)
-        let zoneLow = max(90, easyHeartRate - 8)
-        let zoneHigh = min(max(profile.thresholdHeartRate - 8, zoneLow + 8), easyHeartRate + 10)
-        let easyPace = max(270, profile.easyPaceSecondsPerKm)
-        let runWalk = walkGuidance(for: profile)
-
-        var sessions: [RunningSessionPlan] = []
-        let days = dayOffsets(count: sessionCount)
-        let recoveryKm = max(3, targetWeeklyKm * 0.12)
-        let hillKm = max(4, targetWeeklyKm * 0.16)
-        let steadyKm = max(5, targetWeeklyKm * 0.18)
-        let remainingKm = max(0, targetWeeklyKm - longRunKm - recoveryKm - hillKm - (sessionCount >= 5 ? steadyKm : 0))
-        let easySessionCount = max(1, sessionCount - (sessionCount >= 5 ? 4 : 3))
-        let easyKm = max(4, remainingKm / Double(easySessionCount))
-
-        sessions.append(makeRunSession(
-            date: date(start, days[0], calendar),
-            title: deload ? "Easy Reset Run" : "Easy Aerobic Run",
-            runType: .easy,
-            focus: .easyRun,
-            weekIndex: weekIndex,
-            distanceKm: easyKm,
-            elevationMeters: terrainElevation(profile: profile, distanceKm: easyKm, multiplier: 0.4),
-            heartRateLow: zoneLow,
-            heartRateHigh: zoneHigh,
-            paceSecondsPerKm: easyPace,
-            terrain: profile.terrain,
-            runWalkStrategy: runWalk,
-            purpose: "Build low-intensity frequency while separating endurance background from current run durability.",
-            safetyNotes: deload ? "Keep this embarrassingly easy. Stop if pain changes your stride." : "Nose-breathing or full-sentence effort. No pace chasing."
-        ))
-
-        if sessionCount >= 4 {
-            sessions.append(makeRunSession(
-                date: date(start, days[min(1, days.count - 1)], calendar),
-                title: "Hill Hike Durability",
-                runType: .hillHike,
-                focus: .hillHike,
-                weekIndex: weekIndex,
-                distanceKm: hillKm,
-                elevationMeters: max(120, terrainElevation(profile: profile, distanceKm: hillKm, multiplier: 1.4)),
-                heartRateLow: zoneLow - 5,
-                heartRateHigh: zoneHigh,
-                paceSecondsPerKm: easyPace + 120,
-                terrain: .hills,
-                runWalkStrategy: "Power hike every climb; jog only when HR settles.",
-                purpose: "Teach the legs to move uphill efficiently without adding speed stress.",
-                safetyNotes: "Walk early, especially on climbs. This is muscular durability, not a threshold workout."
-            ))
-        }
-
-        if sessionCount >= 5 {
-            sessions.append(makeRunSession(
-                date: date(start, days[min(2, days.count - 1)], calendar),
-                title: deload ? "Short Recovery Shuffle" : "Steady Form Run",
-                runType: deload ? .recovery : .steady,
-                focus: deload ? .recoveryRun : .steadyRun,
-                weekIndex: weekIndex,
-                distanceKm: deload ? recoveryKm : steadyKm,
-                elevationMeters: terrainElevation(profile: profile, distanceKm: deload ? recoveryKm : steadyKm, multiplier: 0.5),
-                heartRateLow: zoneLow,
-                heartRateHigh: deload ? zoneHigh : min(profile.thresholdHeartRate - 5, zoneHigh + 8),
-                paceSecondsPerKm: deload ? easyPace + 30 : max(270, easyPace - 18),
-                terrain: profile.terrain,
-                runWalkStrategy: deload ? "Walk as needed to keep pain and HR quiet." : runWalk,
-                purpose: deload ? "Keep rhythm without adding fatigue." : "Add a small controlled aerobic stimulus while staying below threshold.",
-                safetyNotes: "If HR drifts or form gets noisy, turn it into easy running."
-            ))
-        }
-
-        let easyIndexStart = sessions.count
-        while sessions.count < max(1, sessionCount - 1) {
-            let index = sessions.count
-            sessions.append(makeRunSession(
-                date: date(start, days[min(index, days.count - 1)], calendar),
-                title: "Easy Volume Run",
-                runType: .easy,
-                focus: .easyRun,
-                weekIndex: weekIndex,
-                distanceKm: easyKm,
-                elevationMeters: terrainElevation(profile: profile, distanceKm: easyKm, multiplier: 0.35),
-                heartRateLow: zoneLow,
-                heartRateHigh: zoneHigh,
-                paceSecondsPerKm: easyPace,
-                terrain: profile.terrain,
-                runWalkStrategy: runWalk,
-                purpose: "Accumulate quiet weekly volume. The win is finishing fresh enough to train again.",
-                safetyNotes: index == easyIndexStart ? "Keep cadence relaxed and shorten stride on tired legs." : "Stay easy enough that tomorrow is still possible."
-            ))
-        }
-
-        sessions.append(makeRunSession(
-            date: date(start, days.last ?? 6, calendar),
-            title: deload ? "Reduced Long Time-on-Feet" : "Long Time-on-Feet",
-            runType: .long,
-            focus: .longRun,
-            weekIndex: weekIndex,
-            distanceKm: longRunKm,
-            elevationMeters: terrainElevation(profile: profile, distanceKm: longRunKm, multiplier: 1.0),
-            heartRateLow: zoneLow - 5,
-            heartRateHigh: zoneHigh,
-            paceSecondsPerKm: easyPace + 35,
-            terrain: profile.terrain,
-            runWalkStrategy: runWalk,
-            purpose: "Build \(profile.targetRaceKm) km durability through easy time-on-feet, walk discipline, and fueling practice.",
-            safetyNotes: "Start slower than ego wants. If pain climbs above 3/10 or gait changes, cut it short and log it honestly."
-        ))
-
-        return UltraWeekPlan(
-            weekStart: calendar.startOfDay(for: start),
-            weekIndex: weekIndex,
-            sessions: sessions.sorted { $0.date < $1.date },
-            summary: deload
-                ? "Ultra deload: pain, fatigue, or strength load says absorb before building."
-                : "Ultra base week: mostly easy volume, one durability stimulus, one long time-on-feet run.",
-            readiness: readiness
-        )
-    }
-
-    private func baselineWeeklyDistance(profile: RunningTrainingProfile, recentRunLogs: [RunningLog]) -> Double {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -10, to: Date()) ?? Date.distantPast
-        let recentKm = recentRunLogs
-            .filter { $0.completedAt >= cutoff }
-            .map(\.distanceKm)
-            .reduce(0, +)
-        return max(12, recentKm > 0 ? recentKm : Double(profile.currentWeeklyDistanceKm))
-    }
-
-    private func weeklyBuildCap(for durability: RunningDurability) -> Double {
-        switch durability {
-        case .fragile: 1.06
-        case .stable: 1.08
-        case .robust: 1.10
-        }
-    }
-
-    private func longRunTarget(profile: RunningTrainingProfile, targetWeeklyKm: Double, deload: Bool) -> Double {
-        let currentLong = max(6, Double(profile.currentLongRunKm))
-        let cap = currentLong * (deload ? 0.78 : weeklyBuildCap(for: profile.durability))
-        let shareCap = targetWeeklyKm * (profile.durability == .fragile ? 0.34 : 0.38)
-        return max(6, min(cap, shareCap))
-    }
-
-    private func readinessState(
-        profile: RunningTrainingProfile,
-        recentRunLogs: [RunningLog],
-        strengthSessions: [WorkoutSession]
-    ) -> String {
-        let lastFive = recentRunLogs.sorted { $0.completedAt > $1.completedAt }.prefix(5)
-        if lastFive.contains(where: { $0.painLevel >= 4 || $0.fatigueLevel >= 9 || $0.hadGIIssues }) {
-            return "Recovery needed"
-        }
-        let upcomingStrength = strengthSessions.filter { $0.domain == .strength && $0.status == .planned }.count
-        if upcomingStrength >= 4 && profile.durability == .fragile {
-            return "Strength load high"
-        }
-        if recentRunLogs.count < 3 {
-            return "Building baseline"
-        }
-        return "Building"
-    }
-
-    private func dayOffsets(count: Int) -> [Int] {
-        switch count {
-        case 0...3: [0, 3, 6]
-        case 4: [0, 2, 4, 6]
-        case 5: [0, 1, 3, 5, 6]
-        default: [0, 1, 2, 4, 5, 6]
-        }
-    }
-
-    private func terrainElevation(profile: RunningTrainingProfile, distanceKm: Double, multiplier: Double) -> Int {
-        let basePerKm: Double = switch profile.terrain {
-        case .flat: 5
-        case .rolling: 18
-        case .hills: 35
-        case .trails: 28
-        case .mixed: 20
-        }
-        return Int((distanceKm * basePerKm * multiplier).rounded())
-    }
-
-    private func walkGuidance(for profile: RunningTrainingProfile) -> String {
-        let custom = profile.runWalkStrategy.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch profile.walkStrategy {
-        case .none:
-            return "No planned walk breaks; keep effort easy enough to stay conversational."
-        case .climbsOnly:
-            return "Walk climbs early to keep heart rate controlled."
-        case .timed:
-            return custom.isEmpty ? "Use planned easy run-walk breaks before fatigue forces them." : custom
-        case .custom:
-            return custom.isEmpty ? "Use your custom walk strategy and log what happened." : custom
-        }
-    }
-
-    private func date(_ start: Date, _ offset: Int, _ calendar: Calendar) -> Date {
-        calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: start)) ?? start
-    }
-
-    private func makeRunSession(
-        date: Date,
-        title: String,
-        runType: RunWorkoutType,
-        focus: SessionFocus,
-        weekIndex: Int,
-        distanceKm: Double,
-        elevationMeters: Int,
-        heartRateLow: Int,
-        heartRateHigh: Int,
-        paceSecondsPerKm: Int,
-        terrain: RunningTerrain,
-        runWalkStrategy: String,
-        purpose: String,
-        safetyNotes: String
-    ) -> RunningSessionPlan {
-        let duration = max(20, Int((distanceKm * Double(paceSecondsPerKm) / 60).rounded()))
-        return RunningSessionPlan(
-            date: date,
-            title: title,
-            runType: runType,
-            focus: focus,
-            weekIndex: weekIndex,
-            targetDurationMinutes: duration,
-            targetDistanceKm: (distanceKm * 10).rounded() / 10,
-            targetElevationMeters: elevationMeters,
-            targetHeartRateLow: max(80, heartRateLow),
-            targetHeartRateHigh: max(heartRateLow + 5, heartRateHigh),
-            targetPaceSecondsPerKm: paceSecondsPerKm,
-            terrain: terrain,
-            runWalkStrategy: runWalkStrategy,
-            fuelingPlan: fuelingPlan(forDurationMinutes: duration),
-            purpose: purpose,
-            safetyNotes: safetyNotes
-        )
-    }
-
-    private func fuelingPlan(forDurationMinutes minutes: Int) -> String {
-        if minutes < 75 {
-            return "No forced calories. Bring water if weather or thirst asks for it."
-        }
-        if minutes < 150 {
-            return "Practice 30-50g carbs/hour and steady fluids. Log gut response."
-        }
-        return "Practice 50-70g carbs/hour, 450-750 ml fluid/hour, and sodium if it is warm or you sweat salty."
     }
 }

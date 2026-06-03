@@ -8,13 +8,14 @@ enum ModelContainerFactory {
         Schema([
             UserProfile.self,
             WorkoutSession.self,
-            RunningTrainingProfile.self,
-            RunningWorkout.self,
             WorkoutBlock.self,
             SetPrescription.self,
             PerformanceLog.self,
+            RunningProfile.self,
+            RunningWorkout.self,
             RunningLog.self,
             RankState.self,
+            AchievementState.self,
             CoachPlan.self,
             CoachDecision.self,
             CoachVerdict.self

@@ -16,36 +16,12 @@ final class PersistenceResetTests: XCTestCase {
             baselinePushUps: 0,
             baselinePlankSeconds: 0
         )
-        let runningProfile = RunningTrainingProfile(userProfileId: profile.id)
         let session = WorkoutSession(
             scheduledDate: Date(),
             title: "Reset test",
             weekIndex: 1,
             focus: .pull,
             summary: "Temporary"
-        )
-        let runSession = WorkoutSession(
-            scheduledDate: Date(),
-            title: "Reset run",
-            weekIndex: 1,
-            focus: .easyRun,
-            domain: .ultraRunning,
-            summary: "Temporary"
-        )
-        let runningWorkout = RunningWorkout(
-            sessionId: runSession.id,
-            runType: .easy,
-            targetDurationMinutes: 45,
-            targetDistanceKm: 6,
-            targetElevationMeters: 80,
-            targetHeartRateLow: 130,
-            targetHeartRateHigh: 150,
-            targetPaceSecondsPerKm: 420,
-            terrain: .mixed,
-            runWalkStrategy: "9/1",
-            fuelingPlan: "Water",
-            purpose: "Temporary",
-            safetyNotes: "Temporary"
         )
         let block = WorkoutBlock(sessionId: session.id, orderIndex: 0, name: "Main", detail: "Temporary")
         let prescription = SetPrescription(
@@ -68,24 +44,30 @@ final class PersistenceResetTests: XCTestCase {
             fatigueLevel: 5,
             notes: "Temporary"
         )
-        let runLog = RunningLog(
-            sessionId: runSession.id,
-            durationMinutes: 45,
-            distanceKm: 6,
-            elevationGainMeters: 80,
-            averageHeartRate: 140,
-            maxHeartRate: 152,
-            averagePaceSecondsPerKm: 420,
-            rpe: 5,
-            painLevel: 0,
-            fatigueLevel: 4,
-            carbsPerHour: 0,
-            fluidMlPerHour: 400,
-            sodiumMgPerHour: 0,
-            hadGIIssues: false,
-            notes: "Temporary"
+        let rank = RankState(consistencyScore: 10)
+        let runningProfile = RunningProfile(
+            targetRaceName: "Reset race",
+            raceDate: Date(),
+            weeklyDistanceTargetKm: 42,
+            longRunTargetKm: 28
         )
-        let rank = RankState(xp: 100)
+        let runningWorkout = RunningWorkout(
+            scheduledDate: Date(),
+            title: "Reset run",
+            kind: .easy,
+            status: .completed,
+            distanceKm: 5,
+            durationSeconds: 1_800,
+            elevationMeters: 20,
+            zone: "Zone 2"
+        )
+        let runningLog = RunningLog(
+            workoutId: runningWorkout.id,
+            distanceKm: 5,
+            durationSeconds: 1_800,
+            elevationMeters: 20
+        )
+        let achievement = AchievementState(kind: .consistencyKing, progress: 4)
         let plan = CoachPlan(weekStart: Date(), summary: "Temporary", source: .rules, validationStatus: .accepted)
         let decision = CoachDecision(planId: plan.id, rationale: "Temporary", safetyFlags: ["temporary"])
         let verdict = CoachVerdict(
@@ -100,15 +82,15 @@ final class PersistenceResetTests: XCTestCase {
         )
 
         modelContext.insert(profile)
-        modelContext.insert(runningProfile)
         modelContext.insert(session)
-        modelContext.insert(runSession)
-        modelContext.insert(runningWorkout)
         modelContext.insert(block)
         modelContext.insert(prescription)
         modelContext.insert(log)
-        modelContext.insert(runLog)
         modelContext.insert(rank)
+        modelContext.insert(runningProfile)
+        modelContext.insert(runningWorkout)
+        modelContext.insert(runningLog)
+        modelContext.insert(achievement)
         modelContext.insert(plan)
         modelContext.insert(decision)
         modelContext.insert(verdict)
@@ -118,14 +100,15 @@ final class PersistenceResetTests: XCTestCase {
         try modelContext.save()
 
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<UserProfile>()).count, 0)
-        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunningTrainingProfile>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<WorkoutSession>()).count, 0)
-        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunningWorkout>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<WorkoutBlock>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<SetPrescription>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<PerformanceLog>()).count, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunningProfile>()).count, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunningWorkout>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunningLog>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RankState>()).count, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<AchievementState>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachPlan>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachDecision>()).count, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachVerdict>()).count, 0)
@@ -135,9 +118,17 @@ final class PersistenceResetTests: XCTestCase {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
         let calendar = Calendar.current
-        let weekStart = currentWeekStart()
+        let weekStart = rollingPlanStart()
+        let todayDate = weekStart
         let futureDate = try XCTUnwrap(calendar.date(byAdding: .day, value: 6, to: weekStart))
 
+        let todayPlanned = WorkoutSession(
+            scheduledDate: todayDate,
+            title: "Today planned keeper",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "Today must stay"
+        )
         let planned = WorkoutSession(
             scheduledDate: futureDate,
             title: "Old planned",
@@ -175,6 +166,7 @@ final class PersistenceResetTests: XCTestCase {
             notes: "History"
         )
 
+        modelContext.insert(todayPlanned)
         modelContext.insert(planned)
         modelContext.insert(plannedBlock)
         modelContext.insert(plannedPrescription)
@@ -191,70 +183,32 @@ final class PersistenceResetTests: XCTestCase {
         let prescriptions = try modelContext.fetch(FetchDescriptor<SetPrescription>())
 
         XCTAssertFalse(sessions.contains { $0.id == planned.id })
+        XCTAssertTrue(sessions.contains { $0.id == todayPlanned.id })
         XCTAssertTrue(sessions.contains { $0.id == completed.id })
-        XCTAssertEqual(sessions.filter { $0.summary.contains("AI:") }.count, 4)
+        XCTAssertEqual(sessions.filter { isCoachGeneratedSummary($0.summary) }.count, 4)
+        XCTAssertTrue(sessions.filter { isCoachGeneratedSummary($0.summary) }.allSatisfy { displayPlanSummary($0.summary) == $0.summary.replacingOccurrences(of: "Coach: ", with: "") })
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<PerformanceLog>()).count, 1)
         XCTAssertFalse(blocks.contains { $0.sessionId == planned.id })
         XCTAssertFalse(prescriptions.contains { $0.sessionId == planned.id })
     }
 
-    func testPersistUltraPlanReplacesOnlyFuturePlannedRuns() throws {
+    func testPersistAIPlanSkipsTodaySessionDuringReplacement() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
         let calendar = Calendar.current
-        let weekStart = currentWeekStart()
-        let futureDate = try XCTUnwrap(calendar.date(byAdding: .day, value: 6, to: weekStart))
+        let weekStart = rollingPlanStart()
+        let today = calendar.startOfDay(for: Date())
 
-        let oldRun = WorkoutSession(
-            scheduledDate: futureDate,
-            title: "Old run",
-            weekIndex: 0,
-            focus: .easyRun,
-            domain: .ultraRunning,
-            summary: "ULTRA: old"
-        )
-        let oldWorkout = RunningWorkout(
-            sessionId: oldRun.id,
-            runType: .easy,
-            targetDurationMinutes: 40,
-            targetDistanceKm: 5,
-            targetElevationMeters: 20,
-            targetHeartRateLow: 130,
-            targetHeartRateHigh: 145,
-            targetPaceSecondsPerKm: 420,
-            terrain: .mixed,
-            runWalkStrategy: "9/1",
-            fuelingPlan: "Water",
-            purpose: "Old",
-            safetyNotes: "Old"
-        )
-        let completedStrength = WorkoutSession(
-            scheduledDate: futureDate,
-            title: "Completed strength",
-            weekIndex: 0,
-            focus: .push,
-            status: .completed,
-            summary: "Must survive"
-        )
+        var response = CoachPlanResponse.balancedFixture()
+        response.sessions[0].dayOffset = 0
+        let plan = response.weeklyPlan(weekStart: weekStart)
 
-        modelContext.insert(oldRun)
-        modelContext.insert(oldWorkout)
-        modelContext.insert(completedStrength)
-        try modelContext.save()
-
-        let runningProfile = RunningTrainingProfile(userProfileId: UUID())
-        let plan = UltraRunningEngine().generateWeek(start: weekStart, weekIndex: 1, profile: runningProfile, recentRunLogs: [])
-        try persist(ultraPlan: plan, in: modelContext, replacingFuturePlannedRuns: true)
+        try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
         try modelContext.save()
 
         let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
-        let runs = try modelContext.fetch(FetchDescriptor<RunningWorkout>())
-
-        XCTAssertFalse(sessions.contains { $0.id == oldRun.id })
-        XCTAssertFalse(runs.contains { $0.sessionId == oldRun.id })
-        XCTAssertTrue(sessions.contains { $0.id == completedStrength.id })
-        XCTAssertEqual(sessions.filter { $0.domain == .ultraRunning && $0.summary.hasPrefix("ULTRA:") }.count, plan.sessions.count)
-        XCTAssertEqual(runs.count, plan.sessions.count)
+        XCTAssertFalse(sessions.contains { calendar.isDate($0.scheduledDate, inSameDayAs: today) })
+        XCTAssertEqual(sessions.filter { isCoachGeneratedSummary($0.summary) }.count, 3)
     }
 
     func testDeleteNonAIPlannedSessionsKeepsAIAndHistory() throws {
@@ -286,6 +240,13 @@ final class PersistenceResetTests: XCTestCase {
             focus: .pull,
             summary: "AI: Keep this session"
         )
+        let coachPlanned = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Coach keeper",
+            weekIndex: 1,
+            focus: .mixed,
+            summary: "Coach: Keep this session"
+        )
         let completedLegacy = WorkoutSession(
             scheduledDate: Date(),
             title: "Completed history",
@@ -299,10 +260,11 @@ final class PersistenceResetTests: XCTestCase {
         modelContext.insert(legacyBlock)
         modelContext.insert(legacyPrescription)
         modelContext.insert(aiPlanned)
+        modelContext.insert(coachPlanned)
         modelContext.insert(completedLegacy)
         try modelContext.save()
 
-        let deleted = try deleteNonAIPlannedSessions(from: [legacyPlanned, aiPlanned, completedLegacy], in: modelContext)
+        let deleted = try deleteNonAIPlannedSessions(from: [legacyPlanned, aiPlanned, coachPlanned, completedLegacy], in: modelContext)
 
         let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
         let blocks = try modelContext.fetch(FetchDescriptor<WorkoutBlock>())
@@ -311,6 +273,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(deleted, 1)
         XCTAssertFalse(sessions.contains { $0.id == legacyPlanned.id })
         XCTAssertTrue(sessions.contains { $0.id == aiPlanned.id })
+        XCTAssertTrue(sessions.contains { $0.id == coachPlanned.id })
         XCTAssertTrue(sessions.contains { $0.id == completedLegacy.id })
         XCTAssertFalse(blocks.contains { $0.sessionId == legacyPlanned.id })
         XCTAssertFalse(prescriptions.contains { $0.sessionId == legacyPlanned.id })
@@ -333,7 +296,7 @@ final class PersistenceResetTests: XCTestCase {
             baselinePushUps: 12,
             baselinePlankSeconds: 45
         )
-        let rank = RankState(xp: 500, consistencyScore: 30, streak: 4)
+        let rank = RankState(consistencyScore: 30, streak: 4)
         let overdue = WorkoutSession(scheduledDate: yesterday, title: "Past work", weekIndex: 1, focus: .pull, summary: "Past")
         let dueToday = WorkoutSession(scheduledDate: today, title: "Today work", weekIndex: 1, focus: .mixed, summary: "Today")
         let future = WorkoutSession(scheduledDate: tomorrow, title: "Future work", weekIndex: 1, focus: .push, summary: "Future")
@@ -361,7 +324,154 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(future.status, .planned)
         XCTAssertEqual(rank.penaltyPoints, TrainingEngine.missedSessionPenaltyPoints)
         XCTAssertEqual(rank.streak, 0)
-        XCTAssertEqual(rank.xp, 430)
+        XCTAssertEqual(rank.consistencyScore, 18)
+    }
+
+    func testPersistRunningPlanReplacesFuturePlannedRunsButKeepsCompletedHistory() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let weekStart = rollingPlanStart()
+        let calendar = Calendar.current
+        let todayDate = weekStart
+        let oldDate = try XCTUnwrap(calendar.date(byAdding: .day, value: 2, to: weekStart))
+
+        let todayPlanned = RunningWorkout(
+            scheduledDate: todayDate,
+            title: "Today easy keeper",
+            kind: .easy,
+            distanceKm: 5,
+            durationSeconds: 1_800,
+            elevationMeters: 20,
+            zone: "Zone 2"
+        )
+        let oldPlanned = RunningWorkout(
+            scheduledDate: oldDate,
+            title: "Old easy",
+            kind: .easy,
+            distanceKm: 8,
+            durationSeconds: 2_700,
+            elevationMeters: 40,
+            zone: "Zone 2"
+        )
+        let completed = RunningWorkout(
+            scheduledDate: oldDate,
+            title: "Completed keeper",
+            kind: .long,
+            status: .completed,
+            distanceKm: 21,
+            durationSeconds: 7_200,
+            elevationMeters: 300,
+            zone: "Zone 2"
+        )
+        modelContext.insert(todayPlanned)
+        modelContext.insert(oldPlanned)
+        modelContext.insert(completed)
+        try modelContext.save()
+
+        let response = RunningWeekResponse(
+            summary: "Manual-first running week",
+            safetyFlags: [],
+            sessions: [
+                RunningWeekSessionResponse(
+                    title: "Hill Session",
+                    dayOffset: 3,
+                    kind: "hills",
+                    purpose: "Build climbing economy.",
+                    distanceKm: 10,
+                    durationMinutes: 62,
+                    elevationMeters: 360,
+                    zone: "Zone 3",
+                    notes: ["Keep form compact."]
+                )
+            ]
+        )
+
+        try persistRunningPlan(response: response, weekStart: weekStart, in: modelContext)
+        try modelContext.save()
+
+        let workouts = try modelContext.fetch(FetchDescriptor<RunningWorkout>())
+        XCTAssertFalse(workouts.contains { $0.id == oldPlanned.id })
+        XCTAssertTrue(workouts.contains { $0.id == todayPlanned.id })
+        XCTAssertTrue(workouts.contains { $0.id == completed.id })
+        let generated = try XCTUnwrap(workouts.first { $0.title == "Hill Session" })
+        XCTAssertEqual(generated.kind, .hills)
+        XCTAssertEqual(generated.durationSeconds, 3_720)
+        XCTAssertEqual(generated.notes, "Build climbing economy. Keep form compact.")
+    }
+
+    func testPersistRunningPlanSkipsTodayRunDuringReplacement() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let weekStart = rollingPlanStart()
+        let today = calendar.startOfDay(for: Date())
+
+        let response = RunningWeekResponse(
+            summary: "Manual-first running week",
+            safetyFlags: [],
+            sessions: [
+                RunningWeekSessionResponse(
+                    title: "Today Run",
+                    dayOffset: 0,
+                    kind: "easy",
+                    purpose: "Should be skipped.",
+                    distanceKm: 5,
+                    durationMinutes: 30,
+                    elevationMeters: 0,
+                    zone: "Zone 2",
+                    notes: []
+                ),
+                RunningWeekSessionResponse(
+                    title: "Future Run",
+                    dayOffset: 2,
+                    kind: "easy",
+                    purpose: "Should be saved.",
+                    distanceKm: 8,
+                    durationMinutes: 48,
+                    elevationMeters: 20,
+                    zone: "Zone 2",
+                    notes: []
+                )
+            ]
+        )
+
+        try persistRunningPlan(response: response, weekStart: weekStart, in: modelContext)
+        try modelContext.save()
+
+        let workouts = try modelContext.fetch(FetchDescriptor<RunningWorkout>())
+        XCTAssertFalse(workouts.contains { calendar.isDate($0.scheduledDate, inSameDayAs: today) })
+        XCTAssertTrue(workouts.contains { $0.title == "Future Run" })
+    }
+
+    func testAchievementProgressUpdatesFromStrengthLog() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar(identifier: .gregorian)
+        let completedAt = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 5, day: 16, hour: 7)))
+        let rank = RankState(streak: 14, bestStreak: 14)
+        let log = PerformanceLog(
+            sessionId: UUID(),
+            completedAt: completedAt,
+            pullUps: 50,
+            pushUps: 80,
+            plankSeconds: 300,
+            rpe: 7,
+            painLevel: 0,
+            fatigueLevel: 5,
+            notes: "Clean work."
+        )
+        modelContext.insert(rank)
+        modelContext.insert(log)
+
+        updateAchievements(after: log, rank: rank, states: [], in: modelContext, calendar: calendar)
+        try modelContext.save()
+
+        let achievements = try modelContext.fetch(FetchDescriptor<AchievementState>())
+        XCTAssertEqual(achievements.first(where: { $0.kind == .consistencyKing })?.progress, 14)
+        XCTAssertNotNil(achievements.first(where: { $0.kind == .consistencyKing })?.completedAt)
+        XCTAssertEqual(achievements.first(where: { $0.kind == .earlyRiser })?.progress, 1)
+        XCTAssertEqual(achievements.first(where: { $0.kind == .unbroken })?.progress, 50)
+        XCTAssertEqual(achievements.first(where: { $0.kind == .plankMaster })?.progress, 300)
     }
 
     func testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards() throws {
@@ -452,7 +562,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<PerformanceLog>()).count, 9)
         XCTAssertEqual(rank.penaltyPoints, 75)
         XCTAssertEqual(rank.streak, 9)
-        XCTAssertEqual(rank.xp, 810)
-        XCTAssertEqual(rank.rank, .grinder)
+        XCTAssertEqual(rank.consistencyScore, 90)
+        XCTAssertEqual(rank.bestStreak, 9)
     }
 }

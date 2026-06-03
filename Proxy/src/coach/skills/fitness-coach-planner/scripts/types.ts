@@ -19,6 +19,8 @@ export type CoachRequest = {
   profileNotes: string;
   weekStart: string;
   weeklySessions: number;
+  trainingDays?: string[];
+  trainingDayOffsets?: number[];
   equipment: string[];
   targetDate: string;
   trainingLogs: TrainingLog[];
@@ -82,6 +84,8 @@ export type CoachContext = {
     profileNotes: string;
     weekStart: string;
     weeklySessions: number;
+    trainingDays: string[];
+    trainingDayOffsets: number[];
     equipment: string[];
     targetDate: string;
   };
@@ -141,4 +145,58 @@ export type CoachVerdict = {
   shouldUpdatePlan: boolean;
   contextState: ContextState;
   safetyFlags: string[];
+};
+
+export type RunningWorkoutKind = "easy" | "long" | "recovery" | "hills" | "tempo" | "intervals";
+
+export type RunningCoachRequest = {
+  model: string;
+  profile: {
+    targetRaceName: string;
+    raceDate: string;
+    weeklyDistanceTargetKm: number;
+    longRunTargetKm: number;
+    easyPaceSecondsPerKm: number;
+    preferredTerrain: string;
+    injuryNotes: string;
+    trainingDays?: string[];
+    trainingDayOffsets?: number[];
+  };
+  weekStart: string;
+  runningLogs: Array<{
+    id: string;
+    completedAt: string;
+    distanceKm: number;
+    durationSeconds: number;
+    elevationMeters: number;
+    averageHeartRate: number;
+    notes: string;
+  }>;
+  plannedRuns: Array<{
+    id: string;
+    scheduledDate: string;
+    title: string;
+    kind: RunningWorkoutKind;
+    status: string;
+    distanceKm: number;
+    durationSeconds: number;
+    elevationMeters: number;
+    zone: string;
+  }>;
+};
+
+export type RunningWeekPlan = {
+  summary: string;
+  safetyFlags: string[];
+  sessions: Array<{
+    title: string;
+    dayOffset: number;
+    kind: RunningWorkoutKind;
+    purpose: string;
+    distanceKm: number;
+    durationMinutes: number;
+    elevationMeters: number;
+    zone: string;
+    notes: string[];
+  }>;
 };

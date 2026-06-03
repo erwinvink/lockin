@@ -16,11 +16,15 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   const previousFullMonth = summarizeMonth(sortedLogs, previousFullMonthStart, false);
   const twoFullMonthTrend = summarizeTrend(lastFullMonth, previousFullMonth);
   const validCompletedMonthLogCount = validLogCount(sortedLogs, previousFullMonthStart, currentMonthStart);
+  const trainingDayOffsets = normalizeTrainingDayOffsets(request.trainingDayOffsets);
+  const weeklySessions = Array.isArray(request.trainingDayOffsets)
+    ? trainingDayOffsets.length
+    : clampInt(request.weeklySessions, 0, 6);
   const riskFlags = collectRiskFlags(
     last5Logs,
     lastFullMonth,
     previousFullMonth,
-    request.weeklySessions,
+    weeklySessions,
     validCompletedMonthLogCount
   );
   const adherence = summarizeAdherence(request);
@@ -32,7 +36,9 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       goals: request.goals,
       profileNotes: trimNote(request.profileNotes),
       weekStart: request.weekStart,
-      weeklySessions: clampInt(request.weeklySessions, 1, 7),
+      weeklySessions,
+      trainingDays: normalizeTrainingDays(request.trainingDays),
+      trainingDayOffsets,
       equipment: [...request.equipment].sort(),
       targetDate: request.targetDate
     },
@@ -124,6 +130,17 @@ function latestKnownBest(
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeTrainingDays(days: string[] | undefined): string[] {
+  const validDays = new Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]);
+  return [...new Set(days ?? [])].filter((day) => validDays.has(day));
+}
+
+function normalizeTrainingDayOffsets(offsets: number[] | undefined): number[] {
+  return [...new Set(offsets ?? [])]
+    .filter((offset) => Number.isInteger(offset) && offset >= 1 && offset <= 6)
+    .sort((a, b) => a - b);
 }
 
 function validLogCount(logs: TrainingLog[], start: Date, end: Date): number {

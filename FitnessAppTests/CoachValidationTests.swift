@@ -47,6 +47,8 @@ final class CoachValidationTests: XCTestCase {
             profileNotes: "Left elbow gets cranky after high pull volume.",
             weekStart: Date(timeIntervalSince1970: 0),
             weeklySessions: 3,
+            trainingDays: ["monday", "wednesday", "saturday"],
+            trainingDayOffsets: [3, 5, 1],
             equipment: ["pullUpBar"],
             targetDate: Date(timeIntervalSince1970: 86_400),
             trainingLogs: [
@@ -74,6 +76,8 @@ final class CoachValidationTests: XCTestCase {
 
         XCTAssertEqual(object["model"] as? String, "gpt-5.5")
         XCTAssertEqual(object["profileNotes"] as? String, "Left elbow gets cranky after high pull volume.")
+        XCTAssertEqual(object["trainingDays"] as? [String], ["monday", "wednesday", "saturday"])
+        XCTAssertEqual(object["trainingDayOffsets"] as? [Int], [3, 5, 1])
         let logs = try XCTUnwrap(object["trainingLogs"] as? [[String: Any]])
         XCTAssertEqual(logs.first?["notes"] as? String, "Felt shoulder tightness near the end.")
     }
@@ -137,7 +141,7 @@ final class CoachValidationTests: XCTestCase {
             sessions: [
                 CoachSessionResponse(
                     title: "Bad pull day",
-                    dayOffset: 0,
+                    dayOffset: 1,
                     focus: "pull",
                     purpose: "Too much work",
                     estimatedDurationMinutes: 20,
@@ -174,7 +178,7 @@ final class CoachValidationTests: XCTestCase {
             sessions: (0..<4).map {
                 CoachSessionResponse(
                     title: "Pull only \($0 + 1)",
-                    dayOffset: $0,
+                    dayOffset: $0 + 1,
                     focus: "pull",
                     purpose: "Only pull",
                     estimatedDurationMinutes: 20,
@@ -228,6 +232,27 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(result.messages.contains { $0.contains("negative reps") })
     }
 
+    func testRejectsAIPlanThatSchedulesAnUnselectedTrainingDay() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 1)))
+        let response = CoachPlanResponse.balancedFixture()
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60),
+                trainingDays: [.tuesday, .thursday, .saturday, .sunday]
+            ),
+            weekStart: weekStart
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.messages.contains { $0.contains("rest day") })
+    }
+
     func testAcceptedAIPlanConvertsToVisibleWeeklyPlan() {
         let weekStart = Date(timeIntervalSince1970: 0)
         let response = CoachPlanResponse.balancedFixture()
@@ -247,7 +272,8 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(result.status, .accepted)
         XCTAssertEqual(plan.sessions.count, 4)
         XCTAssertEqual(plan.sessions[2].date, Calendar.current.date(byAdding: .day, value: 4, to: Calendar.current.startOfDay(for: weekStart)))
-        XCTAssertTrue(plan.sessions.allSatisfy { $0.summary.contains("AI:") })
+        XCTAssertTrue(plan.sessions.allSatisfy { isCoachGeneratedSummary($0.summary) })
+        XCTAssertTrue(plan.sessions.allSatisfy { !$0.summary.contains("AI:") })
     }
 
     func testAcceptedAIPlanUsesRollingUpcomingWindow() throws {
@@ -259,6 +285,135 @@ final class CoachValidationTests: XCTestCase {
 
         XCTAssertEqual(plan.weekStart, windowStart)
         XCTAssertTrue(plan.sessions.allSatisfy { $0.date >= windowStart && $0.date < windowEnd })
+        XCTAssertTrue(plan.sessions.allSatisfy { $0.date > windowStart })
+    }
+
+    func testRunningCoachRequestEncodesProfileLogsAndPlannedRuns() throws {
+        let raceDate = Date(timeIntervalSince1970: 200_000)
+        let profile = RunningProfile(
+            targetRaceName: "Comrades Marathon",
+            raceDate: raceDate,
+            weeklyDistanceTargetKm: 42,
+            longRunTargetKm: 28,
+            easyPaceSecondsPerKm: 345,
+            preferredTerrain: "Road and trail",
+            injuryNotes: "Watch the left calf.",
+            runningDays: [.tuesday, .friday, .sunday]
+        )
+        let workout = RunningWorkout(
+            scheduledDate: Date(timeIntervalSince1970: 100_000),
+            title: "Long Run",
+            kind: .long,
+            distanceKm: 28,
+            durationSeconds: 9_600,
+            elevationMeters: 620,
+            zone: "Zone 2"
+        )
+        let log = RunningLog(
+            workoutId: workout.id,
+            completedAt: Date(timeIntervalSince1970: 110_000),
+            distanceKm: 21.1,
+            durationSeconds: 7_200,
+            elevationMeters: 240,
+            averageHeartRate: 142,
+            notes: "Felt steady."
+        )
+
+        let request = makeRunningCoachRequest(
+            profile: profile,
+            modelID: " gpt-5 ",
+            logs: [log],
+            workouts: [workout],
+            weekStart: try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 1)))
+        )
+        let data = try JSONEncoder.coachEncoder.encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedProfile = try XCTUnwrap(object["profile"] as? [String: Any])
+        let logs = try XCTUnwrap(object["runningLogs"] as? [[String: Any]])
+        let plannedRuns = try XCTUnwrap(object["plannedRuns"] as? [[String: Any]])
+
+        XCTAssertEqual(object["model"] as? String, "gpt-5")
+        XCTAssertEqual(encodedProfile["targetRaceName"] as? String, "Comrades Marathon")
+        XCTAssertEqual(encodedProfile["injuryNotes"] as? String, "Watch the left calf.")
+        XCTAssertEqual(encodedProfile["trainingDays"] as? [String], ["tuesday", "friday", "sunday"])
+        XCTAssertEqual(encodedProfile["trainingDayOffsets"] as? [Int], [1, 4, 6])
+        XCTAssertEqual(logs.first?["distanceKm"] as? Double, 21.1)
+        XCTAssertEqual(plannedRuns.first?["kind"] as? String, "long")
+    }
+
+    func testRunningWeekValidationRejectsInvalidGeneratedShape() {
+        let response = RunningWeekResponse(
+            summary: "Invalid running week",
+            safetyFlags: [],
+            sessions: [
+                RunningWeekSessionResponse(
+                    title: "Broken run",
+                    dayOffset: 7,
+                    kind: "mountain",
+                    purpose: "Invalid",
+                    distanceKm: -1,
+                    durationMinutes: -20,
+                    elevationMeters: -10,
+                    zone: "Zone 9",
+                    notes: []
+                )
+            ]
+        )
+
+        let messages = validateRunningWeek(response, allowedDayOffsets: [1, 4, 6])
+
+        XCTAssertTrue(messages.contains { $0.contains("day offset") })
+        XCTAssertTrue(messages.contains { $0.contains("exactly 3") })
+        XCTAssertTrue(messages.contains { $0.contains("unknown kind") })
+        XCTAssertTrue(messages.contains { $0.contains("negative") })
+    }
+
+    func testRunningWeekValidationRejectsTodayOffset() {
+        let response = RunningWeekResponse(
+            summary: "Invalid running week",
+            safetyFlags: [],
+            sessions: [
+                RunningWeekSessionResponse(
+                    title: "Today Run",
+                    dayOffset: 0,
+                    kind: "easy",
+                    purpose: "Should not be scheduled today.",
+                    distanceKm: 5,
+                    durationMinutes: 30,
+                    elevationMeters: 0,
+                    zone: "Zone 2",
+                    notes: []
+                )
+            ]
+        )
+
+        let messages = validateRunningWeek(response, allowedDayOffsets: [1])
+
+        XCTAssertTrue(messages.contains { $0.contains("today") })
+    }
+
+    func testRunningWeekValidationRejectsUnselectedRunningDay() {
+        let response = RunningWeekResponse(
+            summary: "Wrong day",
+            safetyFlags: [],
+            sessions: [
+                RunningWeekSessionResponse(
+                    title: "Easy Run",
+                    dayOffset: 2,
+                    kind: "easy",
+                    purpose: "Should use selected days.",
+                    distanceKm: 5,
+                    durationMinutes: 30,
+                    elevationMeters: 0,
+                    zone: "Zone 2",
+                    notes: []
+                )
+            ]
+        )
+
+        let messages = validateRunningWeek(response, allowedDayOffsets: [1])
+
+        XCTAssertTrue(messages.contains { $0.contains("unselected running day") })
     }
 }
 
@@ -279,11 +434,11 @@ private func coachVerdictFixture(sourceLogId: UUID?, createdAt: Date) -> CoachVe
 extension CoachPlanResponse {
     static func balancedFixture() -> CoachPlanResponse {
         CoachPlanResponse(
-            summary: "Balanced AI week",
+            summary: "Balanced coach week",
             contextState: "building",
             safetyFlags: [],
             sessions: [
-                mixedFixture(title: "Full-body base", dayOffset: 0),
+                mixedFixture(title: "Full-body base", dayOffset: 1),
                 CoachSessionResponse(
                     title: "Pull emphasis",
                     dayOffset: 2,

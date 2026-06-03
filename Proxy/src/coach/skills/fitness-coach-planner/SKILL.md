@@ -26,6 +26,7 @@ This skill is a planning pipeline, not a motivational chat prompt:
 - Target date.
 - Available equipment.
 - Requested sessions per week.
+- Selected training days and their allowed `dayOffset` values when provided by the app.
 - Raw performance logs, including which exercises were actually logged and the athlete's workout notes.
 - Planned or completed sessions when available.
 
@@ -58,7 +59,8 @@ Do not ask the model to infer these summaries from raw logs.
 1. Read the built coach context.
 2. Classify the state as one of: `building`, `plateau`, `overreaching`, `recovery_needed`, or `insufficient_history`.
 3. Generate exactly the requested number of sessions.
-4. Assign each session a `dayOffset` from `0` through `6`, in strictly increasing order, relative to `weekStart`.
+4. Assign each session a `dayOffset` from the provided future-only allowed `dayOffset` values when present; otherwise use `1` through `6`, in strictly increasing order, relative to `weekStart`. `dayOffset: 0` is today and is locked.
+   If selected training days or allowed `dayOffset` values are provided, use only those future offsets and treat all other offsets as rest days.
 5. Derive session length from prescribed work; do not use a fixed minutes-per-session input.
 6. Include a short purpose for every session.
 7. Mark logging fields only for goal exercises actually trained or tested in the session.
@@ -94,9 +96,10 @@ For `recovery_needed`:
 - Never ignore profile or recent workout notes that mention pain, injury, form breakdown, or equipment limitations.
 - Never prescribe pull-up-bar exercises when no pull-up bar is available.
 - Never label a session `mixed` unless it actually combines the required movement patterns.
+- Never create, replace, or repair a session for `dayOffset: 0`. Today may already be logged, finished, or intentionally left as a rest day, so refreshes only plan future days.
 - Avoid max testing during recovery or deload states.
 - Prefer repeatable progression over heroic one-week jumps.
-- Keep app XP ranks separate from real-world benchmarks.
+- Keep app consistency scores separate from real-world benchmarks.
 
 ## Output
 

@@ -54,6 +54,7 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
   }
 
   let previousDayOffset = -1;
+  const allowedTrainingOffsets = new Set(context.profile.trainingDayOffsets);
 
   for (const [sessionIndex, session] of plan.sessions.entries()) {
     if (!isRecord(session)) {
@@ -106,11 +107,14 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     }
 
     const dayOffset = session.dayOffset;
-    if (typeof dayOffset !== "number" || !Number.isInteger(dayOffset) || dayOffset < 0 || dayOffset > 6) {
-      messages.push(`Session ${sessionIndex + 1} dayOffset must be an integer from 0 through 6.`);
+    if (typeof dayOffset !== "number" || !Number.isInteger(dayOffset) || dayOffset < 1 || dayOffset > 6) {
+      messages.push(`Session ${sessionIndex + 1} dayOffset must be an integer from 1 through 6; dayOffset 0 is today and cannot be planned during a refresh.`);
     }
 
     if (typeof dayOffset === "number" && Number.isInteger(dayOffset)) {
+      if (allowedTrainingOffsets.size > 0 && dayOffset >= 1 && dayOffset <= 6 && !allowedTrainingOffsets.has(dayOffset)) {
+        messages.push(`Session ${sessionIndex + 1} dayOffset ${dayOffset} is not one of the selected future training days.`);
+      }
       if (dayOffset <= previousDayOffset) {
         messages.push(`Session ${sessionIndex + 1} dayOffset must be strictly later than the previous session.`);
       }

@@ -4,12 +4,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildCoachContext } from "./coach/skills/fitness-coach-planner/scripts/build-coach-context";
 import { validateWeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/validate-week-plan";
-import type { CoachContext, CoachRequest, CoachVerdict, WeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/types";
+import type { CoachContext, CoachRequest, CoachVerdict, RunningCoachRequest, RunningWeekPlan, WeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/types";
 import { defaultCoachModel, normalizeRequestedModel, pickTextModelIDs, withDefaultCoachModel } from "./model-selection";
 
 const port = Number(process.env.PORT ?? 8787);
 const apiKey = process.env.OPENAI_API_KEY;
 const skillRoot = join(process.cwd(), "src", "coach", "skills", "fitness-coach-planner");
+const runningSkillRoot = join(process.cwd(), "src", "coach", "skills", "running-coach-planner");
 
 createServer(async (req: IncomingMessage, res: ServerResponse) => {
   try {
@@ -53,6 +54,40 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       writeJSON(res, 200, normalizeCoachVerdict(generated.verdict, context));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/generate-running-week") {
+      if (!apiKey) {
+        writeJSON(res, 500, { error: "OPENAI_API_KEY is not set" });
+        return;
+      }
+
+      const payload = JSON.parse(await readBody(req)) as RunningCoachRequest;
+      const model = normalizeRequestedModel(payload.model);
+      if (!model) {
+        writeJSON(res, 400, { error: "model is required" });
+        return;
+      }
+
+      const skill = await loadRunningSkillBundle();
+      const generated = await generateRunningWeek(apiKey, model, skill, payload);
+
+      if (!generated.ok) {
+        res.writeHead(generated.status, { "content-type": "application/json" }).end(generated.body);
+        return;
+      }
+
+      const validation = validateRunningWeekPlan(generated.plan, payload);
+      if (!validation.accepted) {
+        writeJSON(res, 422, {
+          error: "Generated running week failed technical validation.",
+          messages: validation.messages
+        });
+        return;
+      }
+
+      res.writeHead(200, { "content-type": "application/json" }).end(generated.outputText);
       return;
     }
 
@@ -127,6 +162,11 @@ type SkillBundle = {
   weeklyPlanSchema: Record<string, unknown>;
 };
 
+type RunningSkillBundle = {
+  instructions: string;
+  runningWeekSchema: Record<string, unknown>;
+};
+
 type RepairInput = {
   messages: string[];
   previousPlan: WeeklyPlan;
@@ -138,6 +178,10 @@ type GenerateResult =
 
 type VerdictResult =
   | { ok: true; verdict: CoachVerdict }
+  | { ok: false; status: number; body: string };
+
+type RunningGenerateResult =
+  | { ok: true; outputText: string; plan: RunningWeekPlan }
   | { ok: false; status: number; body: string };
 
 const coachVerdictSchema = {
@@ -175,6 +219,18 @@ async function loadSkillBundle(): Promise<SkillBundle> {
     realWorldStandards,
     exerciseLibrary,
     weeklyPlanSchema: JSON.parse(weeklyPlanSchemaRaw) as Record<string, unknown>
+  };
+}
+
+async function loadRunningSkillBundle(): Promise<RunningSkillBundle> {
+  const [instructions, runningWeekSchemaRaw] = await Promise.all([
+    readFile(join(runningSkillRoot, "SKILL.md"), "utf8"),
+    readFile(join(runningSkillRoot, "references", "running-week.schema.json"), "utf8")
+  ]);
+
+  return {
+    instructions,
+    runningWeekSchema: JSON.parse(runningWeekSchemaRaw) as Record<string, unknown>
   };
 }
 
@@ -287,16 +343,96 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
   return { ok: true, verdict: JSON.parse(outputText) as CoachVerdict };
 }
 
+async function generateRunningWeek(
+  apiKey: string,
+  model: string,
+  skill: RunningSkillBundle,
+  request: RunningCoachRequest
+): Promise<RunningGenerateResult> {
+  const allowedDayOffsets = normalizeFutureDayOffsets(request.profile.trainingDayOffsets);
+  const hasSelectedOffsets = allowedDayOffsets.length > 0;
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "system",
+          content: [
+            "You are executing the following Agent Skill. Follow it exactly.",
+            skill.instructions
+          ].join("\n\n")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            runningProfile: request.profile,
+            weekStart: request.weekStart,
+            recentRunningLogs: request.runningLogs,
+            plannedRuns: request.plannedRuns,
+            outputRules: {
+              selectedRunningDays: request.profile.trainingDays ?? [],
+              allowedDayOffsets: hasSelectedOffsets ? allowedDayOffsets : [1, 2, 3, 4, 5, 6],
+              selectedRunningDayCount: hasSelectedOffsets ? allowedDayOffsets.length : null,
+              sessions: hasSelectedOffsets
+                ? "Return exactly one running session on each selected future running day. Use only allowedDayOffsets. Never use dayOffset 0 because today is locked."
+                : "Return 3 to 5 sessions across dayOffset 1 through 6. Never use dayOffset 0 because today is locked.",
+              manualFirst: true,
+              noHealthKitOrGpsAssumptions: true
+            }
+          })
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "running_week_plan",
+          strict: true,
+          schema: skill.runningWeekSchema
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    return { ok: false, status: response.status, body: await response.text() };
+  }
+
+  const json = await response.json();
+  const outputText = extractOutputText(json);
+  return { ok: true, outputText, plan: JSON.parse(outputText) as RunningWeekPlan };
+}
+
 function buildCoachPromptPayload(context: CoachContext, repair?: RepairInput): Record<string, unknown> {
+  const hasSelectedOffsets = context.profile.trainingDayOffsets.length > 0;
+  const basePayload = {
+    coachContext: context,
+    schedulingRules: {
+      selectedTrainingDays: context.profile.trainingDays,
+      allowedDayOffsets: hasSelectedOffsets ? context.profile.trainingDayOffsets : [1, 2, 3, 4, 5, 6],
+      selectedTrainingDayCount: context.profile.weeklySessions,
+      forbiddenDayOffsets: [0],
+      todayIsLocked: true,
+      instruction:
+        hasSelectedOffsets
+          ? "Schedule exactly one strength session on each selected future training day. Use only allowedDayOffsets and treat all other offsets as rest days. Never schedule dayOffset 0 because today is locked."
+          : "Schedule exactly the requested number of strength sessions across dayOffset 1 through 6. Never schedule dayOffset 0 because today is locked."
+    }
+  };
+
   if (!repair) {
-    return { coachContext: context };
+    return basePayload;
   }
 
   return {
-    coachContext: context,
+    ...basePayload,
     repairRequest: {
       instruction:
-        "The previous plan failed technical validation. Repair it once by changing only what is needed, then return schema-valid JSON only.",
+        "The previous plan failed technical validation. Repair it once by changing only what is needed, preserve the schedulingRules, and return schema-valid JSON only.",
       validationMessages: repair.messages,
       previousPlan: repair.previousPlan
     }
@@ -312,6 +448,54 @@ function normalizeCoachVerdict(verdict: CoachVerdict, context: CoachContext): Co
     contextState: context.readiness.state,
     shouldUpdatePlan: verdict.shouldUpdatePlan || noPlannedSessions || shouldUpdateForReadiness
   };
+}
+
+function validateRunningWeekPlan(plan: RunningWeekPlan, request: RunningCoachRequest): { accepted: boolean; messages: string[] } {
+  const messages: string[] = [];
+  const kinds = new Set(["easy", "long", "recovery", "hills", "tempo", "intervals"]);
+  const allowedDayOffsets = normalizeFutureDayOffsets(request.profile.trainingDayOffsets);
+  const allowedDayOffsetSet = new Set(allowedDayOffsets);
+  if (!plan || typeof plan !== "object") {
+    return { accepted: false, messages: ["Running plan is not an object."] };
+  }
+  if (typeof plan.summary !== "string") messages.push("Running plan summary is missing.");
+  if (!Array.isArray(plan.safetyFlags) || !plan.safetyFlags.every((flag) => typeof flag === "string")) {
+    messages.push("Running plan safetyFlags must be a string array.");
+  }
+  if (!Array.isArray(plan.sessions) || plan.sessions.length === 0) {
+    messages.push("Running plan must include sessions.");
+    return { accepted: false, messages };
+  }
+  if (allowedDayOffsets.length > 0 && plan.sessions.length !== allowedDayOffsets.length) {
+    messages.push(`Running plan must include exactly ${allowedDayOffsets.length} selected future running sessions.`);
+  }
+
+  let previousDayOffset = -1;
+  for (const [index, session] of plan.sessions.entries()) {
+    if (typeof session.dayOffset !== "number" || !Number.isInteger(session.dayOffset) || session.dayOffset < 1 || session.dayOffset > 6) {
+      messages.push(`Running session ${index + 1} dayOffset must be 1 through 6; dayOffset 0 is today and cannot be planned during a refresh.`);
+    }
+    if (allowedDayOffsetSet.size > 0 && Number.isInteger(session.dayOffset) && !allowedDayOffsetSet.has(session.dayOffset)) {
+      messages.push(`Running session ${index + 1} dayOffset ${session.dayOffset} is not one of the selected future running days.`);
+    }
+    if (session.dayOffset <= previousDayOffset) {
+      messages.push(`Running session ${index + 1} dayOffset must be strictly later than the previous session.`);
+    }
+    previousDayOffset = session.dayOffset;
+    if (!kinds.has(session.kind)) messages.push(`Running session ${index + 1} kind is unknown.`);
+    if (session.distanceKm < 0 || session.durationMinutes < 0 || session.elevationMeters < 0) {
+      messages.push(`Running session ${index + 1} has negative training values.`);
+    }
+  }
+
+  return { accepted: messages.length === 0, messages };
+}
+
+function normalizeFutureDayOffsets(offsets: unknown): number[] {
+  if (!Array.isArray(offsets)) return [];
+  return [...new Set(offsets)]
+    .filter((offset): offset is number => typeof offset === "number" && Number.isInteger(offset) && offset >= 1 && offset <= 6)
+    .sort((a, b) => a - b);
 }
 
 function readBody(req: IncomingMessage): Promise<string> {

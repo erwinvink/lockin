@@ -1,0 +1,223 @@
+{
+  "name": "Lockin Alpine Notebook Design Tokens",
+  "version": "1.1",
+  "description": "Design tokens for the Lockin iPhone app redesign. The canonical Today screen is the newer attached reference with title-case hero, Today work card, At a Glance, Daily Progress, and bottom split card.",
+  "colors": {
+    "background": "#FAF8F2",
+    "backgroundSecondary": "#F3F0E8",
+    "surface": "#FFFFFF",
+    "surfaceWarm": "#F7F4EC",
+    "surfaceElevated": "#FEFCF7",
+    "border": "#E4DED2",
+    "borderStrong": "#D4CCBD",
+    "divider": "#EAE5DC",
+    "textPrimary": "#171A15",
+    "textSecondary": "#5F6258",
+    "textTertiary": "#8D8A80",
+    "forest": "#203A24",
+    "forestLight": "#385B38",
+    "olive": "#73804A",
+    "sage": "#AAB18A",
+    "stone": "#C8C1B3",
+    "success": "#2E6B3F",
+    "warning": "#B7791F",
+    "danger": "#A14A3B",
+    "blueRunning": "#3D6F91",
+    "rankDark": "#111713",
+    "rankDarkSecondary": "#1D241F",
+    "primaryButtonForeground": "#FFFDF8",
+    "tabSurface": "#FEFCF7",
+    "coachNoteFill": "#F7F4EC",
+    "exerciseIconFill": "#EEF2E8"
+  },
+  "typography": {
+    "wordmark": {
+      "font": "SF Pro Text",
+      "size": 22,
+      "weight": "semibold",
+      "letterSpacing": 5
+    },
+    "todayEyebrow": {
+      "font": "SF Pro Text",
+      "size": 13,
+      "weight": "semibold",
+      "letterSpacing": 1.6,
+      "textTransform": "uppercase"
+    },
+    "todayHero": {
+      "font": "System Serif",
+      "size": 34,
+      "weight": "semibold",
+      "lineHeight": 40
+    },
+    "screenTitle": {
+      "font": "SF Pro Display",
+      "size": 32,
+      "weight": "bold"
+    },
+    "workoutSerifTitle": {
+      "font": "System Serif",
+      "size": 18,
+      "weight": "semibold",
+      "lineHeight": 23
+    },
+    "cardTitle": {
+      "font": "SF Pro Text",
+      "size": 16,
+      "weight": "semibold"
+    },
+    "sectionLabel": {
+      "font": "SF Pro Text",
+      "size": 12,
+      "weight": "semibold",
+      "letterSpacing": 1.2,
+      "textTransform": "uppercase"
+    },
+    "body": {
+      "font": "SF Pro Text",
+      "size": 15,
+      "weight": "regular"
+    },
+    "buttonLabel": {
+      "font": "SF Pro Text",
+      "size": 16,
+      "weight": "semibold"
+    },
+    "metadata": {
+      "font": "SF Pro Text",
+      "size": 12,
+      "weight": "medium"
+    },
+    "largeNumber": {
+      "font": "SF Pro Display",
+      "size": 42,
+      "weight": "medium"
+    },
+    "glanceNumber": {
+      "font": "System Serif",
+      "size": 18,
+      "weight": "semibold"
+    },
+    "tabLabel": {
+      "font": "SF Pro Text",
+      "size": 12,
+      "weight": "medium"
+    }
+  },
+  "spacing": {
+    "screenHorizontal": 20,
+    "screenTop": 16,
+    "sectionGap": 12,
+    "cardPadding": 16,
+    "cardGap": 12,
+    "rowGap": 10,
+    "microGap": 6,
+    "bottomSafeAreaExtra": 4,
+    "tabBarClearance": 80
+  },
+  "radius": {
+    "card": 8,
+    "largeCard": 10,
+    "button": 6,
+    "pill": 999,
+    "small": 8,
+    "coachNote": 8,
+    "exerciseCircle": 999
+  },
+  "borderWidth": {
+    "hairline": 0.5,
+    "standard": 1
+  },
+  "components": {
+    "primaryButton": {
+      "height": 40,
+      "background": "forest",
+      "foreground": "primaryButtonForeground",
+      "radius": "button",
+      "horizontalPadding": 20,
+      "labelAlignment": "leading",
+      "trailingIcon": "arrow.right",
+      "trailingIconSize": 24
+    },
+    "secondaryButton": {
+      "height": 46,
+      "background": "surfaceWarm",
+      "foreground": "textPrimary",
+      "border": "border",
+      "radius": "button"
+    },
+    "card": {
+      "background": "surface",
+      "border": "border",
+      "radius": "card",
+      "padding": "cardPadding"
+    },
+    "todayHeader": {
+      "showWordmark": false,
+      "avatarSize": 56,
+      "dateStyle": "todayEyebrow",
+      "heroStyle": "todayHero",
+      "heroText": "Locked In.",
+      "subtitle": "Discipline today. Freedom tomorrow."
+    },
+    "todayWorkCard": {
+      "background": "surface",
+      "border": "border",
+      "radius": "card",
+      "padding": 16,
+      "exerciseThumbnailSize": 36,
+      "illustrationWidth": 88,
+      "illustrationHeight": 96,
+      "coachNoteBackground": "coachNoteFill",
+      "coachNoteRadius": "coachNote",
+      "showMarkMissedButton": false
+    },
+    "todayGlanceCard": {
+      "columns": 3,
+      "divider": "divider",
+      "iconSize": 12,
+      "valueStyle": "glanceNumber"
+    },
+    "todayDailyProgress": {
+      "exerciseThumbnailSize": 32,
+      "progressTrackHeight": 3,
+      "progressFill": "forest",
+      "progressTrack": "borderStrong"
+    },
+    "tabBar": {
+      "height": 74,
+      "background": "tabSurface",
+      "topBorder": "border",
+      "activeForeground": "forest",
+      "inactiveForeground": "textTertiary",
+      "iconSize": 22,
+      "labelStyle": "tabLabel",
+      "activeWeight": "semibold",
+      "bottomSafeAreaExtra": 4
+    },
+    "activeTab": {
+      "foreground": "forest"
+    },
+    "inactiveTab": {
+      "foreground": "textTertiary"
+    },
+    "progressArc": {
+      "track": "borderStrong",
+      "fill": "forest",
+      "lineWidth": 4
+    },
+    "sparkline": {
+      "line": "olive",
+      "lineWidth": 1.5
+    },
+    "consistencySquare": {
+      "size": 32,
+      "radius": 7,
+      "gap": 8,
+      "completedFill": "forest",
+      "plannedStroke": "forest",
+      "restFill": "backgroundSecondary",
+      "missedStroke": "danger"
+    }
+  }
+}

@@ -16,7 +16,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Confirms deload credit does not create penalty points.
 
 - `testMissedSessionCreatesScorePenaltyWithoutExtraLoad`
-  - Verifies a missed session creates a negative XP outcome.
+  - Verifies a missed session creates a negative consistency outcome.
   - Confirms missed sessions create penalty points.
   - Confirms missed sessions do not trigger unsafe extra training load.
 
@@ -64,24 +64,31 @@ This file is the durable human-readable test list for the lockin app. It records
   - Verifies malformed schedules, logging fields, and exercise values are rejected.
 
 - `testAcceptedAIPlanConvertsToVisibleWeeklyPlan`
-  - Verifies a balanced AI plan is accepted.
-  - Confirms AI `dayOffset` values become visible scheduled workout dates.
-  - Confirms AI-generated sessions are visibly labeled in summaries.
+  - Verifies a balanced coach-generated plan is accepted.
+  - Confirms generated `dayOffset` values become visible scheduled workout dates.
+  - Confirms generated sessions are preserved while legacy generated prefixes remain backward-compatible.
 
 ### Persistence, Reset, and Journey State
 
 - `testWipeAllDataDeletesEveryModel`
-  - Verifies reset deletes profile, sessions, blocks, prescriptions, logs, rank, coach plans, and coach decisions.
+  - Verifies reset deletes profile, sessions, blocks, prescriptions, logs, running data, rank, achievements, coach plans, and coach decisions.
 
 - `testPersistAIPlanReplacesOnlyFuturePlannedSessions`
-  - Verifies AI week persistence replaces only future planned sessions.
+  - Verifies strength week persistence replaces only future planned sessions.
   - Confirms completed history survives replacement.
   - Confirms old prescriptions/blocks for replaced planned sessions are deleted.
 
 - `testDeleteNonAIPlannedSessionsKeepsAIAndHistory`
   - Verifies legacy rules-generated planned sessions are removed.
-  - Confirms AI planned sessions and completed history survive cleanup.
+  - Confirms coach-generated planned sessions, legacy generated sessions, and completed history survive cleanup.
   - Confirms blocks and prescriptions for removed planned sessions are deleted.
+
+- `testPersistRunningPlanReplacesFuturePlannedRunsButKeepsCompletedHistory`
+  - Verifies running week persistence replaces only future planned runs.
+  - Confirms completed running history survives replacement.
+
+- `testAchievementProgressUpdatesFromStrengthLog`
+  - Verifies achievement progress and completion from a strong logged session.
 
 - `testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards`
   - Creates a zero-baseline `ZeroPlan` profile.
@@ -89,7 +96,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Generates 3 weeks of sessions.
   - Marks some days missed and fills in the remaining days as completed.
   - Verifies no planned sessions remain.
-  - Verifies missed/completed counts, performance logs, penalty points, streak, XP, and rank.
+  - Verifies missed/completed counts, performance logs, penalty points, consistency score, and streak.
 
 ## Current Automated UI Tests
 
@@ -100,17 +107,17 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testMainShellAndCoachGeneratorSurfaceAfterOnboarding`
   - Completes onboarding with default values.
-  - Verifies Today opens with the AI-only empty plan state.
+  - Verifies Today opens with the coach-plan empty state.
   - Opens Coach.
-  - Verifies Coach shows the generator surface and AI generation action without the initial ready status.
+  - Verifies Coach shows strength and running generation actions without the old technical framing.
 
 - `testLogShowsEmptyAIOnlyStateAfterOnboarding`
   - Completes onboarding.
-  - Verifies Log starts empty until an AI plan is generated.
+  - Verifies Log starts empty until generated or manual work exists.
 
-- `testProgressAndRanksScreensAfterOnboarding`
+- `testProgressAndConsistencyScreensAfterOnboarding`
   - Completes onboarding.
-  - Tests Progress overview, embedded lift rings, XP, penalties, and Ranks/benchmarks.
+  - Tests Progress mode controls and Consistency navigation.
 
 - `testCoachTabsAfterOnboarding`
   - Completes onboarding.
@@ -128,25 +135,20 @@ This file is the durable human-readable test list for the lockin app. It records
   - Still useful: UI-level editing of all numeric onboarding fields.
 
 - Today
-  - Covered: AI-only empty state, rank card.
-  - Still useful: AI-generated prescription card, log session, mark missed, week processed.
-  - Still useful: popover copy for every exercise info button.
+  - Covered: coach-plan empty state.
+  - Still useful: generated prescription card, guided session, save log, mark missed, week processed.
 
 - Log Sheet
   - Covered: save default logged values for planned sessions.
   - Still useful: editing numeric log fields, support-only sessions, pain/fatigue deload UI path.
 
 - Progress
-  - Covered: overview, XP, penalties, Lifts, History, Ranks navigation.
+  - Covered: strength/running mode controls and consistency navigation.
   - Still useful: progress rings after varied pull-up/push-up/plank values.
 
-- Ranks
-  - Covered: rank details screen and benchmark anchors.
-  - Still useful: all rank thresholds from Recruit through Apex.
-
 - Coach
-  - Covered: generator surface, Context model settings, Rules.
-  - Covered in unit tests: technical AI output validation and accepted AI conversion.
+  - Covered: strength/running generator surface and advanced model/proxy settings.
+  - Covered in unit tests: technical generated-output validation and accepted generated conversion.
   - Still useful: UI-level proxy unavailable and missing API key messages.
 
 - Log/Calendar
@@ -180,7 +182,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - Add UI test for Coach proxy error display:
   - Point proxy URL to an unavailable endpoint.
-  - Tap `Generate strength week`.
+  - Tap `Generate Strength Week`.
   - Verify the user-facing error explains how to start the proxy.
 
 ### Medium Priority
@@ -192,9 +194,6 @@ This file is the durable human-readable test list for the lockin app. It records
 - Add unit test for current-week replacement boundaries:
   - Verify replacement does not delete past planned sessions.
   - Verify replacement does not delete future completed sessions.
-
-- Add unit test for rank thresholds:
-  - Verify XP values map to Recruit, Grinder, Operator, Specialist, Elite, and Apex.
 
 - Add UI test for reset cancellation:
   - Tap reset.
@@ -222,8 +221,8 @@ When doing manual QA on the simulator, use this sequence:
 6. Check off the due session.
 7. Let the next due day roll forward or use test data to verify missed automation.
 8. Verify `Week processed`.
-9. Inspect Progress overview, embedded lift rings, and Ranks.
-10. Inspect Coach generator, Context, Rules.
+9. Inspect Progress overview, strength/running modes, and Consistency.
+10. Inspect Coach generator and advanced model/proxy settings.
 11. Inspect Log session history.
 12. Inspect Profile/Settings and reset.
 13. Rerun the full automated test suite.
