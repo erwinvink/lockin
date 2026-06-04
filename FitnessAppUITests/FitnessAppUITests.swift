@@ -38,22 +38,20 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["DONE"].exists)
     }
 
-    func testProgressAndConsistencyScreensAfterOnboarding() {
+    func testProgressScreenAfterOnboarding() {
         let app = launchFreshApp()
         onboardDefault(app)
 
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Progress"].exists)
+        XCTAssertTrue(app.staticTexts["STREAK"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["BEST"].exists)
+        XCTAssertTrue(app.staticTexts["MISSED TRAININGS"].exists)
         XCTAssertTrue(app.staticTexts["PULL-UPS"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["PENALTIES"].exists)
+        XCTAssertFalse(app.staticTexts["PENALTIES"].exists)
         XCTAssertFalse(app.buttons["History"].exists)
-        tapWhenReady(app.buttons["Consistency details and benchmarks"], in: app)
-        XCTAssertTrue(app.navigationBars["Consistency"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Real-world anchors"].waitForExistence(timeout: 5))
-        app.navigationBars["Consistency"].buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.navigationBars["Progress"].exists)
+        XCTAssertFalse(app.buttons["Consistency details and benchmarks"].exists)
     }
 
     func testCoachReadAndAdvancedControlsAfterOnboarding() {
@@ -83,12 +81,56 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.navigationBars["Profile"].exists)
         XCTAssertFalse(app.staticTexts["Local fallback plan"].exists)
         XCTAssertFalse(app.buttons["Regenerate local fallback week"].exists)
+        XCTAssertTrue(app.staticTexts["Week schedule"].waitForExistence(timeout: 5))
+        tapWhenReady(app.buttons["Sa"], in: app)
+        tapWhenReady(app.buttons["Tu"], in: app)
+
+        app.tabBars.buttons["Coach"].tap()
+        app.swipeUp()
+        let updatedWeekShape = app.descendants(matching: .any)["coach-week-shape"]
+        XCTAssertTrue(updatedWeekShape.waitForExistence(timeout: 5))
+        XCTAssertTrue(updatedWeekShape.label.contains("Mo, Tu, We, Fr"))
+
+        app.tabBars.buttons["Profile"].tap()
         XCTAssertTrue(app.buttons["Request and schedule"].exists)
         tapWhenReady(app.buttons["Wipe all app data"], in: app)
         XCTAssertTrue(app.alerts["Wipe all app data?"].waitForExistence(timeout: 5))
         app.alerts["Wipe all app data?"].buttons["Wipe everything"].tap()
         XCTAssertTrue(app.images["lockin-wordmark"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Create profile"].exists)
+    }
+
+    func testTwoWeekSeedPreviewDataSurfaces() {
+        let app = XCUIApplication()
+        app.launchArguments = ["UITesting", "SeedTwoWeeksActivity"]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["STREAK"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["BEST"].exists)
+        XCTAssertFalse(app.staticTexts["CONSISTENCY"].exists)
+        XCTAssertTrue(app.staticTexts["No session due today"].exists)
+        XCTAssertTrue(app.staticTexts["Pull Capacity"].exists)
+
+        app.tabBars.buttons["Log"].tap()
+        XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Session history"].exists)
+        XCTAssertTrue(app.staticTexts["Core Control"].exists)
+        XCTAssertTrue(app.staticTexts["Push + Core"].exists)
+        XCTAssertFalse(app.staticTexts["No history yet."].exists)
+
+        app.tabBars.buttons["Progress"].tap()
+        XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["MISSED TRAININGS"].exists)
+        XCTAssertTrue(app.staticTexts["1"].exists)
+        XCTAssertFalse(app.staticTexts["PENALTIES"].exists)
+        XCTAssertFalse(app.buttons["Consistency details and benchmarks"].exists)
+
+        app.tabBars.buttons["Coach"].tap()
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Back on track"].exists)
+
+        app.tabBars.buttons["Log"].tap()
+        XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
     }
 
     private func launchFreshApp() -> XCUIApplication {
@@ -104,9 +146,15 @@ final class FitnessAppUITests: XCTestCase {
     }
 
     private func tapWhenReady(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
         var attempts = 0
-        while !element.isHittable && attempts < 3 {
+        while !element.waitForExistence(timeout: 1) && attempts < 4 {
+            app.swipeUp()
+            attempts += 1
+        }
+        XCTAssertTrue(element.exists)
+
+        attempts = 0
+        while !element.isHittable && attempts < 4 {
             app.swipeUp()
             attempts += 1
         }

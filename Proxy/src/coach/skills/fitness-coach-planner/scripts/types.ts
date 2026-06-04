@@ -40,6 +40,9 @@ export type TrainingLog = {
   rpe: number;
   painLevel: number;
   fatigueLevel: number;
+  perceivedEffort?: number;
+  howYouFeltScore?: number;
+  howYouFelt?: "very_weak" | "weak" | "normal" | "strong" | "very_strong";
   notes: string;
 };
 
@@ -65,8 +68,10 @@ export type MonthSummary = {
   pushUps: MetricSummary;
   plankSeconds: MetricSummary;
   averageRPE: number | null;
+  averagePerceivedEffort?: number | null;
   maxPain: number;
   maxFatigue: number;
+  worstHowYouFelt?: "very_weak" | "weak" | "normal" | "strong" | "very_strong" | null;
 };
 
 export type TrendSummary = {

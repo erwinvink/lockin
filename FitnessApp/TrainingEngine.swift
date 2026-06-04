@@ -121,7 +121,7 @@ struct TrainingEngine {
             weekStart: start,
             weekIndex: weekIndex,
             sessions: sessions,
-            summary: deload ? "Deload week: score pressure stays on, training stress drops." : "Adaptive build week: exact volume, strict form, no junk reps.",
+            summary: deload ? "Deload week: your pain or how-you-felt signal says training stress drops." : "Adaptive build week: exact volume, strict form, no junk reps.",
             shouldTest: shouldScheduleTest(weekIndex: weekIndex, baseline: baseline, goals: goals, recentLogs: recentLogs)
         )
     }
@@ -133,7 +133,7 @@ struct TrainingEngine {
                 penaltyDelta: Self.missedSessionPenaltyPoints,
                 streakDelta: -1,
                 didTriggerDeload: false,
-                reason: "Missed session: +\(Self.missedSessionPenaltyPoints) penalty points, consistency drops, streak reset. No unsafe make-up volume added."
+                reason: "Missed training recorded. Streak reset, with no unsafe make-up volume added."
             )
         }
 
@@ -143,7 +143,7 @@ struct TrainingEngine {
                 penaltyDelta: 0,
                 streakDelta: 1,
                 didTriggerDeload: true,
-                reason: "Logged pain or high fatigue. Credit kept, next work auto-deloaded."
+                reason: "Logged pain or Very weak how-you-felt feedback. Credit kept, next work auto-deloaded."
             )
         }
 
@@ -153,7 +153,7 @@ struct TrainingEngine {
             penaltyDelta: 0,
             streakDelta: 1,
             didTriggerDeload: false,
-            reason: "Completed with strict form. Consistency climbs."
+            reason: "Completed with strict form. Streak updated."
         )
     }
 
@@ -246,7 +246,7 @@ struct TrainingEngine {
         case .recovery:
             main = WorkoutBlockPlan(
                 name: "Recovery Debt",
-                detail: "Low-risk work. Penalties live in score, not reckless volume.",
+                detail: "Low-risk work after missed training, without chasing make-up volume.",
                 sets: [
                     ExerciseSetPlan(exercise: .shoulderMobility, sets: 3, reps: 10, seconds: 0, restSeconds: 30, intensity: "Easy"),
                     ExerciseSetPlan(exercise: .hollowHold, sets: 3, reps: 0, seconds: 20, restSeconds: 45, intensity: "Easy")
@@ -260,7 +260,7 @@ struct TrainingEngine {
             title: title,
             focus: focus,
             weekIndex: weekIndex,
-            summary: deload ? "Auto-deloaded from pain/fatigue signals." : "Exact work for strict goal progress.",
+            summary: deload ? "Auto-deloaded from pain/how-you-felt signals." : "Exact work for strict goal progress.",
             blocks: [warmup, main]
         )
     }

@@ -92,7 +92,6 @@ private struct TodayHeroCard: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            MetricCard(title: "Consistency", value: "\(rank.consistencyScore)", subtitle: "Only score that matters", systemImage: "chart.line.uptrend.xyaxis")
             MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Current sessions", systemImage: "flame.fill")
             MetricCard(title: "Best", value: "\(rank.bestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
         }
@@ -235,14 +234,14 @@ private struct ReadinessSummary: View {
             Text("Readiness")
                 .font(.headline)
             HStack(spacing: 8) {
-                ReadinessTile(title: "RPE", value: "\(log?.rpe ?? 7)", status: rpeStatus, color: rpeColor)
+                ReadinessTile(title: "Perceived effort", value: "\(log?.rpe ?? 7)", status: perceivedEffortStatus, color: perceivedEffortColor)
                 ReadinessTile(title: "Pain", value: "\(log?.painLevel ?? 0)", status: painStatus, color: painColor)
-                ReadinessTile(title: "Fatigue", value: "\(log?.fatigueLevel ?? 5)", status: fatigueStatus, color: fatigueColor)
+                ReadinessTile(title: "How you felt", value: howYouFeltValue, status: howYouFeltStatus, color: howYouFeltColor)
             }
         }
     }
 
-    private var rpeStatus: String {
+    private var perceivedEffortStatus: String {
         guard let rpe = log?.rpe else { return "Baseline" }
         return rpe >= 8 ? "Hard" : "Moderate"
     }
@@ -252,12 +251,28 @@ private struct ReadinessSummary: View {
         return pain >= 4 ? "Flag" : "None"
     }
 
-    private var fatigueStatus: String {
-        guard let fatigue = log?.fatigueLevel else { return "Some" }
-        return fatigue >= 9 ? "Flag" : fatigue >= 6 ? "Some" : "Low"
+    private var howYouFeltValue: String {
+        guard let fatigueLevel = log?.fatigueLevel else { return "3" }
+        return "\(howYouFeltScore(fromFatigueLevel: fatigueLevel))"
     }
 
-    private var rpeColor: Color {
+    private var howYouFeltStatus: String {
+        guard let fatigueLevel = log?.fatigueLevel else { return "Normal" }
+        switch howYouFeltScore(fromFatigueLevel: fatigueLevel) {
+        case 1:
+            return "Very weak"
+        case 2:
+            return "Weak"
+        case 4:
+            return "Strong"
+        case 5:
+            return "Very strong"
+        default:
+            return "Normal"
+        }
+    }
+
+    private var perceivedEffortColor: Color {
         (log?.rpe ?? 7) >= 9 ? AppTheme.warning : AppTheme.accent
     }
 
@@ -265,8 +280,31 @@ private struct ReadinessSummary: View {
         (log?.painLevel ?? 0) >= 4 ? AppTheme.warning : AppTheme.accent
     }
 
-    private var fatigueColor: Color {
-        (log?.fatigueLevel ?? 5) >= 9 ? AppTheme.warning : AppTheme.gold
+    private var howYouFeltColor: Color {
+        guard let fatigueLevel = log?.fatigueLevel else { return AppTheme.accent }
+        switch howYouFeltScore(fromFatigueLevel: fatigueLevel) {
+        case 1:
+            return AppTheme.warning
+        case 2:
+            return AppTheme.gold
+        default:
+            return AppTheme.accent
+        }
+    }
+
+    private func howYouFeltScore(fromFatigueLevel fatigueLevel: Int) -> Int {
+        switch fatigueLevel {
+        case 9...10:
+            return 1
+        case 7...8:
+            return 2
+        case 3...6:
+            return 3
+        case 1...2:
+            return 4
+        default:
+            return 5
+        }
     }
 }
 

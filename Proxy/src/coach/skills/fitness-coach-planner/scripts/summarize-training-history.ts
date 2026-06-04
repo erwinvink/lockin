@@ -24,8 +24,10 @@ export function summarizeMonth(logs: TrainingLog[], monthStart: Date, isPartial:
     pushUps: summarizeMetric(monthLogs, "pushUps"),
     plankSeconds: summarizeMetric(monthLogs, "plankSeconds"),
     averageRPE: average(monthLogs.map((log) => log.rpe)),
+    averagePerceivedEffort: average(monthLogs.map((log) => log.rpe)),
     maxPain: maxOrZero(monthLogs.map((log) => log.painLevel)),
-    maxFatigue: maxOrZero(monthLogs.map((log) => log.fatigueLevel))
+    maxFatigue: maxOrZero(monthLogs.map((log) => log.fatigueLevel)),
+    worstHowYouFelt: worstHowYouFelt(monthLogs)
   };
 }
 
@@ -90,6 +92,19 @@ function average(values: number[]): number | null {
 
 function maxOrZero(values: number[]): number {
   return values.length ? Math.max(...values) : 0;
+}
+
+function worstHowYouFelt(logs: TrainingLog[]): MonthSummary["worstHowYouFelt"] {
+  if (logs.length === 0) return null;
+  return howYouFeltLabel(Math.max(...logs.map((log) => log.fatigueLevel)));
+}
+
+function howYouFeltLabel(fatigueLevel: number): NonNullable<MonthSummary["worstHowYouFelt"]> {
+  if (fatigueLevel >= 9) return "very_weak";
+  if (fatigueLevel >= 7) return "weak";
+  if (fatigueLevel >= 3) return "normal";
+  if (fatigueLevel >= 1) return "strong";
+  return "very_strong";
 }
 
 function delta(current: number | null, previous: number | null): number | null {

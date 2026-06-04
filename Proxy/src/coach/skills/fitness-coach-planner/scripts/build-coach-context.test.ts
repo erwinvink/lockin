@@ -3,19 +3,31 @@ import test from "node:test";
 import { buildCoachContext } from "./build-coach-context";
 import type { CoachRequest, TrainingLog } from "./types";
 
-test("keeps insufficient history when completed-month evidence is missing", () => {
+test("keeps insufficient history when both completed-month and current evidence are sparse", () => {
   const request = baseRequest({
     trainingLogs: [
-      trainingLog("2026-05-04T10:00:00Z"),
-      trainingLog("2026-05-11T10:00:00Z"),
-      trainingLog("2026-05-18T10:00:00Z")
+      trainingLog("2026-05-04T10:00:00Z")
     ]
   });
 
   const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
 
   assert.equal(context.readiness.state, "insufficient_history");
-  assert.ok(context.readiness.riskFlags.includes("insufficient_completed_month_history"));
+  assert.ok(context.readiness.riskFlags.includes("insufficient_training_history"));
+});
+
+test("uses current-month logs as early evidence for building when readiness is clear", () => {
+  const request = baseRequest({
+    trainingLogs: [
+      trainingLog("2026-05-04T10:00:00Z", { rpe: 7, fatigueLevel: 2 }),
+      trainingLog("2026-05-11T10:00:00Z", { rpe: 7, fatigueLevel: 5 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.readiness.state, "building");
+  assert.ok(!context.readiness.riskFlags.includes("insufficient_training_history"));
 });
 
 test("carries profile notes and recent workout notes into the context", () => {
@@ -32,6 +44,21 @@ test("carries profile notes and recent workout notes into the context", () => {
 
   assert.equal(context.profile.profileNotes, "Left elbow feels sensitive after high pull volume.");
   assert.ok(context.history.last5Logs.some((log) => log.notes === "Shoulder tight near the end."));
+});
+
+test("adds Garmin-style self-evaluation labels to recent logs", () => {
+  const request = baseRequest({
+    trainingLogs: [
+      trainingLog("2026-05-04T10:00:00Z", { rpe: 8, fatigueLevel: 8 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+  const latestLog = context.history.last5Logs.at(-1);
+
+  assert.equal(latestLog?.perceivedEffort, 8);
+  assert.equal(latestLog?.howYouFeltScore, 2);
+  assert.equal(latestLog?.howYouFelt, "weak");
 });
 
 function baseRequest(overrides: Partial<CoachRequest> = {}): CoachRequest {

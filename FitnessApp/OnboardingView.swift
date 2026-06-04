@@ -144,7 +144,7 @@ private struct ScheduleCard: View {
     }
 }
 
-private struct TrainingDaysPicker: View {
+struct TrainingDaysPicker: View {
     @Binding var selectedDays: Set<TrainingWeekday>
 
     var body: some View {

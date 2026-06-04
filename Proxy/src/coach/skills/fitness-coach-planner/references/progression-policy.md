@@ -33,13 +33,30 @@ Use `lastFullMonth` and `previousFullMonth` for trend.
 Use `currentPartialMonth` only as an in-progress signal.
 Use profile notes and recent workout notes as safety context, especially when they mention pain, injury, form breakdown, soreness, equipment limits, or unusual life stress. Do not diagnose; adjust the plan conservatively and explain the adjustment in safety notes.
 
+Self-evaluation uses Garmin-style language:
+
+- `rpe` means perceived effort on a 1-10 scale.
+- `fatigueLevel` is the stored inverse of "How did you feel?": Very weak maps to 10, Weak to 8, Normal to 5, Strong to 2, and Very strong to 0.
+- In athlete-facing rationale, refer to "perceived effort" and "how you felt."
+
 States:
 
 - `building`: recent readiness is acceptable and last full month is stable or improving.
 - `plateau`: adherence is good but best valid tests are flat versus the previous full month.
-- `overreaching`: recent fatigue, pain, or volume spikes are present but not severe enough for full recovery.
-- `recovery_needed`: pain >= 4, fatigue >= 9, repeated deloads, or repeated missed sessions.
-- `insufficient_history`: fewer than 3 valid logs in the last two completed months.
+- `overreaching`: recent Weak how-you-felt feedback, repeated high perceived effort, pain, or volume spikes are present but not severe enough for full recovery.
+- `recovery_needed`: pain >= 4, Very weak how-you-felt feedback, fatigueLevel >= 9, repeated deloads, or repeated missed sessions.
+- `insufficient_history`: fewer than 3 valid logs in the last two completed months and fewer than 2 valid current-month logs.
+
+## First-Week Progression
+
+Do not freeze all numbers just because the athlete is new to the app.
+
+If the current month has at least 2 valid completed logs, pain stays below 4, how-you-felt feedback is Normal/Strong/Very strong, and perceived effort is not repeatedly 9-10:
+
+- Progress one variable only in the next week.
+- Prefer +1 rep on selected sets, +5-10 seconds on selected plank holds, +1 set on one exercise, slightly shorter rest, or a cleaner harder variation.
+- Explain the progression in `progressionRationale`.
+- Keep all progression inside the caps below.
 
 ## Progression Caps
 
@@ -52,7 +69,7 @@ Use the best actually logged recent value, falling back to baseline.
 
 ## Deload Rules
 
-Deload if recent pain >= 4 or fatigue >= 9.
+Deload if recent pain >= 4, "How did you feel?" is Very weak, or fatigueLevel >= 9.
 
 Deload plan shape:
 

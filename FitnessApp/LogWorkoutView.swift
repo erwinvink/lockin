@@ -26,7 +26,7 @@ struct LogWorkoutView: View {
     @State private var plankSecondsText = ""
     @State private var rpe = 7
     @State private var painLevel = 0
-    @State private var fatigueLevel = 5
+    @State private var howFelt = 3
     @State private var notes = ""
 
     private var sessionPrescriptions: [SetPrescription] {
@@ -90,7 +90,7 @@ struct LogWorkoutView: View {
                 ReadinessInputCard(
                     rpe: $rpe,
                     painLevel: $painLevel,
-                    fatigueLevel: $fatigueLevel
+                    howFelt: $howFelt
                 )
 
                 NotesCard(notes: $notes)
@@ -127,6 +127,7 @@ struct LogWorkoutView: View {
         let savedPullUps = shouldLogPullUps ? parsedLogValue(pullUpsText, range: 0...300) ?? 0 : latestPullUps
         let savedPushUps = shouldLogPushUps ? parsedLogValue(pushUpsText, range: 0...500) ?? 0 : latestPushUps
         let savedPlankSeconds = shouldLogPlank ? parsedLogValue(plankSecondsText, range: 0...3_600) ?? 0 : latestPlankSeconds
+        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: howFelt)
         let log = PerformanceLog(
             sessionId: session.id,
             pullUps: savedPullUps,
@@ -329,18 +330,18 @@ private struct LogNumberField: View {
 private struct ReadinessInputCard: View {
     @Binding var rpe: Int
     @Binding var painLevel: Int
-    @Binding var fatigueLevel: Int
+    @Binding var howFelt: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Readiness")
                 .font(.headline)
             ReadinessSlider(
-                title: "RPE",
+                title: "Perceived effort",
                 systemImage: "speedometer",
                 value: $rpe,
                 range: 1...10,
-                descriptor: ReadinessScale.rpe
+                descriptor: ReadinessScale.perceivedEffort
             )
             Divider()
             ReadinessSlider(
@@ -352,11 +353,11 @@ private struct ReadinessInputCard: View {
             )
             Divider()
             ReadinessSlider(
-                title: "Fatigue",
-                systemImage: "battery.50percent",
-                value: $fatigueLevel,
-                range: 0...10,
-                descriptor: ReadinessScale.fatigue
+                title: "How did you feel?",
+                systemImage: "face.smiling",
+                value: $howFelt,
+                range: 1...5,
+                descriptor: ReadinessScale.howIFelt
             )
         }
         .card(padding: 10)
@@ -394,6 +395,8 @@ private struct ReadinessSlider: View {
                     Label(title, systemImage: systemImage)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.text)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
 
                     Text(current.detail)
                         .font(.caption2)
@@ -446,7 +449,7 @@ private struct ReadinessDescriptor {
 }
 
 private enum ReadinessScale {
-    static func rpe(_ value: Int) -> ReadinessDescriptor {
+    static func perceivedEffort(_ value: Int) -> ReadinessDescriptor {
         switch value {
         case 1:
             ReadinessDescriptor(label: "Very light", detail: "Warm-up effort. Plenty left in the tank.", color: AppTheme.accent)
@@ -498,30 +501,33 @@ private enum ReadinessScale {
         }
     }
 
-    static func fatigue(_ value: Int) -> ReadinessDescriptor {
+    static func howIFelt(_ value: Int) -> ReadinessDescriptor {
         switch value {
-        case 0:
-            ReadinessDescriptor(label: "Fresh", detail: "No meaningful fatigue.", color: AppTheme.accent)
         case 1:
-            ReadinessDescriptor(label: "Very light", detail: "Very light fatigue. You feel fresh.", color: AppTheme.accent)
+            ReadinessDescriptor(label: "Very weak", detail: "Bad day. Recovery should win.", color: AppTheme.warning)
         case 2:
-            ReadinessDescriptor(label: "Low", detail: "Low tiredness. Easy to get moving.", color: AppTheme.accent)
+            ReadinessDescriptor(label: "Weak", detail: "Off or heavy. Keep stress modest.", color: AppTheme.gold)
         case 3:
-            ReadinessDescriptor(label: "Moderate", detail: "Moderate fatigue, but continuing feels fine.", color: AppTheme.accent)
+            ReadinessDescriptor(label: "Normal", detail: "Fine enough. Nothing special to flag.", color: AppTheme.accent)
         case 4:
-            ReadinessDescriptor(label: "Noticeable", detail: "Energy is down, but control is still good.", color: AppTheme.gold)
-        case 5:
-            ReadinessDescriptor(label: "Tired", detail: "Hard and tiring, but continuing is manageable.", color: AppTheme.gold)
-        case 6:
-            ReadinessDescriptor(label: "Heavy", detail: "Strong fatigue is building.", color: AppTheme.gold)
-        case 7:
-            ReadinessDescriptor(label: "Drained", detail: "Very strenuous. You have to push yourself.", color: AppTheme.gold)
-        case 8:
-            ReadinessDescriptor(label: "Very drained", detail: "Very tired. Quality may start to drop.", color: AppTheme.warning)
-        case 9:
-            ReadinessDescriptor(label: "Overreached", detail: "High fatigue. Lockin will deload after saving.", color: AppTheme.warning)
+            ReadinessDescriptor(label: "Strong", detail: "Good day. You felt solid after training.", color: AppTheme.accent)
         default:
-            ReadinessDescriptor(label: "Spent", detail: "Maximum fatigue. Recovery should win.", color: AppTheme.warning)
+            ReadinessDescriptor(label: "Very strong", detail: "Great day. You finished feeling sharp.", color: AppTheme.accent)
+        }
+    }
+
+    static func fatigueLevel(fromHowFelt value: Int) -> Int {
+        switch value {
+        case 1:
+            return 10
+        case 2:
+            return 8
+        case 3:
+            return 5
+        case 4:
+            return 2
+        default:
+            return 0
         }
     }
 }

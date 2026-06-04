@@ -58,7 +58,7 @@ enum CoachSkillDisplay {
     - references/weekly-plan.schema.json
 
     Built before the model call:
-    - last 5 logs
+    - last 5 logs with perceived effort, pain, and how-you-felt self-evaluation
     - current partial month
     - last full month
     - previous full month

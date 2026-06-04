@@ -26,21 +26,21 @@ This skill is a planning pipeline, not a motivational chat prompt:
 - Target date.
 - Available equipment.
 - Requested sessions per week.
-- Raw performance logs, including which exercises were actually logged and the athlete's workout notes.
+- Raw performance logs, including which exercises were actually logged, perceived effort, pain level, Garmin-style how-you-felt self-evaluation, and the athlete's workout notes.
 - Planned or completed sessions when available.
 
 ## Context Requirements
 
 Before planning, run `scripts/build-coach-context.ts` and use its output. The context must include:
 
-- `last5Logs`: immediate readiness and fatigue signal.
+- `last5Logs`: immediate readiness signal, including perceived effort, pain level, and how the athlete felt after training.
 - `currentPartialMonth`: current calendar month to date, labeled partial.
 - `lastFullMonth`: most recent completed calendar month.
 - `previousFullMonth`: completed calendar month before `lastFullMonth`.
 - `twoFullMonthTrend`: comparison of last full month vs previous full month.
 - `bestRecentTests`: best valid pull-up, push-up, and plank values from actually logged tests.
 - `adherence`: planned/completed/missed/deload counts when planned sessions are available.
-- `riskFlags`: pain, fatigue, missed-session, sudden-volume, or insufficient-history warnings.
+- `riskFlags`: pain, poor how-you-felt feedback, repeated high perceived effort, missed-session, sudden-volume, or insufficient-history warnings.
 - `weekStart`: the Monday/Sunday app-provided start date for scheduling this plan.
 - `profileNotes` and recent log `notes`: human context for limitations, form issues, soreness, or unusual circumstances.
 
@@ -70,6 +70,25 @@ Do not ask the model to infer these summaries from raw logs.
 
 The app-visible workout calendar is generated from this skill output, so do not rely on hidden app defaults for the weekly split.
 
+## Self-Evaluation Metrics
+
+The app follows Garmin-style post-workout self-evaluation language:
+
+- `rpe` is the stored compatibility key for `perceivedEffort`, a 1-10 rating of how hard the workout felt.
+- `fatigueLevel` is the stored compatibility key for the inverse of "How did you feel?" Higher `fatigueLevel` means the athlete felt worse after training.
+- Current UI mapping: "Very weak" -> fatigueLevel 10, "Weak" -> 8, "Normal" -> 5, "Strong" -> 2, "Very strong" -> 0.
+- When writing athlete-facing text, say "perceived effort" and "how you felt"; do not call the second metric "fatigue" unless explaining an internal safety flag.
+- Treat "Very weak" or fatigueLevel >= 9 as a recovery-needed signal. Treat repeated "Weak" feedback as an overreaching warning unless performance and pain are clearly fine.
+
+## Progression Temperament
+
+The coach should be strict enough to change the training when the evidence supports it.
+
+- `insufficient_history` means use smaller steps, not no steps.
+- If the current month has at least 2 valid completed logs, pain stays below 4, how-you-felt feedback is Normal/Strong/Very strong, and perceived effort is not repeatedly 9-10, apply a small progression in the next plan.
+- A small progression means changing one variable only: +1 rep on selected sets, +5-10 seconds on plank holds, +1 set on one exercise, slightly shorter rest, or a cleaner harder variation.
+- Do not repeat the same numbers for a new week unless there is a clear reason in safety notes or progression rationale.
+
 For normal states (`building`, `plateau`, `overreaching`, `insufficient_history`):
 
 - Cover push, core, and pull when a pull-up bar is available.
@@ -90,12 +109,13 @@ For `recovery_needed`:
 
 - Never treat an unlogged exercise as zero performance.
 - Never prescribe catch-up volume after a missed session.
-- Never increase stress when recent pain or fatigue requires deload.
+- Never increase stress when recent pain or Very weak how-you-felt feedback requires deload.
 - Never ignore profile or recent workout notes that mention pain, injury, form breakdown, or equipment limitations.
 - Never prescribe pull-up-bar exercises when no pull-up bar is available.
 - Never label a session `mixed` unless it actually combines the required movement patterns.
 - Avoid max testing during recovery or deload states.
 - Prefer repeatable progression over heroic one-week jumps.
+- Do not keep a plan static solely because completed-month history is missing when current-week evidence is already clean.
 - Keep app consistency scores separate from real-world benchmarks.
 
 ## Output

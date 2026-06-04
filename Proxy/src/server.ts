@@ -249,7 +249,7 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
             "Write like an experienced coach: direct, calm, practical, and not technical.",
             "Return a short read on the athlete's current state. Do not create or rewrite the week plan.",
             "If there are no completed training logs, say that you only know the starting profile and goals.",
-            "If the latest session raises pain, fatigue, overreaching, or progress concerns, recommend updating the week.",
+            "If the latest session raises pain, poor how-you-felt feedback, overreaching, or progress concerns, recommend updating the week.",
             "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, or internal systems."
           ].join("\n")
         },

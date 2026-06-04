@@ -16,15 +16,17 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   const previousFullMonth = summarizeMonth(sortedLogs, previousFullMonthStart, false);
   const twoFullMonthTrend = summarizeTrend(lastFullMonth, previousFullMonth);
   const validCompletedMonthLogCount = validLogCount(sortedLogs, previousFullMonthStart, currentMonthStart);
+  const validCurrentMonthLogCount = validLogCount(sortedLogs, currentMonthStart, addMonths(currentMonthStart, 1));
   const riskFlags = collectRiskFlags(
     last5Logs,
     lastFullMonth,
     previousFullMonth,
     request.weeklySessions,
-    validCompletedMonthLogCount
+    validCompletedMonthLogCount,
+    validCurrentMonthLogCount
   );
   const adherence = summarizeAdherence(request);
-  const state = classifyState(riskFlags, twoFullMonthTrend.label, validCompletedMonthLogCount, adherence);
+  const state = classifyState(riskFlags, twoFullMonthTrend.label, validCompletedMonthLogCount, validCurrentMonthLogCount, adherence);
 
   return {
     profile: {
@@ -63,15 +65,16 @@ function collectRiskFlags(
   lastFullMonth: CoachContext["history"]["lastFullMonth"],
   previousFullMonth: CoachContext["history"]["previousFullMonth"],
   weeklySessions: number,
-  validCompletedMonthLogCount: number
+  validCompletedMonthLogCount: number,
+  validCurrentMonthLogCount: number
 ): string[] {
   const flags: string[] = [];
 
   if (last5Logs.some((log) => log.painLevel >= 4)) flags.push("recent_pain_level_4_or_higher");
-  if (last5Logs.some((log) => log.fatigueLevel >= 9)) flags.push("recent_fatigue_level_9_or_higher");
-  if (last5Logs.filter((log) => log.rpe >= 9).length >= 3) flags.push("repeated_high_rpe");
+  if (last5Logs.some((log) => log.fatigueLevel >= 9)) flags.push("recent_how_you_felt_very_weak");
+  if (last5Logs.filter((log) => log.rpe >= 9).length >= 3) flags.push("repeated_high_perceived_effort");
   if (lastFullMonth.maxPain >= 4) flags.push("last_full_month_pain_flag");
-  if (lastFullMonth.maxFatigue >= 9) flags.push("last_full_month_fatigue_flag");
+  if (lastFullMonth.maxFatigue >= 9) flags.push("last_full_month_how_you_felt_very_weak");
 
   const expectedMonthlySessions = Math.max(1, weeklySessions * 4);
   if (lastFullMonth.logCount > 0 && lastFullMonth.logCount < expectedMonthlySessions * 0.6) {
@@ -82,8 +85,8 @@ function collectRiskFlags(
     flags.push("sudden_monthly_volume_increase");
   }
 
-  if (validCompletedMonthLogCount < 3) {
-    flags.push("insufficient_completed_month_history");
+  if (validCompletedMonthLogCount < 3 && validCurrentMonthLogCount < 2) {
+    flags.push("insufficient_training_history");
   }
 
   return flags;
@@ -103,11 +106,15 @@ function classifyState(
   riskFlags: string[],
   trendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
   validCompletedMonthLogCount: number,
+  validCurrentMonthLogCount: number,
   adherence: CoachContext["adherence"]
 ): ContextState {
-  if (riskFlags.some((flag) => flag.includes("pain") || flag.includes("fatigue"))) return "recovery_needed";
-  if (riskFlags.includes("sudden_monthly_volume_increase") || riskFlags.includes("repeated_high_rpe")) return "overreaching";
-  if (validCompletedMonthLogCount < 3 || trendLabel === "insufficient_history") return "insufficient_history";
+  if (riskFlags.some((flag) => flag.includes("pain") || flag.includes("how_you_felt_very_weak"))) return "recovery_needed";
+  if (riskFlags.includes("sudden_monthly_volume_increase") || riskFlags.includes("repeated_high_perceived_effort")) return "overreaching";
+  const hasEarlyCurrentEvidence = validCurrentMonthLogCount >= 2;
+  if ((validCompletedMonthLogCount < 3 || trendLabel === "insufficient_history") && !hasEarlyCurrentEvidence) {
+    return "insufficient_history";
+  }
   if (trendLabel === "flat" && adherence.completed >= Math.max(3, adherence.planned * 0.7)) return "plateau";
   if (trendLabel === "declining") return "overreaching";
   return "building";
@@ -148,12 +155,32 @@ function hasLoggedGoalMetric(log: TrainingLog): boolean {
 }
 
 function normalizeLogForContext(log: TrainingLog): TrainingLog {
+  const howYouFeltScore = howYouFeltScoreFromFatigueLevel(log.fatigueLevel);
   return {
     ...log,
+    perceivedEffort: log.rpe,
+    howYouFeltScore,
+    howYouFelt: howYouFeltLabel(howYouFeltScore),
     notes: trimNote(log.notes)
   };
 }
 
 function trimNote(note: string | undefined): string {
   return (note ?? "").trim().replace(/\s+/g, " ").slice(0, 800);
+}
+
+function howYouFeltScoreFromFatigueLevel(fatigueLevel: number): number {
+  if (fatigueLevel >= 9) return 1;
+  if (fatigueLevel >= 7) return 2;
+  if (fatigueLevel >= 3) return 3;
+  if (fatigueLevel >= 1) return 4;
+  return 5;
+}
+
+function howYouFeltLabel(score: number): NonNullable<TrainingLog["howYouFelt"]> {
+  if (score <= 1) return "very_weak";
+  if (score === 2) return "weak";
+  if (score === 4) return "strong";
+  if (score >= 5) return "very_strong";
+  return "normal";
 }

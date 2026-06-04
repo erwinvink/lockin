@@ -31,7 +31,6 @@
 		AA000000000000000000011C /* CoachView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000238 /* CoachView.swift */; };
 		AA000000000000000000011D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000239 /* SettingsView.swift */; };
 		AA000000000000000000011E /* LogWorkoutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023A /* LogWorkoutView.swift */; };
-		AA000000000000000000011F /* RanksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023B /* RanksView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -80,7 +79,6 @@
 		AA0000000000000000000238 /* CoachView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000239 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA000000000000000000023A /* LogWorkoutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogWorkoutView.swift; sourceTree = "<group>"; };
-		AA000000000000000000023B /* RanksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RanksView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -140,7 +138,6 @@
 				AA0000000000000000000238 /* CoachView.swift */,
 				AA0000000000000000000239 /* SettingsView.swift */,
 				AA000000000000000000023A /* LogWorkoutView.swift */,
-				AA000000000000000000023B /* RanksView.swift */,
 				AA0000000000000000000209 /* Assets.xcassets */,
 				AA0000000000000000000213 /* FitnessApp.entitlements */,
 			);
@@ -323,7 +320,6 @@
 				AA000000000000000000011C /* CoachView.swift in Sources */,
 				AA000000000000000000011D /* SettingsView.swift in Sources */,
 				AA000000000000000000011E /* LogWorkoutView.swift in Sources */,
-				AA000000000000000000011F /* RanksView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -14,6 +14,10 @@ struct SettingsView: View {
         NavigationStack {
             ScreenBackground(title: "Profile") {
                 ProfileSummaryCard(profile: profile)
+                WeekScheduleCard(
+                    profile: profile,
+                    onScheduleChange: saveTrainingDays
+                )
                 ReminderSettingsCard(
                     profile: profile,
                     sessions: sessions,
@@ -30,9 +34,14 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Wipe everything", role: .destructive, action: resetAllData)
             } message: {
-                Text("This removes every measurement, workout, log, consistency, and coach record from the app.")
+                Text("This removes every measurement, workout, log, streak, and coach record from the app.")
             }
         }
+    }
+
+    private func saveTrainingDays(_ days: Set<TrainingWeekday>) {
+        profile.trainingDays = days
+        try? modelContext.save()
     }
 
     private func saveReminderPreference(_ enabled: Bool) {
@@ -73,6 +82,28 @@ private struct ProfileSummaryCard: View {
             InfoLine(title: "Goals", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
             InfoLine(title: "Training days", value: profile.trainingDayLabels.joined(separator: ", "))
             InfoLine(title: "iCloud container", value: ModelContainerFactory.cloudKitContainerIdentifier)
+        }
+        .card()
+    }
+}
+
+private struct WeekScheduleCard: View {
+    var profile: UserProfile
+    var onScheduleChange: (Set<TrainingWeekday>) -> Void
+
+    private var selectedDays: Binding<Set<TrainingWeekday>> {
+        Binding(
+            get: { profile.trainingDays },
+            set: { onScheduleChange($0) }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Week schedule")
+                .font(.headline)
+            TrainingDaysPicker(selectedDays: selectedDays)
+            InfoLine(title: "AI week shape", value: profile.trainingDayLabels.joined(separator: ", "))
         }
         .card()
     }
@@ -125,7 +156,7 @@ private struct ResetCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Reset")
                 .font(.headline)
-            Text("Deletes profile, measurements, goals, sessions, logs, consistency, coach plans, coach decisions, and pending workout reminders.")
+            Text("Deletes profile, measurements, goals, sessions, logs, streak data, coach plans, coach decisions, and pending workout reminders.")
                 .font(.caption)
                 .foregroundStyle(AppTheme.muted)
             Button(role: .destructive, action: onResetTap) {
