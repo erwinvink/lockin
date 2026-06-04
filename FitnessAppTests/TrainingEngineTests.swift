@@ -56,6 +56,12 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(rank.consistencyScore, 28)
     }
 
+    func testDisplayedBestStreakNeverTrailsCurrentStreak() {
+        let rank = RankState(streak: 5, bestStreak: 2)
+
+        XCTAssertEqual(rank.displayedBestStreak, 5)
+    }
+
     func testTodayOnlyTreatsCurrentDaySessionsAsDue() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))

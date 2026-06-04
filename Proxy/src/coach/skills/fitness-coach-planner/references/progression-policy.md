@@ -58,6 +58,22 @@ If the current month has at least 2 valid completed logs, pain stays below 4, ho
 - Explain the progression in `progressionRationale`.
 - Keep all progression inside the caps below.
 
+If the last 2-3 completed sessions were logged as light/easy perceived effort, pain is below 4, and how-you-felt feedback is Normal, Strong, or Very strong, do not keep the next week light by default. Add a visible medium or hard goal stimulus unless the safety notes explain why not.
+
+## Planned Effort Scale
+
+- `light`: RPE 1-4, easy or recovery work.
+- `medium`: RPE 5-6, repeatable capacity work.
+- `hard`: RPE 7-8, productive goal stimulus with about 2-3 clean reps left.
+- `very_hard`: RPE 9, near-limit work with about 1 clean rep left.
+- `max_output`: RPE 10, deliberate test only.
+
+Use `targetRIR` as reps in reserve for rep work and practical effort reserve for timed holds. Use `stimulus` to distinguish recovery, technique, volume, strength, and test work.
+
+Normal `building`, `plateau`, and `insufficient_history` weeks should not be all-light unless pain, poor how-you-felt feedback, missed sessions, or safety notes justify it.
+
+`max_output` is only allowed with `stimulus: test`. Do not use max output during recovery-needed weeks.
+
 ## Progression Caps
 
 Use the best actually logged recent value, falling back to baseline.
@@ -66,6 +82,7 @@ Use the best actually logged recent value, falling back to baseline.
 - Push-up working reps per set: usually <= 75% of latest valid push-up max.
 - Plank working holds: usually <= 80% of latest valid plank max.
 - Increase one stress variable at a time: sets, reps, hold length, density, or complexity.
+- For non-recovery goal work, avoid prescribing every working set below a useful floor. As a default, the main goal prescription should reach at least ~45% of the latest valid goal max unless the exercise is intentionally light technique/recovery and the week still includes another useful stimulus.
 
 ## Deload Rules
 

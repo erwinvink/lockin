@@ -60,11 +60,12 @@ Do not ask the model to infer these summaries from raw logs.
 3. Generate exactly the requested number of future sessions.
 4. Assign each session a `dayOffset` from `1` through `6`, in strictly increasing order, relative to `weekStart`. `dayOffset: 0` is today and is locked.
 5. Derive session length from prescribed work; do not use a fixed minutes-per-session input.
-6. Include a short purpose for every session.
-7. Mark logging fields only for goal exercises actually trained or tested in the session.
-8. Return only JSON matching `weekly-plan.schema.json`.
-9. Run `scripts/validate-week-plan.ts` for technical output checks.
-10. If technical validation fails, repair once. If validation still fails, return an error to the app instead of accepting malformed output.
+6. Include a `plannedEffort` object for every session and every exercise.
+7. Include a short purpose for every session.
+8. Mark logging fields only for goal exercises actually trained or tested in the session.
+9. Return only JSON matching `weekly-plan.schema.json`.
+10. Run `scripts/validate-week-plan.ts` for technical output checks.
+11. If technical validation fails, repair once. If validation still fails, return an error to the app instead of accepting malformed output.
 
 ## Weekly Structure Policy
 
@@ -80,12 +81,35 @@ The app follows Garmin-style post-workout self-evaluation language:
 - When writing athlete-facing text, say "perceived effort" and "how you felt"; do not call the second metric "fatigue" unless explaining an internal safety flag.
 - Treat "Very weak" or fatigueLevel >= 9 as a recovery-needed signal. Treat repeated "Weak" feedback as an overreaching warning unless performance and pain are clearly fine.
 
+## Planned Effort Labels
+
+Every planned session and exercise must declare the intended effort up front.
+
+- `light`: RPE 1-4. Recovery, warm-up, mobility, or deliberately easy technique.
+- `medium`: RPE 5-6. Useful repeatable work with several clean reps left.
+- `hard`: RPE 7-8. Productive goal stimulus with roughly 2-3 clean reps left.
+- `very_hard`: RPE 9. Near-limit work with about 1 clean rep left.
+- `max_output`: RPE 10. A deliberate test or max set with 0 clean reps left.
+
+Use `targetRIR` as reps in reserve for rep work. For timed holds, use it as the practical effort reserve: `0` means no clean hold time left, `1` means near-limit, and higher values mean clearly submaximal.
+
+Use `stimulus` to state the training purpose:
+
+- `recovery`: easy work to maintain habit and reduce stress.
+- `technique`: skill/form practice.
+- `volume`: repeatable submaximal work that builds capacity.
+- `strength`: hard goal-focused stimulus.
+- `test`: deliberate max or near-max benchmark.
+
+Do not hide a weak plan behind vague language. If a normal week is light because of safety evidence, say that in `reason` and `safetyNotes`. Otherwise, normal build weeks should include visible medium/hard goal stimulus.
+
 ## Progression Temperament
 
 The coach should be strict enough to change the training when the evidence supports it.
 
 - `insufficient_history` means use smaller steps, not no steps.
 - If the current month has at least 2 valid completed logs, pain stays below 4, how-you-felt feedback is Normal/Strong/Very strong, and perceived effort is not repeatedly 9-10, apply a small progression in the next plan.
+- If recent completed sessions were logged as light/easy perceived effort with no pain and Normal/Strong/Very strong how-you-felt feedback, progress more clearly on the next plan: raise the main goal stimulus to at least medium/hard unless safety notes justify staying light.
 - A small progression means changing one variable only: +1 rep on selected sets, +5-10 seconds on plank holds, +1 set on one exercise, slightly shorter rest, or a cleaner harder variation.
 - Do not repeat the same numbers for a new week unless there is a clear reason in safety notes or progression rationale.
 
@@ -102,7 +126,7 @@ For normal states (`building`, `plateau`, `overreaching`, `insufficient_history`
 For `recovery_needed`:
 
 - Prefer recovery, mobility, technique, and easy support work.
-- No hard, max, or failure-intensity work.
+- No hard, very hard, max, or failure-intensity work.
 - Keep the weekly session habit only when safe.
 
 ## Non-Negotiable Rules
@@ -124,4 +148,6 @@ Return JSON only. No prose outside the JSON object.
 
 The top-level object must include `summary`, `contextState`, `safetyFlags`, and `sessions`.
 
-Each session must include `title`, `dayOffset`, `focus`, `purpose`, `estimatedDurationMinutes`, `progressionRationale`, `safetyNotes`, `loggingFieldsRequired`, and `exercises`.
+Each session must include `title`, `dayOffset`, `focus`, `plannedEffort`, `purpose`, `estimatedDurationMinutes`, `progressionRationale`, `safetyNotes`, `loggingFieldsRequired`, and `exercises`.
+
+Each exercise must include `exercise`, `sets`, `reps`, `seconds`, `restSeconds`, `intensity`, and `plannedEffort`.

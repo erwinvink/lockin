@@ -1,4 +1,4 @@
-import type { CoachContext, ContextState, ExerciseKind, SessionFocus } from "./types";
+import type { CoachContext, ContextState, EffortLabel, EffortStimulus, ExerciseKind, SessionFocus } from "./types";
 
 type ValidationResult = {
   accepted: boolean;
@@ -13,6 +13,8 @@ const contextStates = new Set<ContextState>([
   "insufficient_history"
 ]);
 const sessionFocuses = new Set<SessionFocus>(["pull", "push", "core", "mixed", "recovery"]);
+const effortLabels = new Set<EffortLabel>(["light", "medium", "hard", "very_hard", "max_output"]);
+const effortStimuli = new Set<EffortStimulus>(["recovery", "technique", "volume", "strength", "test"]);
 const exerciseKinds = new Set<ExerciseKind>([
   "pullUp",
   "pushUp",
@@ -57,6 +59,8 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
   }
 
   let previousDayOffset = -1;
+  const sessionEffortLabels: EffortLabel[] = [];
+  const usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", number>> = {};
 
   for (const [sessionIndex, session] of plan.sessions.entries()) {
     if (!isRecord(session)) {
@@ -78,6 +82,12 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
 
     if (typeof session.focus !== "string" || !sessionFocuses.has(session.focus as SessionFocus)) {
       messages.push(`Session ${sessionIndex + 1} focus is missing or unknown.`);
+    }
+
+    const sessionEffort = validatePlannedEffort(session.plannedEffort, `Session ${sessionIndex + 1} plannedEffort`, messages);
+    if (sessionEffort) {
+      sessionEffortLabels.push(sessionEffort.label);
+      validateEffortPolicy(sessionEffort, `Session ${sessionIndex + 1}`, plan.contextState, messages);
     }
 
     const estimatedDurationMinutes = session.estimatedDurationMinutes;
@@ -157,12 +167,155 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
       if (typeof exercise.intensity !== "string") {
         messages.push(`Session ${sessionIndex + 1} has an exercise intensity that is not a string.`);
       }
+
+      const exerciseEffort = validatePlannedEffort(
+        exercise.plannedEffort,
+        `Session ${sessionIndex + 1} ${typeof exercise.exercise === "string" ? exercise.exercise : "exercise"} plannedEffort`,
+        messages
+      );
+      if (exerciseEffort) {
+        validateEffortPolicy(exerciseEffort, `Session ${sessionIndex + 1} exercise`, plan.contextState, messages);
+        collectUsefulGoalWork(exercise, exerciseEffort, usefulGoalWork);
+      }
     }
   }
+
+  validateWeekEffortPolicy(plan.contextState, plan.safetyFlags, context, sessionEffortLabels, usefulGoalWork, messages);
 
   return { accepted: messages.length === 0, messages };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validatePlannedEffort(
+  value: unknown,
+  label: string,
+  messages: string[]
+): { label: EffortLabel; stimulus: EffortStimulus; targetRPE: number; targetRIR: number } | null {
+  if (!isRecord(value)) {
+    messages.push(`${label} is missing or not an object.`);
+    return null;
+  }
+
+  const effortLabel = value.label;
+  const stimulus = value.stimulus;
+  const targetRPE = value.targetRPE;
+  const targetRIR = value.targetRIR;
+
+  if (typeof effortLabel !== "string" || !effortLabels.has(effortLabel as EffortLabel)) {
+    messages.push(`${label} has an unknown label.`);
+  }
+
+  if (typeof stimulus !== "string" || !effortStimuli.has(stimulus as EffortStimulus)) {
+    messages.push(`${label} has an unknown stimulus.`);
+  }
+
+  if (typeof targetRPE !== "number" || !Number.isInteger(targetRPE) || targetRPE < 1 || targetRPE > 10) {
+    messages.push(`${label} targetRPE must be an integer from 1 through 10.`);
+  }
+
+  if (typeof targetRIR !== "number" || !Number.isInteger(targetRIR) || targetRIR < 0 || targetRIR > 10) {
+    messages.push(`${label} targetRIR must be an integer from 0 through 10.`);
+  }
+
+  if (typeof value.reason !== "string" || !value.reason.trim()) {
+    messages.push(`${label} reason is missing or not a string.`);
+  }
+
+  if (
+    typeof effortLabel !== "string" ||
+    !effortLabels.has(effortLabel as EffortLabel) ||
+    typeof stimulus !== "string" ||
+    !effortStimuli.has(stimulus as EffortStimulus) ||
+    typeof targetRPE !== "number" ||
+    !Number.isInteger(targetRPE) ||
+    typeof targetRIR !== "number" ||
+    !Number.isInteger(targetRIR)
+  ) {
+    return null;
+  }
+
+  return { label: effortLabel as EffortLabel, stimulus: stimulus as EffortStimulus, targetRPE, targetRIR };
+}
+
+function validateEffortPolicy(
+  effort: { label: EffortLabel; stimulus: EffortStimulus; targetRPE: number; targetRIR: number },
+  label: string,
+  contextState: unknown,
+  messages: string[]
+) {
+  const allowedRPERanges: Record<EffortLabel, [number, number]> = {
+    light: [1, 4],
+    medium: [5, 6],
+    hard: [7, 8],
+    very_hard: [9, 9],
+    max_output: [10, 10]
+  };
+  const [minRPE, maxRPE] = allowedRPERanges[effort.label];
+  if (effort.targetRPE < minRPE || effort.targetRPE > maxRPE) {
+    messages.push(`${label} targetRPE does not match ${effort.label} effort.`);
+  }
+
+  if (effort.label === "max_output" && effort.stimulus !== "test") {
+    messages.push(`${label} max_output effort is only allowed with test stimulus.`);
+  }
+
+  if (contextState === "recovery_needed" && ["hard", "very_hard", "max_output"].includes(effort.label)) {
+    messages.push(`${label} cannot be ${effort.label} during recovery_needed.`);
+  }
+}
+
+function validateWeekEffortPolicy(
+  contextState: unknown,
+  safetyFlags: unknown,
+  context: CoachContext,
+  sessionEffortLabels: EffortLabel[],
+  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", number>>,
+  messages: string[]
+) {
+  const normalProgressionStates = new Set(["building", "plateau", "insufficient_history"]);
+  const hasSafetyFlags = Array.isArray(safetyFlags) && safetyFlags.length > 0;
+  if (!normalProgressionStates.has(String(contextState)) || hasSafetyFlags) return;
+
+  if (sessionEffortLabels.length > 0 && sessionEffortLabels.every((label) => label === "light")) {
+    messages.push("Normal progression weeks cannot be all light unless safetyFlags explain why.");
+  }
+
+  const floors: Array<["pullUps" | "pushUps" | "plankSeconds", number, string]> = [
+    ["pullUps", 0.45, "pull-up"],
+    ["pushUps", 0.45, "push-up"],
+    ["plankSeconds", 0.45, "plank"]
+  ];
+
+  for (const [metric, multiplier, label] of floors) {
+    const best = context.history.bestRecentTests[metric];
+    const prescribed = usefulGoalWork[metric];
+    if (best === null || best < 10 || prescribed === undefined) continue;
+    const minimum = Math.ceil(best * multiplier);
+    if (prescribed < minimum) {
+      messages.push(`Normal progression ${label} goal work is below the useful stimulus floor (${prescribed} < ${minimum}). Mark it light/technique or progress it.`);
+    }
+  }
+}
+
+function collectUsefulGoalWork(
+  exercise: Record<string, unknown>,
+  effort: { label: EffortLabel; stimulus: EffortStimulus },
+  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", number>>
+) {
+  if (effort.label === "light" || effort.stimulus === "recovery" || effort.stimulus === "technique") return;
+
+  const exerciseKind = exercise.exercise;
+  const reps = typeof exercise.reps === "number" && Number.isInteger(exercise.reps) ? exercise.reps : 0;
+  const seconds = typeof exercise.seconds === "number" && Number.isInteger(exercise.seconds) ? exercise.seconds : 0;
+
+  if (exerciseKind === "pullUp") {
+    usefulGoalWork.pullUps = Math.max(usefulGoalWork.pullUps ?? 0, reps);
+  } else if (exerciseKind === "pushUp") {
+    usefulGoalWork.pushUps = Math.max(usefulGoalWork.pushUps ?? 0, reps);
+  } else if (exerciseKind === "plank") {
+    usefulGoalWork.plankSeconds = Math.max(usefulGoalWork.plankSeconds ?? 0, seconds);
+  }
 }

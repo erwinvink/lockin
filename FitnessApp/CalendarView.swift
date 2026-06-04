@@ -3,7 +3,11 @@ import SwiftUI
 
 struct CalendarView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
+    @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
+    @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
+    @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @State private var historyPage = 0
+    @State private var selectedSession: WorkoutSession?
 
     private let historyPageSize = 25
 
@@ -32,7 +36,7 @@ struct CalendarView: View {
     var body: some View {
         NavigationStack {
             ScreenBackground(title: "Log") {
-                WeekPlanTable(sessions: openSessions)
+                WeekPlanTable(sessions: openSessions, onSelectSession: { selectedSession = $0 })
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Session history")
@@ -43,7 +47,7 @@ struct CalendarView: View {
                             .foregroundStyle(AppTheme.muted)
                     } else {
                         ForEach(pagedHistorySessions) { session in
-                            CalendarSessionRow(session: session)
+                            CalendarSessionRow(session: session, log: logForSession(session))
                         }
                         if historyTotalPages > 1 {
                             HStack {
@@ -72,12 +76,38 @@ struct CalendarView: View {
             .onChange(of: historySessions.count) { _, _ in
                 historyPage = min(historyPage, historyTotalPages - 1)
             }
+            .sheet(item: $selectedSession) { session in
+                FutureWorkoutPreviewSheet(
+                    session: session,
+                    blocks: blocksForSession(session),
+                    prescriptions: prescriptionsForSession(session)
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
         }
+    }
+
+    private func blocksForSession(_ session: WorkoutSession) -> [WorkoutBlock] {
+        blocks
+            .filter { $0.sessionId == session.id }
+            .sorted { $0.orderIndex < $1.orderIndex }
+    }
+
+    private func prescriptionsForSession(_ session: WorkoutSession) -> [SetPrescription] {
+        prescriptions
+            .filter { $0.sessionId == session.id }
+            .sorted { $0.orderIndex < $1.orderIndex }
+    }
+
+    private func logForSession(_ session: WorkoutSession) -> PerformanceLog? {
+        logs.first { $0.sessionId == session.id }
     }
 }
 
 private struct CalendarSessionRow: View {
     var session: WorkoutSession
+    var log: PerformanceLog?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -94,10 +124,254 @@ private struct CalendarSessionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.title)
                     .font(.subheadline.weight(.semibold))
+                if let log {
+                    EffortPill(label: PlannedEffortLabel.fromRPE(log.rpe), prefix: "Actual", targetRPE: log.rpe)
+                }
             }
             Spacer()
             WorkoutStatusIcon(status: session.status)
         }
         .padding(.vertical, 8)
+    }
+}
+
+private struct FutureWorkoutPreviewSheet: View {
+    var session: WorkoutSession
+    var blocks: [WorkoutBlock]
+    var prescriptions: [SetPrescription]
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    previewHeader
+
+                    if prescriptions.isEmpty {
+                        EmptyWorkoutPreview(summary: session.summary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Workout preview")
+                                .font(.headline)
+                            ForEach(blocks) { block in
+                                let blockPrescriptions = prescriptionsForBlock(block)
+                                if !blockPrescriptions.isEmpty {
+                                    WorkoutPreviewBlock(block: block, prescriptions: blockPrescriptions)
+                                }
+                            }
+                            let ungroupedPrescriptions = prescriptionsWithoutBlock
+                            if !ungroupedPrescriptions.isEmpty {
+                                WorkoutPreviewBlock(
+                                    title: "Work",
+                                    detail: "Prescriptions for this session.",
+                                    prescriptions: ungroupedPrescriptions
+                                )
+                            }
+                        }
+                        .card(padding: 14)
+                    }
+                }
+                .padding(16)
+            }
+            .background(AppTheme.background)
+            .navigationTitle("Workout details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private var previewHeader: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(session.title)
+                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .foregroundStyle(AppTheme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(session.scheduledDate.formatted(date: .complete, time: .omitted))
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.muted)
+                }
+
+                Spacer(minLength: 8)
+
+                WorkoutStatusPill(status: session.status)
+            }
+
+            HStack(spacing: 8) {
+                StatusPill(text: session.focus.title, systemImage: focusIconName)
+                if let effortLabel = session.plannedEffortLabel {
+                    EffortPill(
+                        label: effortLabel,
+                        prefix: "Plan",
+                        targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+                    )
+                }
+                StatusPill(text: "Preview", systemImage: "eye")
+            }
+
+            if !session.summary.isEmpty {
+                Text(session.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(availabilityText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.muted)
+        }
+        .card(padding: 14)
+    }
+
+    private var availabilityText: String {
+        Calendar.current.isDateInToday(session.scheduledDate)
+            ? "Log this from Today when you are ready."
+            : "Available to log on the scheduled day."
+    }
+
+    private var focusIconName: String {
+        switch session.focus {
+        case .pull: "arrow.down.circle"
+        case .push: "arrow.up.circle"
+        case .core: "circle.hexagongrid.circle"
+        case .mixed: "square.grid.2x2"
+        case .recovery: "leaf"
+        }
+    }
+
+    private var prescriptionsWithoutBlock: [SetPrescription] {
+        let blockIds = Set(blocks.map(\.id))
+        return prescriptions.filter { !blockIds.contains($0.blockId) }
+    }
+
+    private func prescriptionsForBlock(_ block: WorkoutBlock) -> [SetPrescription] {
+        prescriptions
+            .filter { $0.blockId == block.id }
+            .sorted { $0.orderIndex < $1.orderIndex }
+    }
+}
+
+private struct EmptyWorkoutPreview: View {
+    var summary: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("No exercise details yet")
+                .font(.headline)
+            Text(summary.isEmpty ? "This planned session does not have saved exercise prescriptions." : summary)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .card(padding: 14)
+    }
+}
+
+private struct WorkoutPreviewBlock: View {
+    var block: WorkoutBlock?
+    var title: String
+    var detail: String
+    var prescriptions: [SetPrescription]
+
+    init(block: WorkoutBlock, prescriptions: [SetPrescription]) {
+        self.block = block
+        self.title = block.name
+        self.detail = block.detail
+        self.prescriptions = prescriptions
+    }
+
+    init(title: String, detail: String, prescriptions: [SetPrescription]) {
+        self.block = nil
+        self.title = title
+        self.detail = detail
+        self.prescriptions = prescriptions
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.bold())
+                    .foregroundStyle(AppTheme.text)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(prescriptions.enumerated()), id: \.element.id) { index, item in
+                    WorkoutPreviewPrescriptionRow(item: item, block: block)
+                    if index < prescriptions.count - 1 {
+                        Divider()
+                    }
+                }
+            }
+            .background(AppTheme.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                    .stroke(AppTheme.divider, lineWidth: 1)
+            )
+        }
+    }
+}
+
+private struct WorkoutPreviewPrescriptionRow: View {
+    var item: SetPrescription
+    var block: WorkoutBlock?
+
+    var body: some View {
+        WorkoutInfoPopover(prescription: item, block: block, onDone: {}) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.exercise.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.text)
+                        .lineLimit(1)
+                    Text(item.intensity)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(1)
+                    if let effortLabel = item.plannedEffortLabel {
+                        EffortPill(
+                            label: effortLabel,
+                            targetRPE: item.plannedEffortTargetRPE > 0 ? item.plannedEffortTargetRPE : nil
+                        )
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(prescriptionText(item))
+                        .font(.system(.subheadline, design: .rounded, weight: .bold))
+                        .foregroundStyle(AppTheme.text)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    Text("\(durationText(seconds: item.restSeconds)) rest")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.muted)
+                        .lineLimit(1)
+                }
+
+                Image(systemName: "info.circle")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.muted.opacity(0.8))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
     }
 }

@@ -27,6 +27,7 @@ struct ExerciseSetPlan: Identifiable, Equatable {
     var seconds: Int
     var restSeconds: Int
     var intensity: String
+    var plannedEffort: PlannedEffort = .medium()
 }
 
 struct WorkoutBlockPlan: Identifiable, Equatable {
@@ -43,6 +44,7 @@ struct TrainingSessionPlan: Identifiable, Equatable {
     var focus: SessionFocus
     var weekIndex: Int
     var summary: String
+    var plannedEffort: PlannedEffort = .medium()
     var blocks: [WorkoutBlockPlan]
 }
 
@@ -190,17 +192,23 @@ struct TrainingEngine {
         equipment: Set<EquipmentKind>,
         deload: Bool
     ) -> TrainingSessionPlan {
-        let pullSet = capped(value: Double(max(baseline.pullUps, 1)) * 0.45 * multiplier, minimum: 1, maximum: max(1, Int(Double(max(baseline.pullUps, 1)) * 0.85)))
-        let pushSet = capped(value: Double(max(baseline.pushUps, 4)) * 0.40 * multiplier, minimum: 3, maximum: max(3, Int(Double(max(baseline.pushUps, 4)) * 0.75)))
-        let plankHold = capped(value: Double(max(baseline.plankSeconds, 20)) * 0.45 * multiplier, minimum: 15, maximum: max(15, Int(Double(max(baseline.plankSeconds, 20)) * 0.80)))
+        let pullSet = capped(value: Double(max(baseline.pullUps, 1)) * 0.50 * multiplier, minimum: 1, maximum: max(1, Int(Double(max(baseline.pullUps, 1)) * 0.85)))
+        let pushSet = capped(value: Double(max(baseline.pushUps, 4)) * 0.55 * multiplier, minimum: 3, maximum: max(3, Int(Double(max(baseline.pushUps, 4)) * 0.75)))
+        let plankHold = capped(value: Double(max(baseline.plankSeconds, 20)) * 0.50 * multiplier, minimum: 15, maximum: max(15, Int(Double(max(baseline.plankSeconds, 20)) * 0.80)))
         let workSets = deload ? 3 : 5
+        let mainEffort = deload
+            ? PlannedEffort.light("Deloaded because pain or how-you-felt signals need lower stress.")
+            : PlannedEffort.hard("Hard enough to move the goal while leaving clean reps in reserve.")
+        let supportEffort = deload
+            ? PlannedEffort.light("Easy support work while recovering.")
+            : PlannedEffort.medium("Useful support volume without chasing failure.")
 
         let warmup = WorkoutBlockPlan(
             name: "Warm-up",
             detail: "Joint prep, easy breathing, strict-form rehearsal.",
             sets: [
-                ExerciseSetPlan(exercise: .shoulderMobility, sets: 2, reps: 8, seconds: 0, restSeconds: 30, intensity: "Easy"),
-                ExerciseSetPlan(exercise: .hollowHold, sets: 2, reps: 0, seconds: 15, restSeconds: 30, intensity: "Controlled")
+                ExerciseSetPlan(exercise: .shoulderMobility, sets: 2, reps: 8, seconds: 0, restSeconds: 30, intensity: "Easy", plannedEffort: .light("Warm-up effort before goal work.")),
+                ExerciseSetPlan(exercise: .hollowHold, sets: 2, reps: 0, seconds: 15, restSeconds: 30, intensity: "Controlled", plannedEffort: .light("Controlled trunk prep, not a max hold."))
             ]
         )
 
@@ -211,8 +219,8 @@ struct TrainingEngine {
                 name: deload ? "Pull Deload" : "Strict Pull Strength",
                 detail: "Clean reps only. Stop a set before form breaks.",
                 sets: [
-                    ExerciseSetPlan(exercise: equipment.contains(.pullUpBar) ? .pullUp : .scapularPull, sets: workSets, reps: pullSet, seconds: 0, restSeconds: 120, intensity: deload ? "Light" : "Hard"),
-                    ExerciseSetPlan(exercise: equipment.contains(.pullUpBar) ? .deadHang : .hollowHold, sets: 3, reps: 0, seconds: deload ? 15 : 25, restSeconds: 60, intensity: "Support")
+                    ExerciseSetPlan(exercise: equipment.contains(.pullUpBar) ? .pullUp : .scapularPull, sets: workSets, reps: pullSet, seconds: 0, restSeconds: 120, intensity: deload ? "Light" : "Hard", plannedEffort: mainEffort),
+                    ExerciseSetPlan(exercise: equipment.contains(.pullUpBar) ? .deadHang : .hollowHold, sets: 3, reps: 0, seconds: deload ? 15 : 25, restSeconds: 60, intensity: "Support", plannedEffort: supportEffort)
                 ]
             )
         case .push:
@@ -220,8 +228,8 @@ struct TrainingEngine {
                 name: deload ? "Push Deload" : "Strict Push Volume",
                 detail: "Chest-to-depth standard, locked plank body line.",
                 sets: [
-                    ExerciseSetPlan(exercise: .pushUp, sets: workSets, reps: pushSet, seconds: 0, restSeconds: 90, intensity: deload ? "Light" : "Hard"),
-                    ExerciseSetPlan(exercise: .pikePushUp, sets: 3, reps: max(3, pushSet / 2), seconds: 0, restSeconds: 75, intensity: "Support")
+                    ExerciseSetPlan(exercise: .pushUp, sets: workSets, reps: pushSet, seconds: 0, restSeconds: 90, intensity: deload ? "Light" : "Hard", plannedEffort: mainEffort),
+                    ExerciseSetPlan(exercise: .pikePushUp, sets: 3, reps: max(3, pushSet / 2), seconds: 0, restSeconds: 75, intensity: "Support", plannedEffort: supportEffort)
                 ]
             )
         case .core:
@@ -229,8 +237,8 @@ struct TrainingEngine {
                 name: deload ? "Core Deload" : "Plank Capacity",
                 detail: "No sagging hips, no breath-holding.",
                 sets: [
-                    ExerciseSetPlan(exercise: .plank, sets: workSets, reps: 0, seconds: plankHold, restSeconds: 90, intensity: deload ? "Light" : "Hard"),
-                    ExerciseSetPlan(exercise: .hollowHold, sets: 4, reps: 0, seconds: max(15, plankHold / 2), restSeconds: 60, intensity: "Support")
+                    ExerciseSetPlan(exercise: .plank, sets: workSets, reps: 0, seconds: plankHold, restSeconds: 90, intensity: deload ? "Light" : "Hard", plannedEffort: mainEffort),
+                    ExerciseSetPlan(exercise: .hollowHold, sets: 4, reps: 0, seconds: max(15, plankHold / 2), restSeconds: 60, intensity: "Support", plannedEffort: supportEffort)
                 ]
             )
         case .mixed:
@@ -238,9 +246,9 @@ struct TrainingEngine {
                 name: deload ? "Mixed Deload" : "Goal Support Circuit",
                 detail: "Rotate clean pull, push, and core work without chasing failure.",
                 sets: [
-                    ExerciseSetPlan(exercise: equipment.contains(.pullUpBar) ? .pullUp : .scapularPull, sets: 4, reps: max(1, pullSet - 1), seconds: 0, restSeconds: 90, intensity: deload ? "Light" : "Moderate"),
-                    ExerciseSetPlan(exercise: .pushUp, sets: 4, reps: max(3, pushSet - 2), seconds: 0, restSeconds: 75, intensity: deload ? "Light" : "Moderate"),
-                    ExerciseSetPlan(exercise: .plank, sets: 3, reps: 0, seconds: max(15, plankHold - 10), restSeconds: 60, intensity: "Moderate")
+                    ExerciseSetPlan(exercise: equipment.contains(.pullUpBar) ? .pullUp : .scapularPull, sets: 4, reps: max(1, pullSet - 1), seconds: 0, restSeconds: 90, intensity: deload ? "Light" : "Moderate", plannedEffort: deload ? mainEffort : supportEffort),
+                    ExerciseSetPlan(exercise: .pushUp, sets: 4, reps: max(3, pushSet - 2), seconds: 0, restSeconds: 75, intensity: deload ? "Light" : "Moderate", plannedEffort: deload ? mainEffort : supportEffort),
+                    ExerciseSetPlan(exercise: .plank, sets: 3, reps: 0, seconds: max(15, plankHold - 10), restSeconds: 60, intensity: "Moderate", plannedEffort: supportEffort)
                 ]
             )
         case .recovery:
@@ -248,8 +256,8 @@ struct TrainingEngine {
                 name: "Recovery Debt",
                 detail: "Low-risk work after missed training, without chasing make-up volume.",
                 sets: [
-                    ExerciseSetPlan(exercise: .shoulderMobility, sets: 3, reps: 10, seconds: 0, restSeconds: 30, intensity: "Easy"),
-                    ExerciseSetPlan(exercise: .hollowHold, sets: 3, reps: 0, seconds: 20, restSeconds: 45, intensity: "Easy")
+                    ExerciseSetPlan(exercise: .shoulderMobility, sets: 3, reps: 10, seconds: 0, restSeconds: 30, intensity: "Easy", plannedEffort: .light("Recovery work, not goal stress.")),
+                    ExerciseSetPlan(exercise: .hollowHold, sets: 3, reps: 0, seconds: 20, restSeconds: 45, intensity: "Easy", plannedEffort: .light("Easy trunk work after missed training."))
                 ]
             )
         }
@@ -261,6 +269,7 @@ struct TrainingEngine {
             focus: focus,
             weekIndex: weekIndex,
             summary: deload ? "Auto-deloaded from pain/how-you-felt signals." : "Exact work for strict goal progress.",
+            plannedEffort: focus == .recovery ? .light("Recovery session keeps the habit without hard stress.") : mainEffort,
             blocks: [warmup, main]
         )
     }

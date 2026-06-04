@@ -39,22 +39,50 @@ test("accepts a balanced four-session plan with mixed exposure", () => {
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
-test("accepts coach-policy decisions when the technical shape is valid", () => {
+test("rejects all-light normal weeks without safety explanation", () => {
   const plan = balancedPlan();
   plan.sessions = plan.sessions.map((session, index) => ({
     ...session,
-    title: `Pull only ${index + 1}`,
-    focus: "pull",
-    loggingFieldsRequired: ["pullUps"],
-    exercises: [
-      { exercise: "pullUp", sets: 12, reps: 25, seconds: 0, restSeconds: 120, intensity: "Max" },
-      { exercise: "deadHang", sets: 2, reps: 0, seconds: 20, restSeconds: 60, intensity: "Support" }
-    ]
+    title: `Light only ${index + 1}`,
+    plannedEffort: effort("light", 3, "technique", 6),
+    exercises: session.exercises.map((exercise) => ({
+      ...exercise,
+      plannedEffort: effort("light", 3, "technique", 6)
+    }))
   }));
+  plan.contextState = "building";
 
   const result = validateWeeklyPlan(plan, baseContext);
 
-  assert.deepEqual(result, { accepted: true, messages: [] });
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("cannot be all light")));
+});
+
+test("rejects hard goal work below the useful stimulus floor", () => {
+  const plan = balancedPlan();
+  plan.contextState = "building";
+  const strongPushContext: CoachContext = {
+    ...baseContext,
+    history: {
+      ...baseContext.history,
+      bestRecentTests: { ...baseContext.history.bestRecentTests, pushUps: 40 }
+    }
+  };
+
+  const result = validateWeeklyPlan(plan, strongPushContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("push-up goal work is below")));
+});
+
+test("rejects max output unless it is a test", () => {
+  const plan = balancedPlan();
+  plan.sessions[0].plannedEffort = effort("max_output", 10, "strength", 0);
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("max_output effort is only allowed")));
 });
 
 test("rejects invalid or unordered day offsets", () => {
@@ -123,13 +151,14 @@ function balancedPlan(): WeeklyPlan {
         dayOffset: 3,
         focus: "pull",
         purpose: "Build strict pull-up capacity with core support.",
+        plannedEffort: effort("hard", 7, "strength", 3),
         estimatedDurationMinutes: 35,
         progressionRationale: "Pull volume stays below the strict cap.",
         safetyNotes: ["Stop before form breaks."],
         loggingFieldsRequired: ["pullUps", "plankSeconds"],
         exercises: [
-          { exercise: "pullUp", sets: 4, reps: 3, seconds: 0, restSeconds: 120, intensity: "Moderate" },
-          { exercise: "plank", sets: 3, reps: 0, seconds: 30, restSeconds: 75, intensity: "Support" }
+          { exercise: "pullUp", sets: 4, reps: 3, seconds: 0, restSeconds: 120, intensity: "Hard", plannedEffort: effort("hard", 7, "strength", 3) },
+          { exercise: "plank", sets: 3, reps: 0, seconds: 30, restSeconds: 75, intensity: "Medium", plannedEffort: effort("medium", 6, "volume", 4) }
         ]
       },
       mixedSession("Full-body practice", 5),
@@ -138,13 +167,14 @@ function balancedPlan(): WeeklyPlan {
         dayOffset: 6,
         focus: "core",
         purpose: "Keep trunk endurance moving while adding light push support.",
+        plannedEffort: effort("medium", 6, "volume", 4),
         estimatedDurationMinutes: 30,
         progressionRationale: "Core work is submaximal and supported by easy push volume.",
         safetyNotes: ["Keep breathing steady."],
         loggingFieldsRequired: ["pushUps", "plankSeconds"],
         exercises: [
-          { exercise: "plank", sets: 4, reps: 0, seconds: 30, restSeconds: 90, intensity: "Moderate" },
-          { exercise: "pushUp", sets: 3, reps: 8, seconds: 0, restSeconds: 75, intensity: "Support" }
+          { exercise: "plank", sets: 4, reps: 0, seconds: 30, restSeconds: 90, intensity: "Medium", plannedEffort: effort("medium", 6, "volume", 4) },
+          { exercise: "pushUp", sets: 3, reps: 8, seconds: 0, restSeconds: 75, intensity: "Light", plannedEffort: effort("light", 4, "technique", 5) }
         ]
       }
     ]
@@ -157,15 +187,31 @@ function mixedSession(title: string, dayOffset: number): WeeklyPlan["sessions"][
     dayOffset,
     focus: "mixed",
     purpose: "Train pull, push, and core without chasing failure.",
+    plannedEffort: effort("hard", 7, "volume", 3),
     estimatedDurationMinutes: 40,
     progressionRationale: "All goal movements stay below current working caps.",
     safetyNotes: ["Leave clean reps in reserve."],
     loggingFieldsRequired: ["pullUps", "pushUps", "plankSeconds"],
     exercises: [
-      { exercise: "pullUp", sets: 3, reps: 3, seconds: 0, restSeconds: 120, intensity: "Moderate" },
-      { exercise: "pushUp", sets: 3, reps: 10, seconds: 0, restSeconds: 90, intensity: "Moderate" },
-      { exercise: "plank", sets: 3, reps: 0, seconds: 30, restSeconds: 75, intensity: "Moderate" }
+      { exercise: "pullUp", sets: 3, reps: 3, seconds: 0, restSeconds: 120, intensity: "Hard", plannedEffort: effort("hard", 7, "strength", 3) },
+      { exercise: "pushUp", sets: 3, reps: 10, seconds: 0, restSeconds: 90, intensity: "Medium", plannedEffort: effort("medium", 6, "volume", 4) },
+      { exercise: "plank", sets: 3, reps: 0, seconds: 30, restSeconds: 75, intensity: "Medium", plannedEffort: effort("medium", 6, "volume", 4) }
     ]
+  };
+}
+
+function effort(
+  label: WeeklyPlan["sessions"][number]["plannedEffort"]["label"],
+  targetRPE: number,
+  stimulus: WeeklyPlan["sessions"][number]["plannedEffort"]["stimulus"],
+  targetRIR: number
+): WeeklyPlan["sessions"][number]["plannedEffort"] {
+  return {
+    label,
+    targetRPE,
+    targetRIR,
+    stimulus,
+    reason: `${label} ${stimulus} work`
   };
 }
 

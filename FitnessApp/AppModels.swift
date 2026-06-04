@@ -1,6 +1,72 @@
 import Foundation
 import SwiftData
 
+enum PlannedEffortLabel: String, CaseIterable, Codable {
+    case light
+    case medium
+    case hard
+    case veryHard = "very_hard"
+    case maxOutput = "max_output"
+
+    var title: String {
+        switch self {
+        case .light: "Light"
+        case .medium: "Medium"
+        case .hard: "Hard"
+        case .veryHard: "Very hard"
+        case .maxOutput: "Max output"
+        }
+    }
+
+    static func fromRPE(_ value: Int) -> PlannedEffortLabel {
+        switch value {
+        case ...4: .light
+        case 5...6: .medium
+        case 7...8: .hard
+        case 9: .veryHard
+        default: .maxOutput
+        }
+    }
+
+    static func fromLegacyIntensity(_ value: String) -> PlannedEffortLabel? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.contains("max") { return .maxOutput }
+        if normalized.contains("very hard") || normalized.contains("near") { return .veryHard }
+        if normalized.contains("hard") || normalized.contains("challeng") || normalized.contains("difficult") || normalized.contains("high") { return .hard }
+        if normalized.contains("moderate") || normalized.contains("medium") || normalized.contains("controlled") || normalized.contains("support") { return .medium }
+        if normalized.contains("light") || normalized.contains("easy") || normalized.contains("recovery") || normalized.contains("warm") { return .light }
+        return nil
+    }
+}
+
+enum EffortStimulus: String, CaseIterable, Codable {
+    case recovery
+    case technique
+    case volume
+    case strength
+    case test
+}
+
+struct PlannedEffort: Equatable {
+    var label: PlannedEffortLabel
+    var targetRPE: Int
+    var targetRIR: Int
+    var stimulus: EffortStimulus
+    var reason: String
+
+    static func light(_ reason: String = "Easy support work.") -> PlannedEffort {
+        PlannedEffort(label: .light, targetRPE: 3, targetRIR: 6, stimulus: .technique, reason: reason)
+    }
+
+    static func medium(_ reason: String = "Repeatable capacity work.") -> PlannedEffort {
+        PlannedEffort(label: .medium, targetRPE: 6, targetRIR: 4, stimulus: .volume, reason: reason)
+    }
+
+    static func hard(_ reason: String = "Productive goal stimulus.") -> PlannedEffort {
+        PlannedEffort(label: .hard, targetRPE: 7, targetRIR: 3, stimulus: .strength, reason: reason)
+    }
+}
+
 enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
     case pullUp
     case pushUp
@@ -257,6 +323,9 @@ final class WorkoutSession {
     var statusRaw: String = SessionStatus.planned.rawValue
     var scoreImpact: Int = 0
     var summary: String = ""
+    var plannedEffortLabelRaw: String = ""
+    var plannedEffortTargetRPE: Int = 0
+    var plannedEffortReason: String = ""
     var createdAt: Date = Date()
 
     init(
@@ -268,6 +337,7 @@ final class WorkoutSession {
         status: SessionStatus = .planned,
         scoreImpact: Int = 0,
         summary: String,
+        plannedEffort: PlannedEffort? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -278,10 +348,16 @@ final class WorkoutSession {
         self.statusRaw = status.rawValue
         self.scoreImpact = scoreImpact
         self.summary = summary
+        self.plannedEffortLabelRaw = plannedEffort?.label.rawValue ?? ""
+        self.plannedEffortTargetRPE = plannedEffort?.targetRPE ?? 0
+        self.plannedEffortReason = plannedEffort?.reason ?? ""
         self.createdAt = createdAt
     }
 
     var focus: SessionFocus { SessionFocus(rawValue: focusRaw) ?? .mixed }
+    var plannedEffortLabel: PlannedEffortLabel? {
+        PlannedEffortLabel(rawValue: plannedEffortLabelRaw)
+    }
     var status: SessionStatus {
         get { SessionStatus(rawValue: statusRaw) ?? .planned }
         set { statusRaw = newValue.rawValue }
@@ -317,6 +393,11 @@ final class SetPrescription {
     var targetSeconds: Int = 0
     var restSeconds: Int = 0
     var intensity: String = ""
+    var plannedEffortLabelRaw: String = ""
+    var plannedEffortTargetRPE: Int = 0
+    var plannedEffortTargetRIR: Int = 0
+    var plannedEffortStimulusRaw: String = ""
+    var plannedEffortReason: String = ""
 
     init(
         id: UUID = UUID(),
@@ -328,7 +409,8 @@ final class SetPrescription {
         targetReps: Int = 0,
         targetSeconds: Int = 0,
         restSeconds: Int,
-        intensity: String
+        intensity: String,
+        plannedEffort: PlannedEffort? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -340,9 +422,20 @@ final class SetPrescription {
         self.targetSeconds = targetSeconds
         self.restSeconds = restSeconds
         self.intensity = intensity
+        self.plannedEffortLabelRaw = plannedEffort?.label.rawValue ?? ""
+        self.plannedEffortTargetRPE = plannedEffort?.targetRPE ?? 0
+        self.plannedEffortTargetRIR = plannedEffort?.targetRIR ?? 0
+        self.plannedEffortStimulusRaw = plannedEffort?.stimulus.rawValue ?? ""
+        self.plannedEffortReason = plannedEffort?.reason ?? ""
     }
 
     var exercise: ExerciseKind { ExerciseKind(rawValue: exerciseRaw) ?? .pullUp }
+    var plannedEffortLabel: PlannedEffortLabel? {
+        PlannedEffortLabel(rawValue: plannedEffortLabelRaw) ?? PlannedEffortLabel.fromLegacyIntensity(intensity)
+    }
+    var plannedEffortStimulus: EffortStimulus? {
+        EffortStimulus(rawValue: plannedEffortStimulusRaw)
+    }
 }
 
 @Model
@@ -415,6 +508,10 @@ final class RankState {
         self.bestStreak = bestStreak
         self.penaltyPoints = penaltyPoints
         self.updatedAt = updatedAt
+    }
+
+    var displayedBestStreak: Int {
+        max(bestStreak, streak)
     }
 }
 

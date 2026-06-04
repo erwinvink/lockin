@@ -40,7 +40,7 @@ struct ProgressView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 8) {
                 MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Current sessions", systemImage: "flame.fill")
-                MetricCard(title: "Best", value: "\(rank.bestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
+                MetricCard(title: "Best", value: "\(rank.displayedBestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
             }
             MetricCard(title: "Missed trainings", value: "\(missedTrainingCount)", subtitle: "Total missed", color: AppTheme.warning, systemImage: "exclamationmark.triangle.fill")
             liftContent

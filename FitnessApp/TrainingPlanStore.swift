@@ -102,7 +102,8 @@ func persist(
             title: sessionPlan.title,
             weekIndex: sessionPlan.weekIndex,
             focus: sessionPlan.focus,
-            summary: sessionPlan.summary
+            summary: sessionPlan.summary,
+            plannedEffort: sessionPlan.plannedEffort
         )
         modelContext.insert(session)
 
@@ -120,7 +121,8 @@ func persist(
                     targetReps: setPlan.reps,
                     targetSeconds: setPlan.seconds,
                     restSeconds: setPlan.restSeconds,
-                    intensity: setPlan.intensity
+                    intensity: setPlan.intensity,
+                    plannedEffort: setPlan.plannedEffort
                 ))
             }
         }

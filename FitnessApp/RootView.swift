@@ -211,6 +211,9 @@ private func insertPreviewSession(
     plankTarget: Int,
     in modelContext: ModelContext
 ) -> WorkoutSession {
+    let sessionEffort = status == .deload || focus == .recovery
+        ? PlannedEffort.light("Preview recovery or deload work.")
+        : PlannedEffort.hard("Preview goal stimulus.")
     let session = WorkoutSession(
         scheduledDate: date,
         title: title,
@@ -218,7 +221,8 @@ private func insertPreviewSession(
         focus: focus,
         status: status,
         scoreImpact: scoreImpact,
-        summary: summary
+        summary: summary,
+        plannedEffort: sessionEffort
     )
     modelContext.insert(session)
 
@@ -235,7 +239,8 @@ private func insertPreviewSession(
         sets: 2,
         targetReps: 8,
         restSeconds: 30,
-        intensity: "Easy"
+        intensity: "Easy",
+        plannedEffort: .light("Warm-up effort.")
     ))
     modelContext.insert(SetPrescription(
         sessionId: session.id,
@@ -245,26 +250,27 @@ private func insertPreviewSession(
         sets: 2,
         targetSeconds: 20,
         restSeconds: 30,
-        intensity: "Controlled"
+        intensity: "Controlled",
+        plannedEffort: .light("Controlled prep work.")
     ))
 
     switch focus {
     case .pull:
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .pullUp, sets: 5, targetReps: pullTarget, restSeconds: 120, intensity: "Hard"))
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .deadHang, sets: 3, targetSeconds: 25, restSeconds: 60, intensity: "Support"))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .pullUp, sets: 5, targetReps: pullTarget, restSeconds: 120, intensity: "Hard", plannedEffort: sessionEffort))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .deadHang, sets: 3, targetSeconds: 25, restSeconds: 60, intensity: "Support", plannedEffort: .medium("Grip and shoulder support.")))
     case .push:
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .pushUp, sets: 5, targetReps: pushTarget, restSeconds: 90, intensity: "Hard"))
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .pikePushUp, sets: 3, targetReps: max(3, pushTarget / 2), restSeconds: 75, intensity: "Support"))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .pushUp, sets: 5, targetReps: pushTarget, restSeconds: 90, intensity: "Hard", plannedEffort: sessionEffort))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .pikePushUp, sets: 3, targetReps: max(3, pushTarget / 2), restSeconds: 75, intensity: "Support", plannedEffort: .medium("Shoulder support volume.")))
     case .core:
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .plank, sets: 5, targetSeconds: plankTarget, restSeconds: 90, intensity: "Hard"))
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .hollowHold, sets: 4, targetSeconds: max(20, plankTarget / 2), restSeconds: 60, intensity: "Support"))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .plank, sets: 5, targetSeconds: plankTarget, restSeconds: 90, intensity: "Hard", plannedEffort: sessionEffort))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .hollowHold, sets: 4, targetSeconds: max(20, plankTarget / 2), restSeconds: 60, intensity: "Support", plannedEffort: .medium("Core support volume.")))
     case .mixed:
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .pullUp, sets: 4, targetReps: pullTarget, restSeconds: 90, intensity: "Moderate"))
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .pushUp, sets: 4, targetReps: pushTarget, restSeconds: 75, intensity: "Moderate"))
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 102, exercise: .plank, sets: 3, targetSeconds: plankTarget, restSeconds: 60, intensity: "Moderate"))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .pullUp, sets: 4, targetReps: pullTarget, restSeconds: 90, intensity: "Moderate", plannedEffort: .medium("Mixed-session pull volume.")))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .pushUp, sets: 4, targetReps: pushTarget, restSeconds: 75, intensity: "Moderate", plannedEffort: .medium("Mixed-session push volume.")))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 102, exercise: .plank, sets: 3, targetSeconds: plankTarget, restSeconds: 60, intensity: "Moderate", plannedEffort: .medium("Mixed-session core volume.")))
     case .recovery:
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .shoulderMobility, sets: 3, targetReps: 10, restSeconds: 30, intensity: "Easy"))
-        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .hollowHold, sets: 3, targetSeconds: 20, restSeconds: 45, intensity: "Easy"))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 100, exercise: .shoulderMobility, sets: 3, targetReps: 10, restSeconds: 30, intensity: "Easy", plannedEffort: .light("Recovery mobility.")))
+        modelContext.insert(SetPrescription(sessionId: session.id, blockId: main.id, orderIndex: 101, exercise: .hollowHold, sets: 3, targetSeconds: 20, restSeconds: 45, intensity: "Easy", plannedEffort: .light("Easy recovery core.")))
     }
 
     return session

@@ -93,7 +93,7 @@ private struct TodayHeroCard: View {
     var body: some View {
         HStack(spacing: 10) {
             MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Current sessions", systemImage: "flame.fill")
-            MetricCard(title: "Best", value: "\(rank.bestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
+            MetricCard(title: "Best", value: "\(rank.displayedBestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
         }
     }
 }
@@ -113,9 +113,17 @@ struct WorkoutPrescriptionCard: View {
                     .font(.system(.title3, design: .rounded, weight: .bold))
                     .foregroundStyle(AppTheme.text)
                 Spacer(minLength: 12)
-                Text(session.focus.title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.muted)
+                VStack(alignment: .trailing, spacing: 5) {
+                    Text(session.focus.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.muted)
+                    if let effortLabel = session.plannedEffortLabel {
+                        EffortPill(
+                            label: effortLabel,
+                            targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+                        )
+                    }
+                }
             }
 
             VStack(spacing: 0) {
@@ -171,10 +179,18 @@ private struct CompactPrescriptionRow: View {
         HStack(alignment: .center, spacing: 8) {
             WorkoutInfoPopover(prescription: item, block: block, onDone: onComplete) {
                 HStack(alignment: .center, spacing: 12) {
-                    Text(item.exercise.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.text)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.exercise.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.text)
+                            .lineLimit(1)
+                        if let effortLabel = item.plannedEffortLabel {
+                            EffortPill(
+                                label: effortLabel,
+                                targetRPE: item.plannedEffortTargetRPE > 0 ? item.plannedEffortTargetRPE : nil
+                            )
+                        }
+                    }
                     Spacer(minLength: 8)
                     Text(prescriptionText(item))
                         .font(.system(.subheadline, design: .rounded, weight: .bold))
@@ -217,6 +233,18 @@ private struct UpcomingSessionCard: View {
                 StatusPill(text: "Scheduled", systemImage: "calendar")
             }
             InfoLine(title: "Next session", value: session.title)
+            if let effortLabel = session.plannedEffortLabel {
+                HStack {
+                    Text("Planned effort")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                    Spacer()
+                    EffortPill(
+                        label: effortLabel,
+                        targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+                    )
+                }
+            }
             InfoLine(title: "Date", value: session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
             Text("Future sessions stay in Log until their scheduled day.")
                 .font(.caption)

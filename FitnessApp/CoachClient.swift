@@ -133,6 +133,7 @@ struct CoachSessionResponse: Codable, Equatable {
     var title: String
     var dayOffset: Int
     var focus: String
+    var plannedEffort: CoachPlannedEffortResponse? = nil
     var purpose: String
     var estimatedDurationMinutes: Int
     var progressionRationale: String
@@ -148,6 +149,74 @@ struct CoachExerciseResponse: Codable, Equatable {
     var seconds: Int
     var restSeconds: Int
     var intensity: String
+    var plannedEffort: CoachPlannedEffortResponse? = nil
+}
+
+struct CoachPlannedEffortResponse: Codable, Equatable {
+    var label: String
+    var targetRPE: Int
+    var targetRIR: Int
+    var stimulus: String
+    var reason: String
+
+    var plannedEffort: PlannedEffort? {
+        guard
+            let label = PlannedEffortLabel(rawValue: label),
+            let stimulus = EffortStimulus(rawValue: stimulus)
+        else { return nil }
+
+        return PlannedEffort(
+            label: label,
+            targetRPE: targetRPE,
+            targetRIR: targetRIR,
+            stimulus: stimulus,
+            reason: reason
+        )
+    }
+}
+
+func legacyPlannedEffort(from intensity: String, reason: String) -> PlannedEffort {
+    let label = PlannedEffortLabel.fromLegacyIntensity(intensity) ?? .medium
+    switch label {
+    case .light:
+        return PlannedEffort(label: .light, targetRPE: 3, targetRIR: 6, stimulus: .technique, reason: reason)
+    case .medium:
+        return PlannedEffort(label: .medium, targetRPE: 6, targetRIR: 4, stimulus: .volume, reason: reason)
+    case .hard:
+        return PlannedEffort(label: .hard, targetRPE: 7, targetRIR: 3, stimulus: .strength, reason: reason)
+    case .veryHard:
+        return PlannedEffort(label: .veryHard, targetRPE: 9, targetRIR: 1, stimulus: .strength, reason: reason)
+    case .maxOutput:
+        return PlannedEffort(label: .maxOutput, targetRPE: 10, targetRIR: 0, stimulus: .test, reason: reason)
+    }
+}
+
+func inferredSessionEffort(from session: CoachSessionResponse) -> PlannedEffort {
+    if let effort = session.plannedEffort?.plannedEffort {
+        return effort
+    }
+
+    let labels = session.exercises.map {
+        ($0.plannedEffort?.plannedEffort ?? legacyPlannedEffort(
+            from: $0.intensity,
+            reason: "Derived from legacy exercise intensity while the coach server is updated."
+        )).label
+    }
+    let label = labels.max(by: { effortRank($0) < effortRank($1) }) ?? .medium
+    return legacyPlannedEffort(
+        from: label.title,
+        reason: "Derived from exercise intensities because the coach server did not send planned effort yet."
+    )
+}
+
+private func effortRank(_ label: PlannedEffortLabel) -> Int {
+    switch label {
+    case .light: 0
+    case .medium: 1
+    case .hard: 2
+    case .veryHard: 3
+    case .maxOutput: 4
+    }
 }
 
 enum CoachClientError: Error, LocalizedError {
@@ -203,8 +272,9 @@ private extension URLError {
 struct CoachPlanValidator {
     private let validContextStates: Set<String> = ["building", "plateau", "overreaching", "recovery_needed", "insufficient_history"]
     private let validLoggingFields: Set<String> = ["pullUps", "pushUps", "plankSeconds"]
+    private let normalProgressionStates: Set<String> = ["building", "plateau", "insufficient_history"]
 
-    func validate(response: CoachPlanResponse, baseline _: Baseline, preferences: TrainingPreferences, weekStart: Date) -> PlanValidationResult {
+    func validate(response: CoachPlanResponse, baseline: Baseline, preferences: TrainingPreferences, weekStart: Date) -> PlanValidationResult {
         var messages: [String] = []
         let hasExplicitTrainingDays = !preferences.trainingDays.isEmpty
         let selectedDays = TrainingWeekday.normalized(preferences.trainingDays, weeklySessions: preferences.weeklySessions)
@@ -225,6 +295,8 @@ struct CoachPlanValidator {
         }
 
         var previousDayOffset = -1
+        var sessionEffortLabels: [PlannedEffortLabel] = []
+        var usefulGoalWork: [String: Int] = [:]
 
         for (index, session) in response.sessions.enumerated() {
             if !(1...6).contains(session.dayOffset) {
@@ -243,6 +315,16 @@ struct CoachPlanValidator {
             guard SessionFocus(rawValue: session.focus) != nil else {
                 messages.append("AI session \(index + 1) has an unknown focus.")
                 continue
+            }
+
+            if let effort = validateEffort(
+                session.plannedEffort,
+                fallback: inferredSessionEffort(from: session),
+                owner: "AI session \(index + 1)",
+                contextState: response.contextState,
+                messages: &messages
+            ) {
+                sessionEffortLabels.append(effort.label)
             }
 
             if session.estimatedDurationMinutes < 0 {
@@ -266,10 +348,105 @@ struct CoachPlanValidator {
                 if exercise.reps < 0 || exercise.seconds < 0 || exercise.restSeconds < 0 {
                     messages.append("AI session \(index + 1) has a negative reps, hold, or rest value.")
                 }
+
+                if let effort = validateEffort(
+                    exercise.plannedEffort,
+                    fallback: legacyPlannedEffort(
+                        from: exercise.intensity,
+                        reason: "Derived from legacy exercise intensity while the coach server is updated."
+                    ),
+                    owner: "AI session \(index + 1) \(exercise.exercise)",
+                    contextState: response.contextState,
+                    messages: &messages
+                ) {
+                    collectUsefulGoalWork(exercise: exercise, effort: effort, usefulGoalWork: &usefulGoalWork)
+                }
             }
         }
 
+        if normalProgressionStates.contains(response.contextState), response.safetyFlags.isEmpty {
+            if !sessionEffortLabels.isEmpty, sessionEffortLabels.allSatisfy({ $0 == .light }) {
+                messages.append("AI plan cannot be all light unless safety flags explain why.")
+            }
+            validateUsefulGoalFloor(baseline: baseline, usefulGoalWork: usefulGoalWork, messages: &messages)
+        }
+
         return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
+    }
+
+    private func validateEffort(
+        _ response: CoachPlannedEffortResponse?,
+        fallback: PlannedEffort,
+        owner: String,
+        contextState: String,
+        messages: inout [String]
+    ) -> PlannedEffort? {
+        guard let response else { return fallback }
+        guard let effort = response.plannedEffort else {
+            messages.append("\(owner) has an unknown planned effort label or stimulus.")
+            return nil
+        }
+
+        guard (1...10).contains(effort.targetRPE) else {
+            messages.append("\(owner) planned effort target RPE must be 1 through 10.")
+            return effort
+        }
+
+        guard (0...10).contains(effort.targetRIR) else {
+            messages.append("\(owner) planned effort target reserve must be 0 through 10.")
+            return effort
+        }
+
+        let allowedRPERange: ClosedRange<Int> = switch effort.label {
+        case .light: 1...4
+        case .medium: 5...6
+        case .hard: 7...8
+        case .veryHard: 9...9
+        case .maxOutput: 10...10
+        }
+        if !allowedRPERange.contains(effort.targetRPE) {
+            messages.append("\(owner) target RPE does not match \(effort.label.title.lowercased()) effort.")
+        }
+
+        if effort.label == .maxOutput, effort.stimulus != .test {
+            messages.append("\(owner) max output effort is only allowed for tests.")
+        }
+
+        if contextState == "recovery_needed", [.hard, .veryHard, .maxOutput].contains(effort.label) {
+            messages.append("\(owner) cannot be \(effort.label.title.lowercased()) during recovery.")
+        }
+
+        return effort
+    }
+
+    private func collectUsefulGoalWork(exercise: CoachExerciseResponse, effort: PlannedEffort, usefulGoalWork: inout [String: Int]) {
+        guard effort.label != .light, effort.stimulus != .recovery, effort.stimulus != .technique else { return }
+        switch exercise.exercise {
+        case ExerciseKind.pullUp.rawValue:
+            usefulGoalWork["pullUps"] = max(usefulGoalWork["pullUps"] ?? 0, exercise.reps)
+        case ExerciseKind.pushUp.rawValue:
+            usefulGoalWork["pushUps"] = max(usefulGoalWork["pushUps"] ?? 0, exercise.reps)
+        case ExerciseKind.plank.rawValue:
+            usefulGoalWork["plankSeconds"] = max(usefulGoalWork["plankSeconds"] ?? 0, exercise.seconds)
+        default:
+            break
+        }
+    }
+
+    private func validateUsefulGoalFloor(baseline: Baseline, usefulGoalWork: [String: Int], messages: inout [String]) {
+        let checks: [(metric: String, best: Int, label: String)] = [
+            ("pullUps", baseline.pullUps, "pull-up"),
+            ("pushUps", baseline.pushUps, "push-up"),
+            ("plankSeconds", baseline.plankSeconds, "plank")
+        ]
+
+        for check in checks {
+            guard check.best >= 10, let prescribed = usefulGoalWork[check.metric] else { continue }
+            let minimum = Int(ceil(Double(check.best) * 0.45))
+            if prescribed < minimum {
+                messages.append("AI \(check.label) goal work is below the useful stimulus floor.")
+            }
+        }
     }
 }
 
@@ -289,6 +466,7 @@ extension CoachPlanResponse {
                     focus: SessionFocus(rawValue: session.focus) ?? .mixed,
                     weekIndex: weekIndex,
                     summary: "AI: \(session.purpose)",
+                    plannedEffort: inferredSessionEffort(from: session),
                     blocks: [
                         WorkoutBlockPlan(
                             name: "AI Coach Plan",
@@ -301,7 +479,11 @@ extension CoachPlanResponse {
                                     reps: exercise.reps,
                                     seconds: exercise.seconds,
                                     restSeconds: exercise.restSeconds,
-                                    intensity: exercise.intensity
+                                    intensity: exercise.intensity,
+                                    plannedEffort: exercise.plannedEffort?.plannedEffort ?? legacyPlannedEffort(
+                                        from: exercise.intensity,
+                                        reason: "Derived from legacy exercise intensity while the coach server is updated."
+                                    )
                                 )
                             }
                         )

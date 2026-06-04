@@ -92,10 +92,38 @@ private struct WorkoutSummaryCard: View {
         VStack(alignment: .leading, spacing: 8) {
             InfoLine(title: "Target", value: workoutTargetText(prescription))
             InfoLine(title: "Rest", value: durationText(seconds: prescription.restSeconds))
+            if let effortLabel = prescription.plannedEffortLabel {
+                InfoLine(
+                    title: "Planned effort",
+                    value: plannedEffortText(effortLabel),
+                    valueColor: effortValueColor(effortLabel)
+                )
+            }
+            if !prescription.plannedEffortReason.isEmpty {
+                Text(prescription.plannedEffortReason)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(10)
         .background(AppTheme.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+    }
+
+    private func plannedEffortText(_ label: PlannedEffortLabel) -> String {
+        if prescription.plannedEffortTargetRPE > 0 {
+            return "\(label.title), RPE \(prescription.plannedEffortTargetRPE)"
+        }
+        return label.title
+    }
+
+    private func effortValueColor(_ label: PlannedEffortLabel) -> Color {
+        switch label {
+        case .light: AppTheme.accent
+        case .medium: AppTheme.gold
+        case .hard, .veryHard, .maxOutput: AppTheme.warning
+        }
     }
 }
 

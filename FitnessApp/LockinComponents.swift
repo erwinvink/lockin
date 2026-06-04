@@ -194,6 +194,59 @@ struct StatusPill: View {
     }
 }
 
+struct EffortPill: View {
+    var label: PlannedEffortLabel
+    var prefix: String?
+    var targetRPE: Int?
+
+    init(label: PlannedEffortLabel, prefix: String? = nil, targetRPE: Int? = nil) {
+        self.label = label
+        self.prefix = prefix
+        self.targetRPE = targetRPE
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: iconName)
+            Text(displayText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .font(.caption2.weight(.bold))
+        .foregroundStyle(color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.12))
+        .clipShape(Capsule())
+        .accessibilityLabel(displayText)
+    }
+
+    private var displayText: String {
+        let base = prefix.map { "\($0): \(label.title)" } ?? label.title
+        guard let targetRPE, targetRPE > 0 else { return base }
+        return "\(base) RPE \(targetRPE)"
+    }
+
+    private var color: Color {
+        switch label {
+        case .light: AppTheme.accent
+        case .medium: AppTheme.gold
+        case .hard, .veryHard: AppTheme.warning
+        case .maxOutput: AppTheme.warning
+        }
+    }
+
+    private var iconName: String {
+        switch label {
+        case .light: "leaf"
+        case .medium: "speedometer"
+        case .hard: "flame"
+        case .veryHard: "flame.fill"
+        case .maxOutput: "bolt.fill"
+        }
+    }
+}
+
 struct ValidationStatusCard: View {
     var title: String = "Plan validation"
     var status: String
@@ -218,6 +271,7 @@ struct ValidationStatusCard: View {
 
 struct WeekPlanTable: View {
     var sessions: [WorkoutSession]
+    var onSelectSession: (WorkoutSession) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -236,7 +290,9 @@ struct WeekPlanTable: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(sessions.prefix(7).enumerated()), id: \.element.id) { index, session in
-                        WeekPlanRow(session: session)
+                        WeekPlanRow(session: session) {
+                            onSelectSession(session)
+                        }
                         if index < min(sessions.count, 7) - 1 {
                             Divider()
                         }
@@ -256,21 +312,40 @@ struct WeekPlanTable: View {
 
 struct WeekPlanRow: View {
     var session: WorkoutSession
+    var onSelect: () -> Void = {}
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.muted)
-                .frame(width: 34, alignment: .leading)
-            Text(session.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-            Spacer()
-            WorkoutStatusIcon(status: session.status)
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.muted)
+                    .frame(width: 34, alignment: .leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(session.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.text)
+                        .lineLimit(1)
+                    if let effortLabel = session.plannedEffortLabel {
+                        EffortPill(
+                            label: effortLabel,
+                            targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+                        )
+                    }
+                }
+                Spacer()
+                WorkoutStatusIcon(status: session.status)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.muted.opacity(0.7))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .buttonStyle(.plain)
+        .accessibilityHint("Open workout details")
+        .accessibilityIdentifier("week-plan-row-\(session.title)")
     }
 }
 

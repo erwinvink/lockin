@@ -11,6 +11,16 @@ export type ExerciseKind =
 
 export type SessionFocus = "pull" | "push" | "core" | "mixed" | "recovery";
 export type ContextState = "building" | "plateau" | "overreaching" | "recovery_needed" | "insufficient_history";
+export type EffortLabel = "light" | "medium" | "hard" | "very_hard" | "max_output";
+export type EffortStimulus = "recovery" | "technique" | "volume" | "strength" | "test";
+
+export type PlannedEffort = {
+  label: EffortLabel;
+  targetRPE: number;
+  targetRIR: number;
+  stimulus: EffortStimulus;
+  reason: string;
+};
 
 export type CoachRequest = {
   model: string;
@@ -126,6 +136,7 @@ export type WeeklyPlan = {
     title: string;
     dayOffset: number;
     focus: SessionFocus;
+    plannedEffort: PlannedEffort;
     purpose: string;
     estimatedDurationMinutes: number;
     progressionRationale: string;
@@ -138,6 +149,7 @@ export type WeeklyPlan = {
       seconds: number;
       restSeconds: number;
       intensity: string;
+      plannedEffort: PlannedEffort;
     }>;
   }>;
 };

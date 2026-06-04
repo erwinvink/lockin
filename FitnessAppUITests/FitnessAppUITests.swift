@@ -118,6 +118,17 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Push + Core"].exists)
         XCTAssertFalse(app.staticTexts["No history yet."].exists)
 
+        let futureWorkout = app.buttons["week-plan-row-Pull Capacity"]
+        XCTAssertTrue(futureWorkout.waitForExistence(timeout: 5))
+        futureWorkout.tap()
+        XCTAssertTrue(app.staticTexts["Workout details"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Workout preview"].exists)
+        XCTAssertTrue(app.staticTexts["Warm-up"].exists)
+        XCTAssertTrue(app.staticTexts["Pull-up"].exists)
+        XCTAssertTrue(app.staticTexts["Available to log on the scheduled day."].exists)
+        XCTAssertFalse(app.buttons["exercise-checkbox-unchecked"].exists)
+        app.buttons["Done"].tap()
+
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["MISSED TRAININGS"].exists)

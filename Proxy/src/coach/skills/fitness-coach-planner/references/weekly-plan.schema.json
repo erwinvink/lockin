@@ -20,6 +20,7 @@
           "title",
           "dayOffset",
           "focus",
+          "plannedEffort",
           "purpose",
           "estimatedDurationMinutes",
           "progressionRationale",
@@ -31,6 +32,18 @@
           "title": { "type": "string" },
           "dayOffset": { "type": "integer", "minimum": 1, "maximum": 6 },
           "focus": { "enum": ["pull", "push", "core", "mixed", "recovery"] },
+          "plannedEffort": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["label", "targetRPE", "targetRIR", "stimulus", "reason"],
+            "properties": {
+              "label": { "enum": ["light", "medium", "hard", "very_hard", "max_output"] },
+              "targetRPE": { "type": "integer", "minimum": 1, "maximum": 10 },
+              "targetRIR": { "type": "integer", "minimum": 0, "maximum": 10 },
+              "stimulus": { "enum": ["recovery", "technique", "volume", "strength", "test"] },
+              "reason": { "type": "string" }
+            }
+          },
           "purpose": { "type": "string" },
           "estimatedDurationMinutes": { "type": "integer" },
           "progressionRationale": { "type": "string" },
@@ -47,7 +60,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["exercise", "sets", "reps", "seconds", "restSeconds", "intensity"],
+              "required": ["exercise", "sets", "reps", "seconds", "restSeconds", "intensity", "plannedEffort"],
               "properties": {
                 "exercise": {
                   "enum": [
@@ -66,7 +79,19 @@
                 "reps": { "type": "integer" },
                 "seconds": { "type": "integer" },
                 "restSeconds": { "type": "integer" },
-                "intensity": { "type": "string" }
+                "intensity": { "type": "string" },
+                "plannedEffort": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["label", "targetRPE", "targetRIR", "stimulus", "reason"],
+                  "properties": {
+                    "label": { "enum": ["light", "medium", "hard", "very_hard", "max_output"] },
+                    "targetRPE": { "type": "integer", "minimum": 1, "maximum": 10 },
+                    "targetRIR": { "type": "integer", "minimum": 0, "maximum": 10 },
+                    "stimulus": { "enum": ["recovery", "technique", "volume", "strength", "test"] },
+                    "reason": { "type": "string" }
+                  }
+                }
               }
             }
           }

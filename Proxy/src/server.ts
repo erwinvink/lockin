@@ -296,6 +296,8 @@ function buildCoachPromptPayload(context: CoachContext, repair?: RepairInput): R
       selectedTrainingDays: context.profile.trainingDays,
       allowedDayOffsets: context.profile.trainingDayOffsets,
       selectedFutureTrainingDayCount: hasSelectedOffsets ? context.profile.trainingDayOffsets.length : null,
+      plannedEffort:
+        "Every session and exercise must include plannedEffort. These labels are shown in the app before training, so light must mean intentionally light, hard must mean real goal stimulus, and max_output must only be used for a deliberate test.",
       scheduling:
         hasSelectedOffsets
           ? "Schedule exactly one strength session on each selected future training day. Use only allowedDayOffsets and treat all other offsets as rest days. Never schedule dayOffset 0 because today is locked."
