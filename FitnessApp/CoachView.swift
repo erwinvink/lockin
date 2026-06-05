@@ -155,6 +155,10 @@ struct CoachView: View {
             let plan = response.weeklyPlan(weekStart: request.weekStart)
             try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
             try modelContext.save()
+            if profile.remindersEnabled {
+                let reminderSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+                await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: reminderSessions, at: profile.reminderTime)
+            }
             generationStatus = "Saved \(plan.sessions.count) future sessions. Today was left untouched."
         } catch {
             generationStatus = error.localizedDescription

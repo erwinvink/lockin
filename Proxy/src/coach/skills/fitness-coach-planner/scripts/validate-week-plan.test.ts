@@ -17,6 +17,13 @@ const baseContext: CoachContext = {
   },
   history: {
     last5Logs: [],
+    rpeCalibration: {
+      recentPlannedLogCount: 0,
+      averageDeltaLast5: null,
+      abovePlanBy2Count: 0,
+      belowPlanBy2Count: 0,
+      latestSummary: null
+    },
     currentPartialMonth: emptyMonth("2026-05", true),
     lastFullMonth: emptyMonth("2026-04", false),
     previousFullMonth: emptyMonth("2026-03", false),

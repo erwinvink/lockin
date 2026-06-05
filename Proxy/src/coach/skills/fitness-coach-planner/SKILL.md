@@ -26,14 +26,15 @@ This skill is a planning pipeline, not a motivational chat prompt:
 - Target date.
 - Available equipment.
 - Requested sessions per week.
-- Raw performance logs, including which exercises were actually logged, perceived effort, pain level, Garmin-style how-you-felt self-evaluation, and the athlete's workout notes.
+- Raw performance logs, including which exercises were actually logged, planned vs actual perceived effort when available, pain level, Garmin-style how-you-felt self-evaluation, and the athlete's workout notes.
 - Planned or completed sessions when available.
 
 ## Context Requirements
 
 Before planning, run `scripts/build-coach-context.ts` and use its output. The context must include:
 
-- `last5Logs`: immediate readiness signal, including perceived effort, pain level, and how the athlete felt after training.
+- `last5Logs`: immediate readiness signal, including planned vs actual perceived effort when available, pain level, and how the athlete felt after training.
+- `rpeCalibration`: a recent planned-vs-actual effort summary. Negative delta means the workout felt easier than planned; positive delta means it felt harder than planned.
 - `currentPartialMonth`: current calendar month to date, labeled partial.
 - `lastFullMonth`: most recent completed calendar month.
 - `previousFullMonth`: completed calendar month before `lastFullMonth`.
@@ -76,10 +77,13 @@ The app-visible workout calendar is generated from this skill output, so do not 
 The app follows Garmin-style post-workout self-evaluation language:
 
 - `rpe` is the stored compatibility key for `perceivedEffort`, a 1-10 rating of how hard the workout felt.
+- `plannedRPE` is the intended session effort saved at log time. `rpeDelta` is actual perceived effort minus planned effort.
 - `fatigueLevel` is the stored compatibility key for the inverse of "How did you feel?" Higher `fatigueLevel` means the athlete felt worse after training.
 - Current UI mapping: "Very weak" -> fatigueLevel 10, "Weak" -> 8, "Normal" -> 5, "Strong" -> 2, "Very strong" -> 0.
 - When writing athlete-facing text, say "perceived effort" and "how you felt"; do not call the second metric "fatigue" unless explaining an internal safety flag.
 - Treat "Very weak" or fatigueLevel >= 9 as a recovery-needed signal. Treat repeated "Weak" feedback as an overreaching warning unless performance and pain are clearly fine.
+- Treat repeated actual effort 2 or more RPE points above plan as a sign the next plan may need lower stress or simpler work.
+- Treat repeated actual effort 2 or more RPE points below plan, with low pain and Normal/Strong/Very strong feedback, as evidence the athlete may be ready for a small progression.
 
 ## Planned Effort Labels
 
@@ -110,6 +114,8 @@ The coach should be strict enough to change the training when the evidence suppo
 - `insufficient_history` means use smaller steps, not no steps.
 - If the current month has at least 2 valid completed logs, pain stays below 4, how-you-felt feedback is Normal/Strong/Very strong, and perceived effort is not repeatedly 9-10, apply a small progression in the next plan.
 - If recent completed sessions were logged as light/easy perceived effort with no pain and Normal/Strong/Very strong how-you-felt feedback, progress more clearly on the next plan: raise the main goal stimulus to at least medium/hard unless safety notes justify staying light.
+- If recent actual RPE is consistently below planned RPE by 2 or more points and safety signals are clean, progress one variable or raise the planned effort target slightly.
+- If recent actual RPE is consistently above planned RPE by 2 or more points, reduce one stress variable or simplify the next session even when the raw performance numbers improved.
 - A small progression means changing one variable only: +1 rep on selected sets, +5-10 seconds on plank holds, +1 set on one exercise, slightly shorter rest, or a cleaner harder variation.
 - Do not repeat the same numbers for a new week unless there is a clear reason in safety notes or progression rationale.
 

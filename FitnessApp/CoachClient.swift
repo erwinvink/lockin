@@ -96,6 +96,12 @@ struct CoachLog: Codable, Equatable {
     var painLevel: Int
     var fatigueLevel: Int
     var notes: String
+    var plannedRPE: Int? = nil
+    var actualRPE: Int? = nil
+    var rpeDelta: Int? = nil
+    var rpeSummary: String? = nil
+    var plannedEffortLabel: String? = nil
+    var plannedEffortReason: String? = nil
 }
 
 struct CoachPlannedSession: Codable, Equatable {
@@ -552,7 +558,13 @@ func makeCoachRequest(
                 rpe: $0.rpe,
                 painLevel: $0.painLevel,
                 fatigueLevel: $0.fatigueLevel,
-                notes: $0.notes
+                notes: $0.notes,
+                plannedRPE: $0.hasPlannedRPESnapshot ? $0.plannedRPE : nil,
+                actualRPE: $0.rpe,
+                rpeDelta: $0.rpeDelta,
+                rpeSummary: $0.rpeSummaryText,
+                plannedEffortLabel: $0.plannedEffortLabelAtLog?.rawValue,
+                plannedEffortReason: $0.plannedEffortReasonAtLog.isEmpty ? nil : $0.plannedEffortReasonAtLog
             )
         },
         plannedSessions: coachPlannedSessions(from: sessions).map {

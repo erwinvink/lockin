@@ -74,6 +74,13 @@ struct LogWorkoutView: View {
             && (!shouldLogPlank || parsedLogValue(plankSecondsText, range: 0...3_600) != nil)
     }
 
+    private var plannedRPEForLog: Int {
+        if (1...10).contains(session.plannedEffortTargetRPE) {
+            return session.plannedEffortTargetRPE
+        }
+        return session.plannedEffortLabel?.defaultTargetRPE ?? 0
+    }
+
     var body: some View {
         NavigationStack {
             ScreenBackground {
@@ -137,6 +144,9 @@ struct LogWorkoutView: View {
             loggedPushUps: loggedPushUps,
             loggedPlankSeconds: loggedPlankSeconds,
             rpe: rpe,
+            plannedRPE: plannedRPEForLog,
+            plannedEffortLabelAtLog: session.plannedEffortLabel,
+            plannedEffortReasonAtLog: session.plannedEffortReason,
             painLevel: painLevel,
             fatigueLevel: fatigueLevel,
             notes: notes

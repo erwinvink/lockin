@@ -268,29 +268,3 @@ func exerciseMovementDescription(_ exercise: ExerciseKind) -> String {
         "Slow arm circles: raise both arms forward to overhead, sweep them out and down, then reverse the direction. Stay pain-free."
     }
 }
-
-func exerciseWorkoutContext(_ exercise: ExerciseKind, block: WorkoutBlock?) -> String {
-    let context = switch exercise {
-    case .pullUp:
-        "This is goal work for your pull-up number. Keep every rep strict enough to count."
-    case .pushUp:
-        "This is goal work for your push-up number. Stop before speed or depth turns sloppy."
-    case .plank:
-        "This is goal work for your plank time. Quality of the hold matters more than surviving ugly seconds."
-    case .scapularPull:
-        "This builds active shoulder position for stronger pull-up work."
-    case .hollowHold:
-        "This supports plank control and the body line you need in pull-ups and push-ups."
-    case .inclinePushUp:
-        "This builds push-up volume with less load than floor reps."
-    case .pikePushUp:
-        "This adds shoulder pressing strength to support harder push sessions."
-    case .deadHang:
-        "This builds grip and shoulder tolerance for pull-up work."
-    case .shoulderMobility:
-        "This prepares or restores your shoulders so the strength work stays clean."
-    }
-
-    guard let block else { return context }
-    return "\(context) It sits in the \(block.name) block."
-}

@@ -36,6 +36,7 @@ Use profile notes and recent workout notes as safety context, especially when th
 Self-evaluation uses Garmin-style language:
 
 - `rpe` means perceived effort on a 1-10 scale.
+- `plannedRPE` means the intended session effort saved when the workout was logged. `rpeDelta` is actual perceived effort minus planned perceived effort.
 - `fatigueLevel` is the stored inverse of "How did you feel?": Very weak maps to 10, Weak to 8, Normal to 5, Strong to 2, and Very strong to 0.
 - In athlete-facing rationale, refer to "perceived effort" and "how you felt."
 
@@ -59,6 +60,10 @@ If the current month has at least 2 valid completed logs, pain stays below 4, ho
 - Keep all progression inside the caps below.
 
 If the last 2-3 completed sessions were logged as light/easy perceived effort, pain is below 4, and how-you-felt feedback is Normal, Strong, or Very strong, do not keep the next week light by default. Add a visible medium or hard goal stimulus unless the safety notes explain why not.
+
+If recent actual RPE is consistently below planned RPE by 2 or more points, pain is below 4, and how-you-felt feedback is Normal, Strong, or Very strong, treat the current plan as underloaded and progress one variable.
+
+If recent actual RPE is consistently above planned RPE by 2 or more points, treat the current plan as too stressful and reduce one stress variable or simplify exercise selection, even when the athlete completed the work.
 
 ## Planned Effort Scale
 

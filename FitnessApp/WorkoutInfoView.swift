@@ -58,11 +58,6 @@ struct WorkoutInfoContent: View {
                     title: "What it is",
                     bodyText: exerciseMovementDescription(prescription.exercise)
                 )
-
-                WorkoutInfoSection(
-                    title: "Workout context",
-                    bodyText: exerciseWorkoutContext(prescription.exercise, block: block)
-                )
             }
             .padding(16)
             .frame(maxWidth: 360, alignment: .leading)

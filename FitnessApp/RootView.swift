@@ -70,14 +70,14 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
     let rank = RankState()
     modelContext.insert(rank)
 
-    let completedSeed: [(offset: Int, title: String, focus: SessionFocus, pullUps: Int, pushUps: Int, plank: Int, rpe: Int, pain: Int, fatigue: Int, notes: String)] = [
-        (-14, "Pull Baseline Build", .pull, 5, 20, 60, 7, 0, 5, "Clean reps. Grip felt solid."),
-        (-12, "Push Volume", .push, 5, 22, 65, 7, 0, 5, "Push-ups moved easier than expected."),
-        (-11, "Core Control", .core, 5, 22, 72, 8, 0, 6, "Plank stayed strict."),
-        (-7, "Recovery Deload", .recovery, 6, 22, 72, 5, 4, 8, "Shoulder felt cranky, kept it light."),
-        (-5, "Pull Capacity", .pull, 7, 24, 78, 8, 0, 5, "First set had more pop."),
-        (-4, "Mixed Support", .mixed, 7, 26, 88, 7, 0, 5, "Smooth circuit. No pain."),
-        (-2, "Push + Core", .push, 8, 28, 95, 8, 0, 6, "Good session, little tired after work.")
+    let completedSeed: [(offset: Int, title: String, focus: SessionFocus, pullUps: Int, pushUps: Int, plank: Int, plannedRPE: Int, rpe: Int, pain: Int, fatigue: Int, notes: String)] = [
+        (-14, "Pull Baseline Build", .pull, 5, 20, 60, 7, 7, 0, 5, "Clean reps. Grip felt solid."),
+        (-12, "Push Volume", .push, 5, 22, 65, 8, 7, 0, 5, "Push-ups moved easier than expected."),
+        (-11, "Core Control", .core, 5, 22, 72, 6, 8, 0, 6, "Plank stayed strict."),
+        (-7, "Recovery Deload", .recovery, 6, 22, 72, 4, 5, 4, 8, "Shoulder felt cranky, kept it light."),
+        (-5, "Pull Capacity", .pull, 7, 24, 78, 7, 8, 0, 5, "First set had more pop."),
+        (-4, "Mixed Support", .mixed, 7, 26, 88, 7, 7, 0, 5, "Smooth circuit. No pain."),
+        (-2, "Push + Core", .push, 8, 28, 95, 6, 8, 0, 6, "Good session, little tired after work.")
     ]
 
     let missedSession = insertPreviewSession(
@@ -109,6 +109,7 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
             pullTarget: max(1, seed.pullUps - 1),
             pushTarget: max(3, seed.pushUps - 4),
             plankTarget: max(20, seed.plank - 12),
+            plannedRPE: seed.plannedRPE,
             in: modelContext
         )
         let log = PerformanceLog(
@@ -118,6 +119,9 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
             pushUps: seed.pushUps,
             plankSeconds: seed.plank,
             rpe: seed.rpe,
+            plannedRPE: session.plannedEffortTargetRPE,
+            plannedEffortLabelAtLog: session.plannedEffortLabel,
+            plannedEffortReasonAtLog: session.plannedEffortReason,
             painLevel: seed.pain,
             fatigueLevel: seed.fatigue,
             notes: seed.notes
@@ -146,6 +150,21 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
             missedSession.scoreImpact = TrainingEngine.missedSessionConsistencyDelta
         }
     }
+
+    _ = insertPreviewSession(
+        date: day(0),
+        title: "Today Simulation",
+        weekIndex: 2,
+        focus: .mixed,
+        status: .planned,
+        scoreImpact: 0,
+        summary: "AI: Today preview session for simulation. Log this one from Today.",
+        pullTarget: 4,
+        pushTarget: 24,
+        plankTarget: 85,
+        plannedRPE: 5,
+        in: modelContext
+    )
 
     _ = insertPreviewSession(
         date: day(2),
@@ -209,11 +228,14 @@ private func insertPreviewSession(
     pullTarget: Int,
     pushTarget: Int,
     plankTarget: Int,
+    plannedRPE: Int? = nil,
     in modelContext: ModelContext
 ) -> WorkoutSession {
-    let sessionEffort = status == .deload || focus == .recovery
-        ? PlannedEffort.light("Preview recovery or deload work.")
-        : PlannedEffort.hard("Preview goal stimulus.")
+    let sessionEffort = previewPlannedEffort(
+        plannedRPE: plannedRPE,
+        status: status,
+        focus: focus
+    )
     let session = WorkoutSession(
         scheduledDate: date,
         title: title,
@@ -274,5 +296,48 @@ private func insertPreviewSession(
     }
 
     return session
+}
+
+private func previewPlannedEffort(plannedRPE: Int?, status: SessionStatus, focus: SessionFocus) -> PlannedEffort {
+    if let plannedRPE {
+        return plannedEffort(targetRPE: plannedRPE, reason: "Preview planned RPE snapshot for \(focus.title.lowercased()) work.")
+    }
+    if status == .deload || focus == .recovery {
+        return .light("Preview recovery or deload work.")
+    }
+    return .hard("Preview goal stimulus.")
+}
+
+private func plannedEffort(targetRPE: Int, reason: String) -> PlannedEffort {
+    let normalizedRPE = min(10, max(1, targetRPE))
+    let label = PlannedEffortLabel.fromRPE(normalizedRPE)
+    let targetRIR: Int
+    let stimulus: EffortStimulus
+
+    switch label {
+    case .light:
+        targetRIR = 6
+        stimulus = .technique
+    case .medium:
+        targetRIR = 4
+        stimulus = .volume
+    case .hard:
+        targetRIR = 3
+        stimulus = .strength
+    case .veryHard:
+        targetRIR = 1
+        stimulus = .strength
+    case .maxOutput:
+        targetRIR = 0
+        stimulus = .test
+    }
+
+    return PlannedEffort(
+        label: label,
+        targetRPE: normalizedRPE,
+        targetRIR: targetRIR,
+        stimulus: stimulus,
+        reason: reason
+    )
 }
 #endif

@@ -51,6 +51,12 @@ export type TrainingLog = {
   painLevel: number;
   fatigueLevel: number;
   perceivedEffort?: number;
+  plannedRPE?: number;
+  actualRPE?: number;
+  rpeDelta?: number;
+  rpeSummary?: string;
+  plannedEffortLabel?: EffortLabel;
+  plannedEffortReason?: string;
   howYouFeltScore?: number;
   howYouFelt?: "very_weak" | "weak" | "normal" | "strong" | "very_strong";
   notes: string;
@@ -92,6 +98,14 @@ export type TrendSummary = {
   label: "improving" | "flat" | "declining" | "insufficient_history";
 };
 
+export type RPECalibrationSummary = {
+  recentPlannedLogCount: number;
+  averageDeltaLast5: number | null;
+  abovePlanBy2Count: number;
+  belowPlanBy2Count: number;
+  latestSummary: string | null;
+};
+
 export type CoachContext = {
   profile: {
     baseline: CoachRequest["baseline"];
@@ -106,6 +120,7 @@ export type CoachContext = {
   };
   history: {
     last5Logs: TrainingLog[];
+    rpeCalibration: RPECalibrationSummary;
     currentPartialMonth: MonthSummary;
     lastFullMonth: MonthSummary;
     previousFullMonth: MonthSummary;

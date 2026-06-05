@@ -81,6 +81,33 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(duePlannedSession(from: [future, dueToday, overdue], now: now, calendar: calendar)?.id, dueToday.id)
     }
 
+    func testWorkoutReminderDateUsesSelectedTimeOnWorkoutDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 5, hour: 12)))
+        let scheduledDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 6, hour: 9)))
+        let selectedTime = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 5, hour: 18, minute: 30)))
+
+        let reminderDate = try XCTUnwrap(workoutReminderDate(for: scheduledDate, at: selectedTime, now: now, calendar: calendar))
+        let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: reminderDate)
+
+        XCTAssertEqual(components.year, 2026)
+        XCTAssertEqual(components.month, 6)
+        XCTAssertEqual(components.day, 6)
+        XCTAssertEqual(components.hour, 18)
+        XCTAssertEqual(components.minute, 30)
+    }
+
+    func testWorkoutReminderDateSkipsPastReminderTimes() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 5, hour: 12)))
+        let scheduledDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 5, hour: 9)))
+        let selectedTime = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 5, hour: 8)))
+
+        XCTAssertNil(workoutReminderDate(for: scheduledDate, at: selectedTime, now: now, calendar: calendar))
+    }
+
     func testWorkoutTimerPhasesIncludeManualRepSetsAndFinalRest() {
         let prescription = SetPrescription(
             sessionId: UUID(),

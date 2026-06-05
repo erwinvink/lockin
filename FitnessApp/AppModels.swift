@@ -18,6 +18,16 @@ enum PlannedEffortLabel: String, CaseIterable, Codable {
         }
     }
 
+    var defaultTargetRPE: Int {
+        switch self {
+        case .light: 3
+        case .medium: 6
+        case .hard: 7
+        case .veryHard: 9
+        case .maxOutput: 10
+        }
+    }
+
     static func fromRPE(_ value: Int) -> PlannedEffortLabel {
         switch value {
         case ...4: .light
@@ -250,7 +260,9 @@ final class UserProfile {
     var goalPushUps: Int = 100
     var goalPlankSeconds: Int = 300
     var strictFormAccepted: Bool = true
-    var remindersEnabled: Bool = true
+    var remindersEnabled: Bool = false
+    var reminderHour: Int = 9
+    var reminderMinute: Int = 0
     var painNotes: String = ""
 
     init(
@@ -269,7 +281,9 @@ final class UserProfile {
         goalPushUps: Int = 100,
         goalPlankSeconds: Int = 300,
         strictFormAccepted: Bool = true,
-        remindersEnabled: Bool = true,
+        remindersEnabled: Bool = false,
+        reminderHour: Int = 9,
+        reminderMinute: Int = 0,
         painNotes: String = ""
     ) {
         self.id = id
@@ -289,6 +303,8 @@ final class UserProfile {
         self.goalPlankSeconds = goalPlankSeconds
         self.strictFormAccepted = strictFormAccepted
         self.remindersEnabled = remindersEnabled
+        self.reminderHour = Self.normalizedReminderHour(reminderHour)
+        self.reminderMinute = Self.normalizedReminderMinute(reminderMinute)
         self.painNotes = painNotes
     }
 
@@ -310,6 +326,31 @@ final class UserProfile {
 
     var trainingDayLabels: [String] {
         TrainingWeekday.normalized(trainingDays, weeklySessions: weeklySessions).map(\.shortTitle)
+    }
+
+    var reminderTime: Date {
+        get {
+            let calendar = Calendar.current
+            return calendar.date(
+                bySettingHour: Self.normalizedReminderHour(reminderHour),
+                minute: Self.normalizedReminderMinute(reminderMinute),
+                second: 0,
+                of: Date()
+            ) ?? Date()
+        }
+        set {
+            let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+            reminderHour = Self.normalizedReminderHour(components.hour ?? reminderHour)
+            reminderMinute = Self.normalizedReminderMinute(components.minute ?? reminderMinute)
+        }
+    }
+
+    private static func normalizedReminderHour(_ value: Int) -> Int {
+        min(23, max(0, value))
+    }
+
+    private static func normalizedReminderMinute(_ value: Int) -> Int {
+        min(59, max(0, value))
     }
 }
 
@@ -450,6 +491,10 @@ final class PerformanceLog {
     var loggedPushUps: Bool = true
     var loggedPlankSeconds: Bool = true
     var rpe: Int = 7
+    var plannedRPE: Int = 0
+    var plannedEffortLabelRawAtLog: String = ""
+    var plannedEffortReasonAtLog: String = ""
+    var rpeSummary: String = ""
     var painLevel: Int = 0
     var fatigueLevel: Int = 5
     var notes: String = ""
@@ -465,6 +510,10 @@ final class PerformanceLog {
         loggedPushUps: Bool = true,
         loggedPlankSeconds: Bool = true,
         rpe: Int,
+        plannedRPE: Int = 0,
+        plannedEffortLabelAtLog: PlannedEffortLabel? = nil,
+        plannedEffortReasonAtLog: String = "",
+        rpeSummary: String = "",
         painLevel: Int,
         fatigueLevel: Int,
         notes: String
@@ -479,9 +528,44 @@ final class PerformanceLog {
         self.loggedPushUps = loggedPushUps
         self.loggedPlankSeconds = loggedPlankSeconds
         self.rpe = rpe
+        self.plannedRPE = Self.normalizedPlannedRPE(plannedRPE)
+        self.plannedEffortLabelRawAtLog = plannedEffortLabelAtLog?.rawValue ?? ""
+        self.plannedEffortReasonAtLog = plannedEffortReasonAtLog
+        if rpeSummary.isEmpty {
+            self.rpeSummary = Self.summaryText(plannedRPE: self.plannedRPE, actualRPE: rpe)
+        } else {
+            self.rpeSummary = rpeSummary
+        }
         self.painLevel = painLevel
         self.fatigueLevel = fatigueLevel
         self.notes = notes
+    }
+
+    var plannedEffortLabelAtLog: PlannedEffortLabel? {
+        PlannedEffortLabel(rawValue: plannedEffortLabelRawAtLog)
+    }
+
+    var hasPlannedRPESnapshot: Bool {
+        (1...10).contains(plannedRPE)
+    }
+
+    var rpeDelta: Int? {
+        hasPlannedRPESnapshot ? rpe - plannedRPE : nil
+    }
+
+    var rpeSummaryText: String {
+        rpeSummary.isEmpty ? Self.summaryText(plannedRPE: plannedRPE, actualRPE: rpe) : rpeSummary
+    }
+
+    static func summaryText(plannedRPE: Int, actualRPE: Int) -> String {
+        let actual = min(10, max(1, actualRPE))
+        let planned = normalizedPlannedRPE(plannedRPE)
+        guard planned > 0 else { return "RPE - Actual \(actual)" }
+        return "RPE - Planned \(planned) | Actual \(actual)"
+    }
+
+    private static func normalizedPlannedRPE(_ value: Int) -> Int {
+        (1...10).contains(value) ? value : 0
     }
 }
 

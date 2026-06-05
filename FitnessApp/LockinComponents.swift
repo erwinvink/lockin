@@ -247,6 +247,78 @@ struct EffortPill: View {
     }
 }
 
+struct RPEComparisonPill: View {
+    var plannedRPE: Int?
+    var actualRPE: Int
+
+    private var normalizedPlannedRPE: Int? {
+        guard let plannedRPE, (1...10).contains(plannedRPE) else { return nil }
+        return plannedRPE
+    }
+
+    private var normalizedActualRPE: Int {
+        min(10, max(1, actualRPE))
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("RPE -")
+                .foregroundStyle(AppTheme.muted)
+            if let normalizedPlannedRPE {
+                RPEValueBadge(label: "Planned", value: normalizedPlannedRPE)
+                Text("|")
+                    .foregroundStyle(AppTheme.muted.opacity(0.7))
+            }
+            RPEValueBadge(label: "Actual", value: normalizedActualRPE)
+        }
+        .font(.caption2.weight(.bold))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(AppTheme.surfaceRaised)
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(AppTheme.divider, lineWidth: 1)
+        )
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        if let normalizedPlannedRPE {
+            return "RPE planned \(normalizedPlannedRPE), actual \(normalizedActualRPE)"
+        }
+        return "RPE actual \(normalizedActualRPE)"
+    }
+}
+
+private struct RPEValueBadge: View {
+    var label: String
+    var value: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .foregroundStyle(AppTheme.text)
+            Text("\(value)")
+                .foregroundStyle(.white)
+                .frame(minWidth: 18, minHeight: 18)
+                .background(rpeColor(value))
+                .clipShape(Circle())
+        }
+    }
+}
+
+private func rpeColor(_ value: Int) -> Color {
+    switch PlannedEffortLabel.fromRPE(value) {
+    case .light:
+        return AppTheme.accent
+    case .medium:
+        return AppTheme.gold
+    case .hard, .veryHard, .maxOutput:
+        return AppTheme.warning
+    }
+}
+
 struct ValidationStatusCard: View {
     var title: String = "Plan validation"
     var status: String

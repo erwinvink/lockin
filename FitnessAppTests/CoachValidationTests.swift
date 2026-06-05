@@ -88,6 +88,57 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(logs.first?["notes"] as? String, "Felt shoulder tightness near the end.")
     }
 
+    func testMakeCoachRequestCarriesPlannedVsActualRPECalibration() throws {
+        let now = Date()
+        let profile = UserProfile(
+            targetDate: now.addingTimeInterval(86_400),
+            weeklySessions: 1,
+            equipment: [.pullUpBar],
+            baselinePullUps: 3,
+            baselinePushUps: 15,
+            baselinePlankSeconds: 45
+        )
+        let session = WorkoutSession(
+            scheduledDate: now,
+            title: "Pull calibration",
+            weekIndex: 1,
+            focus: .pull,
+            status: .completed,
+            summary: "AI: Pull work",
+            plannedEffort: PlannedEffort.hard("Pull day should feel productive.")
+        )
+        let log = PerformanceLog(
+            sessionId: session.id,
+            completedAt: now,
+            pullUps: 4,
+            pushUps: 15,
+            plankSeconds: 45,
+            rpe: 4,
+            plannedRPE: 7,
+            plannedEffortLabelAtLog: .hard,
+            plannedEffortReasonAtLog: "Pull day should feel productive.",
+            painLevel: 0,
+            fatigueLevel: 2,
+            notes: "Finished with plenty left."
+        )
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [log],
+            sessions: [session],
+            weekStart: currentWeekStart()
+        )
+
+        let coachLog = try XCTUnwrap(request.trainingLogs.first)
+        XCTAssertEqual(coachLog.plannedRPE, 7)
+        XCTAssertEqual(coachLog.actualRPE, 4)
+        XCTAssertEqual(coachLog.rpeDelta, -3)
+        XCTAssertEqual(coachLog.rpeSummary, "RPE - Planned 7 | Actual 4")
+        XCTAssertEqual(coachLog.plannedEffortLabel, "hard")
+        XCTAssertEqual(coachLog.plannedEffortReason, "Pull day should feel productive.")
+    }
+
     func testCoachModelCatalogFallsBackForEmptySelection() {
         XCTAssertEqual(CoachModelCatalog.normalized("  "), CoachModelCatalog.defaultModelID)
         XCTAssertEqual(CoachModelCatalog.normalized(" gpt-5.5 "), "gpt-5.5")

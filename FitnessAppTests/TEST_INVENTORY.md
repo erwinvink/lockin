@@ -124,7 +124,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testProfileResetFlowUsesAIOnlyPlanCreation`
   - Completes onboarding.
-  - Tests Profile/Settings, confirms local fallback controls are absent, verifies reminder scheduling button, reset alert, and reset returning to onboarding.
+  - Tests Profile/Settings, confirms local fallback controls are absent, verifies reminder toggle/time picker, reset alert, and reset returning to onboarding.
 
 ## Screen Coverage Checklist
 
@@ -161,7 +161,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Still useful: deload status row and multi-week date ordering.
 
 - Profile/Settings
-  - Covered: profile screen, fallback controls absent, reminder button presence, destructive reset alert.
+  - Covered: profile screen, fallback controls absent, reminder toggle/time picker presence, destructive reset alert.
   - Still useful: reminders authorization allowed/denied paths with a mock notification scheduler.
 
 ## Recommended Additional Tests

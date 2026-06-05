@@ -42,6 +42,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
     },
     history: {
       last5Logs,
+      rpeCalibration: summarizeRPECalibration(last5Logs),
       currentPartialMonth,
       lastFullMonth,
       previousFullMonth,
@@ -73,6 +74,9 @@ function collectRiskFlags(
   if (last5Logs.some((log) => log.painLevel >= 4)) flags.push("recent_pain_level_4_or_higher");
   if (last5Logs.some((log) => log.fatigueLevel >= 9)) flags.push("recent_how_you_felt_very_weak");
   if (last5Logs.filter((log) => log.rpe >= 9).length >= 3) flags.push("repeated_high_perceived_effort");
+  if (last5Logs.filter((log) => typeof log.rpeDelta === "number" && log.rpeDelta >= 2).length >= 2) {
+    flags.push("recent_effort_above_plan");
+  }
   if (lastFullMonth.maxPain >= 4) flags.push("last_full_month_pain_flag");
   if (lastFullMonth.maxFatigue >= 9) flags.push("last_full_month_how_you_felt_very_weak");
 
@@ -110,7 +114,13 @@ function classifyState(
   adherence: CoachContext["adherence"]
 ): ContextState {
   if (riskFlags.some((flag) => flag.includes("pain") || flag.includes("how_you_felt_very_weak"))) return "recovery_needed";
-  if (riskFlags.includes("sudden_monthly_volume_increase") || riskFlags.includes("repeated_high_perceived_effort")) return "overreaching";
+  if (
+    riskFlags.includes("sudden_monthly_volume_increase") ||
+    riskFlags.includes("repeated_high_perceived_effort") ||
+    riskFlags.includes("recent_effort_above_plan")
+  ) {
+    return "overreaching";
+  }
   const hasEarlyCurrentEvidence = validCurrentMonthLogCount >= 2;
   if ((validCompletedMonthLogCount < 3 || trendLabel === "insufficient_history") && !hasEarlyCurrentEvidence) {
     return "insufficient_history";
@@ -156,13 +166,52 @@ function hasLoggedGoalMetric(log: TrainingLog): boolean {
 
 function normalizeLogForContext(log: TrainingLog): TrainingLog {
   const howYouFeltScore = howYouFeltScoreFromFatigueLevel(log.fatigueLevel);
+  const actualRPE = normalizeRPE(log.actualRPE) ?? normalizeRPE(log.rpe) ?? log.rpe;
+  const plannedRPE = normalizeRPE(log.plannedRPE);
+  const rpeDelta = typeof plannedRPE === "number" ? actualRPE - plannedRPE : undefined;
+  const generatedSummary = typeof plannedRPE === "number"
+    ? `RPE - Planned ${plannedRPE} | Actual ${actualRPE}`
+    : undefined;
+
   return {
     ...log,
-    perceivedEffort: log.rpe,
+    rpe: actualRPE,
+    perceivedEffort: actualRPE,
+    plannedRPE,
+    actualRPE,
+    rpeDelta,
+    rpeSummary: trimNote(log.rpeSummary || generatedSummary || ""),
+    plannedEffortReason: trimNote(log.plannedEffortReason || ""),
     howYouFeltScore,
     howYouFelt: howYouFeltLabel(howYouFeltScore),
     notes: trimNote(log.notes)
   };
+}
+
+function summarizeRPECalibration(logs: TrainingLog[]): CoachContext["history"]["rpeCalibration"] {
+  const deltas = logs
+    .map((log) => log.rpeDelta)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const latestSummary = [...logs].reverse().find((log) => log.rpeSummary)?.rpeSummary ?? null;
+
+  return {
+    recentPlannedLogCount: deltas.length,
+    averageDeltaLast5: averageDelta(deltas),
+    abovePlanBy2Count: deltas.filter((delta) => delta >= 2).length,
+    belowPlanBy2Count: deltas.filter((delta) => delta <= -2).length,
+    latestSummary
+  };
+}
+
+function averageDelta(values: number[]): number | null {
+  if (values.length === 0) return null;
+  return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1));
+}
+
+function normalizeRPE(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const rounded = Math.round(value);
+  return rounded >= 1 && rounded <= 10 ? rounded : undefined;
 }
 
 function trimNote(note: string | undefined): string {

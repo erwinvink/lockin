@@ -61,6 +61,49 @@ test("adds Garmin-style self-evaluation labels to recent logs", () => {
   assert.equal(latestLog?.howYouFelt, "weak");
 });
 
+test("summarizes planned-vs-actual RPE calibration", () => {
+  const request = baseRequest({
+    trainingLogs: [
+      trainingLog("2026-05-04T10:00:00Z", {
+        rpe: 4,
+        plannedRPE: 7,
+        plannedEffortLabel: "hard",
+        plannedEffortReason: "Goal stimulus.",
+        rpeSummary: "RPE - Planned 7 | Actual 4"
+      })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+  const latestLog = context.history.last5Logs.at(-1);
+
+  assert.equal(latestLog?.actualRPE, 4);
+  assert.equal(latestLog?.plannedRPE, 7);
+  assert.equal(latestLog?.rpeDelta, -3);
+  assert.equal(latestLog?.rpeSummary, "RPE - Planned 7 | Actual 4");
+  assert.equal(context.history.rpeCalibration.recentPlannedLogCount, 1);
+  assert.equal(context.history.rpeCalibration.averageDeltaLast5, -3);
+  assert.equal(context.history.rpeCalibration.belowPlanBy2Count, 1);
+  assert.equal(context.history.rpeCalibration.abovePlanBy2Count, 0);
+  assert.equal(context.history.rpeCalibration.latestSummary, "RPE - Planned 7 | Actual 4");
+});
+
+test("flags repeated actual effort above plan as overreaching", () => {
+  const request = baseRequest({
+    trainingLogs: [
+      trainingLog("2026-05-04T10:00:00Z", { rpe: 8, plannedRPE: 5 }),
+      trainingLog("2026-05-11T10:00:00Z", { rpe: 8, plannedRPE: 5 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.readiness.state, "overreaching");
+  assert.ok(context.readiness.riskFlags.includes("recent_effort_above_plan"));
+  assert.equal(context.history.rpeCalibration.averageDeltaLast5, 3);
+  assert.equal(context.history.rpeCalibration.abovePlanBy2Count, 2);
+});
+
 function baseRequest(overrides: Partial<CoachRequest> = {}): CoachRequest {
   return {
     model: "gpt-5-mini",

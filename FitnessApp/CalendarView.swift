@@ -125,13 +125,23 @@ private struct CalendarSessionRow: View {
                 Text(session.title)
                     .font(.subheadline.weight(.semibold))
                 if let log {
-                    EffortPill(label: PlannedEffortLabel.fromRPE(log.rpe), prefix: "Actual", targetRPE: log.rpe)
+                    RPEComparisonPill(plannedRPE: plannedRPEForDisplay(log: log), actualRPE: log.rpe)
                 }
             }
             Spacer()
             WorkoutStatusIcon(status: session.status)
         }
         .padding(.vertical, 8)
+    }
+
+    private func plannedRPEForDisplay(log: PerformanceLog) -> Int? {
+        if log.hasPlannedRPESnapshot {
+            return log.plannedRPE
+        }
+        if (1...10).contains(session.plannedEffortTargetRPE) {
+            return session.plannedEffortTargetRPE
+        }
+        return session.plannedEffortLabel?.defaultTargetRPE
     }
 }
 

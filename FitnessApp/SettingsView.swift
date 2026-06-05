@@ -1,10 +1,12 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
+    @Environment(\.openURL) private var openURL
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
-    @State private var notificationStatus = "Not requested"
+    @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
 
@@ -20,10 +22,8 @@ struct SettingsView: View {
                 )
                 ReminderSettingsCard(
                     profile: profile,
-                    sessions: sessions,
-                    notificationStatus: notificationStatus,
                     onReminderToggle: saveReminderPreference,
-                    onStatusChange: { notificationStatus = $0 }
+                    onReminderTimeChange: saveReminderTime
                 )
                 ResetCard(
                     resetError: resetError,
@@ -36,6 +36,13 @@ struct SettingsView: View {
             } message: {
                 Text("This removes every measurement, workout, log, streak, and coach record from the app.")
             }
+            .alert("Enable notifications", isPresented: $isShowingReminderPermissionAlert) {
+                Button("Enable", action: openNotificationSettings)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Turn on notifications for Lockin in iOS Settings to use reminders.")
+            }
+            .onAppear(perform: refreshEnabledReminders)
         }
     }
 
@@ -45,8 +52,52 @@ struct SettingsView: View {
     }
 
     private func saveReminderPreference(_ enabled: Bool) {
-        profile.remindersEnabled = enabled
+        if enabled {
+            enableReminders()
+        } else {
+            disableReminders()
+        }
+    }
+
+    private func saveReminderTime(_ reminderTime: Date) {
+        profile.reminderTime = reminderTime
         try? modelContext.save()
+        guard profile.remindersEnabled else { return }
+
+        enableReminders()
+    }
+
+    private func enableReminders() {
+        Task { @MainActor in
+            let scheduler = WorkoutNotificationScheduler()
+            let allowed = await scheduler.requestAuthorization()
+            guard allowed else {
+                profile.remindersEnabled = false
+                try? modelContext.save()
+                isShowingReminderPermissionAlert = true
+                return
+            }
+
+            profile.remindersEnabled = true
+            try? modelContext.save()
+            await scheduler.scheduleWorkoutReminders(for: sessions, at: profile.reminderTime)
+        }
+    }
+
+    private func disableReminders() {
+        profile.remindersEnabled = false
+        try? modelContext.save()
+        WorkoutNotificationScheduler().clearWorkoutReminders()
+    }
+
+    private func refreshEnabledReminders() {
+        guard profile.remindersEnabled else { return }
+        enableReminders()
+    }
+
+    private func openNotificationSettings() {
+        guard let url = URL(string: UIApplication.openNotificationSettingsURLString) else { return }
+        openURL(url)
     }
 
     private func resetAllData() {
@@ -111,14 +162,15 @@ private struct WeekScheduleCard: View {
 
 private struct ReminderSettingsCard: View {
     var profile: UserProfile
-    var sessions: [WorkoutSession]
-    var notificationStatus: String
     var onReminderToggle: (Bool) -> Void
-    var onStatusChange: (String) -> Void
+    var onReminderTimeChange: (Date) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Toggle("Strict reminders", isOn: Binding(
+            Text("Reminder")
+                .font(.headline)
+
+            Toggle("Enabled", isOn: Binding(
                 get: { profile.remindersEnabled },
                 set: { newValue in
                     onReminderToggle(newValue)
@@ -126,25 +178,17 @@ private struct ReminderSettingsCard: View {
             ))
             .tint(AppTheme.accent)
 
-            Button("Request and schedule", action: scheduleReminders)
-                .buttonStyle(SecondaryActionButtonStyle())
-
-            InfoLine(title: "Status", value: notificationStatus)
+            DatePicker(
+                "Time",
+                selection: Binding(
+                    get: { profile.reminderTime },
+                    set: { onReminderTimeChange($0) }
+                ),
+                displayedComponents: .hourAndMinute
+            )
+            .accessibilityIdentifier("reminder-time-picker")
         }
         .card()
-    }
-
-    private func scheduleReminders() {
-        Task {
-            let scheduler = WorkoutNotificationScheduler()
-            let allowed = await scheduler.requestAuthorization()
-            if allowed {
-                await scheduler.scheduleWorkoutReminders(for: sessions)
-                onStatusChange("Scheduled")
-            } else {
-                onStatusChange("Denied")
-            }
-        }
     }
 }
 
