@@ -1,5 +1,5 @@
 import { addMonths, startOfMonthUTC, summarizeMonth, summarizeTrend } from "./summarize-training-history";
-import type { CoachContext, CoachRequest, ContextState, TrainingLog } from "./types";
+import type { CoachContext, CoachRequest, ContextState, PlannedExercisePrescription, PlannedGoalTrend, TrainingLog } from "./types";
 
 export function buildCoachContext(request: CoachRequest, now = new Date()): CoachContext {
   const sortedLogs = [...request.trainingLogs].sort(
@@ -54,6 +54,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       }
     },
     adherence,
+    plannedWork: summarizePlannedWork(request.plannedSessions, request.weekStart),
     readiness: {
       state,
       riskFlags
@@ -103,6 +104,76 @@ function summarizeAdherence(request: CoachRequest): CoachContext["adherence"] {
     completed: request.plannedSessions.filter((session) => session.status === "completed").length,
     missed: request.plannedSessions.filter((session) => session.status === "missed").length,
     deload: request.plannedSessions.filter((session) => session.status === "deload").length
+  };
+}
+
+function summarizePlannedWork(plannedSessions: CoachRequest["plannedSessions"], weekStart: string): CoachContext["plannedWork"] {
+  const startTime = new Date(weekStart).getTime();
+  const goalEntries = plannedSessions
+    .filter((session) => new Date(session.scheduledDate).getTime() < startTime)
+    .flatMap((session) =>
+      (session.exercises ?? [])
+        .filter(isGoalWorkPrescription)
+        .map((exercise) => ({
+          metric: goalMetricForExercise(exercise.exercise),
+          scheduledDate: session.scheduledDate,
+          target: exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps,
+          volume: (exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps) * exercise.sets
+        }))
+    )
+    .filter((entry): entry is { metric: "pullUps" | "pushUps" | "plankSeconds"; scheduledDate: string; target: number; volume: number } =>
+      entry.metric !== null && entry.target > 0 && entry.volume > 0
+    )
+    .sort((a, b) => new Date(b.scheduledDate).getTime() - new Date(a.scheduledDate).getTime());
+
+  return {
+    recentGoalTargets: {
+      pullUps: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "pullUps")),
+      pushUps: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "pushUps")),
+      plankSeconds: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "plankSeconds"))
+    }
+  };
+}
+
+function isGoalWorkPrescription(exercise: PlannedExercisePrescription): boolean {
+  if (!["pullUp", "pushUp", "plank"].includes(exercise.exercise)) return false;
+  if (exercise.plannedEffortLabel === "light") return false;
+  if (exercise.plannedEffortStimulus === "recovery" || exercise.plannedEffortStimulus === "technique") return false;
+  return exercise.sets > 0 && (exercise.targetReps > 0 || exercise.targetSeconds > 0);
+}
+
+function goalMetricForExercise(exercise: string): "pullUps" | "pushUps" | "plankSeconds" | null {
+  switch (exercise) {
+    case "pullUp":
+      return "pullUps";
+    case "pushUp":
+      return "pushUps";
+    case "plank":
+      return "plankSeconds";
+    default:
+      return null;
+  }
+}
+
+function summarizeGoalTrend(
+  entries: Array<{ scheduledDate: string; target: number; volume: number }>
+): PlannedGoalTrend {
+  const latest = entries[0];
+  if (!latest) {
+    return { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null };
+  }
+
+  let flatCount = 0;
+  for (const entry of entries) {
+    if (entry.target !== latest.target || entry.volume !== latest.volume) break;
+    flatCount += 1;
+  }
+
+  return {
+    latestTarget: latest.target,
+    latestVolume: latest.volume,
+    flatCount,
+    latestDate: latest.scheduledDate
   };
 }
 

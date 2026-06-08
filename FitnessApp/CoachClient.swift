@@ -110,6 +110,16 @@ struct CoachPlannedSession: Codable, Equatable {
     var title: String
     var focus: String
     var status: String
+    var exercises: [CoachPlannedExercisePrescription] = []
+}
+
+struct CoachPlannedExercisePrescription: Codable, Equatable {
+    var exercise: String
+    var sets: Int
+    var targetReps: Int
+    var targetSeconds: Int
+    var plannedEffortLabel: String?
+    var plannedEffortStimulus: String?
 }
 
 struct CoachPlanResponse: Codable, Equatable {
@@ -280,7 +290,25 @@ struct CoachPlanValidator {
     private let validLoggingFields: Set<String> = ["pullUps", "pushUps", "plankSeconds"]
     private let normalProgressionStates: Set<String> = ["building", "plateau", "insufficient_history"]
 
-    func validate(response: CoachPlanResponse, baseline: Baseline, preferences: TrainingPreferences, weekStart: Date) -> PlanValidationResult {
+    private struct GoalWorkSummary {
+        var target: Int = 0
+        var volume: Int = 0
+    }
+
+    private struct GoalTrend {
+        var latestTarget: Int?
+        var latestVolume: Int?
+        var flatCount: Int
+    }
+
+    func validate(
+        response: CoachPlanResponse,
+        baseline: Baseline,
+        preferences: TrainingPreferences,
+        weekStart: Date,
+        plannedSessions: [CoachPlannedSession] = [],
+        trainingLogs: [CoachLog] = []
+    ) -> PlanValidationResult {
         var messages: [String] = []
         let hasExplicitTrainingDays = !preferences.trainingDays.isEmpty
         let selectedDays = TrainingWeekday.normalized(preferences.trainingDays, weeklySessions: preferences.weeklySessions)
@@ -302,7 +330,7 @@ struct CoachPlanValidator {
 
         var previousDayOffset = -1
         var sessionEffortLabels: [PlannedEffortLabel] = []
-        var usefulGoalWork: [String: Int] = [:]
+        var usefulGoalWork: [String: GoalWorkSummary] = [:]
 
         for (index, session) in response.sessions.enumerated() {
             if !(1...6).contains(session.dayOffset) {
@@ -375,6 +403,13 @@ struct CoachPlanValidator {
                 messages.append("AI plan cannot be all light unless safety flags explain why.")
             }
             validateUsefulGoalFloor(baseline: baseline, usefulGoalWork: usefulGoalWork, messages: &messages)
+            validateFlatPrescriptionProgression(
+                plannedSessions: plannedSessions,
+                trainingLogs: trainingLogs,
+                usefulGoalWork: usefulGoalWork,
+                weekStart: weekStart,
+                messages: &messages
+            )
         }
 
         return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
@@ -425,21 +460,28 @@ struct CoachPlanValidator {
         return effort
     }
 
-    private func collectUsefulGoalWork(exercise: CoachExerciseResponse, effort: PlannedEffort, usefulGoalWork: inout [String: Int]) {
+    private func collectUsefulGoalWork(exercise: CoachExerciseResponse, effort: PlannedEffort, usefulGoalWork: inout [String: GoalWorkSummary]) {
         guard effort.label != .light, effort.stimulus != .recovery, effort.stimulus != .technique else { return }
         switch exercise.exercise {
         case ExerciseKind.pullUp.rawValue:
-            usefulGoalWork["pullUps"] = max(usefulGoalWork["pullUps"] ?? 0, exercise.reps)
+            recordGoalWork(metric: "pullUps", target: exercise.reps, sets: exercise.sets, usefulGoalWork: &usefulGoalWork)
         case ExerciseKind.pushUp.rawValue:
-            usefulGoalWork["pushUps"] = max(usefulGoalWork["pushUps"] ?? 0, exercise.reps)
+            recordGoalWork(metric: "pushUps", target: exercise.reps, sets: exercise.sets, usefulGoalWork: &usefulGoalWork)
         case ExerciseKind.plank.rawValue:
-            usefulGoalWork["plankSeconds"] = max(usefulGoalWork["plankSeconds"] ?? 0, exercise.seconds)
+            recordGoalWork(metric: "plankSeconds", target: exercise.seconds, sets: exercise.sets, usefulGoalWork: &usefulGoalWork)
         default:
             break
         }
     }
 
-    private func validateUsefulGoalFloor(baseline: Baseline, usefulGoalWork: [String: Int], messages: inout [String]) {
+    private func recordGoalWork(metric: String, target: Int, sets: Int, usefulGoalWork: inout [String: GoalWorkSummary]) {
+        var summary = usefulGoalWork[metric] ?? GoalWorkSummary()
+        summary.target = max(summary.target, target)
+        summary.volume = max(summary.volume, target * max(sets, 0))
+        usefulGoalWork[metric] = summary
+    }
+
+    private func validateUsefulGoalFloor(baseline: Baseline, usefulGoalWork: [String: GoalWorkSummary], messages: inout [String]) {
         let checks: [(metric: String, best: Int, label: String)] = [
             ("pullUps", baseline.pullUps, "pull-up"),
             ("pushUps", baseline.pushUps, "push-up"),
@@ -447,12 +489,119 @@ struct CoachPlanValidator {
         ]
 
         for check in checks {
-            guard check.best >= 10, let prescribed = usefulGoalWork[check.metric] else { continue }
+            guard check.best >= 10, let prescribed = usefulGoalWork[check.metric]?.target else { continue }
             let minimum = Int(ceil(Double(check.best) * 0.45))
             if prescribed < minimum {
                 messages.append("AI \(check.label) goal work is below the useful stimulus floor.")
             }
         }
+    }
+
+    private func validateFlatPrescriptionProgression(
+        plannedSessions: [CoachPlannedSession],
+        trainingLogs: [CoachLog],
+        usefulGoalWork: [String: GoalWorkSummary],
+        weekStart: Date,
+        messages: inout [String]
+    ) {
+        guard hasCleanProgressionSignal(trainingLogs: trainingLogs) else { return }
+
+        let trends = recentGoalTrends(plannedSessions: plannedSessions, before: weekStart)
+        let checks = [
+            (metric: "pullUps", label: "pull-up"),
+            (metric: "pushUps", label: "push-up"),
+            (metric: "plankSeconds", label: "plank")
+        ]
+
+        for check in checks {
+            guard
+                let trend = trends[check.metric],
+                trend.flatCount >= 2,
+                let latestTarget = trend.latestTarget,
+                let latestVolume = trend.latestVolume
+            else { continue }
+
+            let prescribed = usefulGoalWork[check.metric]
+            if prescribed == nil || (prescribed?.target ?? 0) <= latestTarget && (prescribed?.volume ?? 0) <= latestVolume {
+                messages.append("AI \(check.label) work repeats the recent flat prescription. Increase reps, hold time, sets, or add safety flags with a clear reason.")
+            }
+        }
+    }
+
+    private func hasCleanProgressionSignal(trainingLogs: [CoachLog]) -> Bool {
+        let recentLogs = trainingLogs
+            .sorted { $0.completedAt > $1.completedAt }
+            .prefix(5)
+            .filter { $0.loggedPullUps || $0.loggedPushUps || $0.loggedPlankSeconds }
+
+        guard recentLogs.count >= 2 else { return false }
+        if recentLogs.contains(where: { $0.painLevel >= 4 || $0.fatigueLevel >= 9 }) { return false }
+        if recentLogs.filter({ $0.rpe >= 9 }).count >= 2 { return false }
+        if recentLogs.compactMap(\.rpeDelta).filter({ $0 >= 2 }).count >= 2 { return false }
+        return true
+    }
+
+    private func recentGoalTrends(plannedSessions: [CoachPlannedSession], before weekStart: Date) -> [String: GoalTrend] {
+        let entries = plannedSessions
+            .filter { $0.scheduledDate < weekStart }
+            .flatMap { session in
+                session.exercises.compactMap { prescription -> (metric: String, target: Int, volume: Int, date: Date)? in
+                    guard isUsefulGoalPrescription(prescription) else { return nil }
+                    let target = prescription.exercise == ExerciseKind.plank.rawValue ? prescription.targetSeconds : prescription.targetReps
+                    guard target > 0 else { return nil }
+                    return (
+                        metric: metricName(for: prescription.exercise),
+                        target: target,
+                        volume: target * prescription.sets,
+                        date: session.scheduledDate
+                    )
+                }
+            }
+            .sorted { $0.date > $1.date }
+
+        return [
+            "pullUps": goalTrend(from: entries.filter { $0.metric == "pullUps" }),
+            "pushUps": goalTrend(from: entries.filter { $0.metric == "pushUps" }),
+            "plankSeconds": goalTrend(from: entries.filter { $0.metric == "plankSeconds" })
+        ]
+    }
+
+    private func isUsefulGoalPrescription(_ prescription: CoachPlannedExercisePrescription) -> Bool {
+        guard [
+            ExerciseKind.pullUp.rawValue,
+            ExerciseKind.pushUp.rawValue,
+            ExerciseKind.plank.rawValue
+        ].contains(prescription.exercise) else { return false }
+        if prescription.plannedEffortLabel == PlannedEffortLabel.light.rawValue { return false }
+        if prescription.plannedEffortStimulus == EffortStimulus.recovery.rawValue || prescription.plannedEffortStimulus == EffortStimulus.technique.rawValue {
+            return false
+        }
+        return prescription.sets > 0
+    }
+
+    private func metricName(for exercise: String) -> String {
+        switch exercise {
+        case ExerciseKind.pullUp.rawValue:
+            "pullUps"
+        case ExerciseKind.pushUp.rawValue:
+            "pushUps"
+        default:
+            "plankSeconds"
+        }
+    }
+
+    private func goalTrend(from entries: [(metric: String, target: Int, volume: Int, date: Date)]) -> GoalTrend {
+        guard let latest = entries.first else {
+            return GoalTrend(latestTarget: nil, latestVolume: nil, flatCount: 0)
+        }
+
+        var flatCount = 0
+        for entry in entries {
+            if entry.target != latest.target || entry.volume != latest.volume { break }
+            flatCount += 1
+        }
+
+        return GoalTrend(latestTarget: latest.target, latestVolume: latest.volume, flatCount: flatCount)
     }
 }
 
@@ -512,6 +661,7 @@ func makeCoachRequest(
     modelID: String,
     logs: [PerformanceLog],
     sessions: [WorkoutSession],
+    prescriptions: [SetPrescription] = [],
     weekStart: Date = rollingPlanStart()
 ) -> CoachPlanRequest {
     let baseline = Baseline(
@@ -525,6 +675,7 @@ func makeCoachRequest(
         weeklySessions: selectedDays.count,
         weekStart: weekStart
     ).filter { (1...6).contains($0) }
+    let prescriptionsBySession = Dictionary(grouping: prescriptions, by: \.sessionId)
 
     return CoachPlanRequest(
         model: CoachModelCatalog.normalized(modelID),
@@ -574,7 +725,19 @@ func makeCoachRequest(
                 scheduledDate: $0.scheduledDate,
                 title: $0.title,
                 focus: $0.focus.rawValue,
-                status: $0.status.rawValue
+                status: $0.status.rawValue,
+                exercises: (prescriptionsBySession[$0.id] ?? [])
+                    .sorted { $0.orderIndex < $1.orderIndex }
+                    .map {
+                        CoachPlannedExercisePrescription(
+                            exercise: $0.exercise.rawValue,
+                            sets: $0.sets,
+                            targetReps: $0.targetReps,
+                            targetSeconds: $0.targetSeconds,
+                            plannedEffortLabel: $0.plannedEffortLabel?.rawValue,
+                            plannedEffortStimulus: $0.plannedEffortStimulus?.rawValue
+                        )
+                    }
             )
         }
     )
@@ -632,7 +795,14 @@ struct LocalCoachClient {
         }
 
         let plan = try JSONDecoder.coachDecoder.decode(CoachPlanResponse.self, from: data)
-        let validation = validator.validate(response: plan, baseline: baseline, preferences: preferences, weekStart: request.weekStart)
+        let validation = validator.validate(
+            response: plan,
+            baseline: baseline,
+            preferences: preferences,
+            weekStart: request.weekStart,
+            plannedSessions: request.plannedSessions,
+            trainingLogs: request.trainingLogs
+        )
         guard validation.status != .rejected else { throw CoachClientError.validationFailed(validation.messages) }
         return plan
     }

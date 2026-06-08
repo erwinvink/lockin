@@ -195,6 +195,7 @@ struct LogWorkoutView: View {
             modelID: selectedModelID,
             logs: logsIncludingSavedLog,
             sessions: sessions,
+            prescriptions: prescriptions,
             weekStart: rollingPlanStart()
         )
 

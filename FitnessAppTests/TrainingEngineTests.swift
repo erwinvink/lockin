@@ -50,6 +50,32 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(estimatedWorkoutDurationMinutes(for: prescriptions), 9)
     }
 
+    func testFallbackProgressesPullAndPushWithinThreeWeeks() {
+        let engine = TrainingEngine()
+        let preferences = TrainingPreferences(
+            weeklySessions: 4,
+            equipment: [.pullUpBar, .yogaMat],
+            targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+        )
+        let baseline = Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60)
+
+        let firstBuildWeek = engine.generateWeek(
+            start: Date(timeIntervalSince1970: 0),
+            weekIndex: 1,
+            baseline: baseline,
+            preferences: preferences
+        )
+        let thirdBuildWeek = engine.generateWeek(
+            start: Date(timeIntervalSince1970: 14 * 24 * 60 * 60),
+            weekIndex: 3,
+            baseline: baseline,
+            preferences: preferences
+        )
+
+        XCTAssertGreaterThan(maxReps(for: .pullUp, in: thirdBuildWeek), maxReps(for: .pullUp, in: firstBuildWeek))
+        XCTAssertGreaterThan(maxReps(for: .pushUp, in: thirdBuildWeek), maxReps(for: .pushUp, in: firstBuildWeek))
+    }
+
     func testPainSignalTriggersDeloadScoring() {
         let outcome = TrainingEngine().score(
             log: SessionLogInput(completed: true, pullUps: 4, pushUps: 15, plankSeconds: 45, rpe: 6, painLevel: 5, fatigueLevel: 6),
@@ -176,5 +202,14 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(phases.map(\.kind), [.work, .rest, .work, .rest])
         XCTAssertEqual(phases.map(\.target), [.seconds(45), .seconds(30), .seconds(45), .seconds(30)])
         XCTAssertTrue(phases.allSatisfy { !$0.isManual })
+    }
+
+    private func maxReps(for exercise: ExerciseKind, in plan: WeeklyPlan) -> Int {
+        plan.sessions
+            .flatMap(\.blocks)
+            .flatMap(\.sets)
+            .filter { $0.exercise == exercise }
+            .map(\.reps)
+            .max() ?? 0
     }
 }

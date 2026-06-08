@@ -88,6 +88,52 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(logs.first?["notes"] as? String, "Felt shoulder tightness near the end.")
     }
 
+    func testCoachPlanRequestIncludesPreviousPrescriptions() throws {
+        let scheduledDate = Date()
+        let session = WorkoutSession(
+            scheduledDate: scheduledDate,
+            title: "Pull plan",
+            weekIndex: 1,
+            focus: .pull,
+            summary: "AI: Pull work"
+        )
+        let prescription = SetPrescription(
+            sessionId: session.id,
+            blockId: UUID(),
+            orderIndex: 0,
+            exercise: .pullUp,
+            sets: 3,
+            targetReps: 4,
+            restSeconds: 120,
+            intensity: "Hard",
+            plannedEffort: .hard("Build strict pull-up capacity.")
+        )
+        let profile = UserProfile(
+            targetDate: Date(timeIntervalSince1970: 86_400),
+            weeklySessions: 1,
+            equipment: [.pullUpBar],
+            baselinePullUps: 3,
+            baselinePushUps: 15,
+            baselinePlankSeconds: 45
+        )
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [session],
+            prescriptions: [prescription],
+            weekStart: scheduledDate.addingTimeInterval(86_400)
+        )
+
+        let exercise = try XCTUnwrap(request.plannedSessions.first?.exercises.first)
+        XCTAssertEqual(exercise.exercise, "pullUp")
+        XCTAssertEqual(exercise.sets, 3)
+        XCTAssertEqual(exercise.targetReps, 4)
+        XCTAssertEqual(exercise.plannedEffortLabel, "hard")
+        XCTAssertEqual(exercise.plannedEffortStimulus, "strength")
+    }
+
     func testMakeCoachRequestCarriesPlannedVsActualRPECalibration() throws {
         let now = Date()
         let profile = UserProfile(
@@ -357,6 +403,32 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(result.messages.contains { $0.contains("push-up goal work is below") })
     }
 
+    func testRejectsStaticPlanAfterCleanFlatRecentPrescriptions() {
+        let weekStart = Date(timeIntervalSince1970: 14 * 24 * 60 * 60)
+        let result = CoachPlanValidator().validate(
+            response: .balancedFixture(),
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: weekStart,
+            plannedSessions: [
+                previousCoachSession(scheduledDate: Date(timeIntervalSince1970: 0)),
+                previousCoachSession(scheduledDate: Date(timeIntervalSince1970: 7 * 24 * 60 * 60))
+            ],
+            trainingLogs: [
+                cleanCoachLog(completedAt: Date(timeIntervalSince1970: 6 * 24 * 60 * 60)),
+                cleanCoachLog(completedAt: Date(timeIntervalSince1970: 13 * 24 * 60 * 60))
+            ]
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.messages.contains { $0.contains("pull-up work repeats") })
+        XCTAssertTrue(result.messages.contains { $0.contains("push-up work repeats") })
+    }
+
     func testRejectsAIPlanWithInvalidTechnicalShape() {
         var response = CoachPlanResponse.balancedFixture()
         response.sessions[1].dayOffset = response.sessions[0].dayOffset
@@ -459,6 +531,58 @@ private func coachVerdictFixture(sourceLogId: UUID?, createdAt: Date) -> CoachVe
         shouldUpdatePlan: false,
         contextState: "building",
         safetyFlags: []
+    )
+}
+
+private func previousCoachSession(scheduledDate: Date) -> CoachPlannedSession {
+    CoachPlannedSession(
+        id: UUID().uuidString,
+        scheduledDate: scheduledDate,
+        title: "Previous flat work",
+        focus: "mixed",
+        status: "completed",
+        exercises: [
+            CoachPlannedExercisePrescription(
+                exercise: "pullUp",
+                sets: 4,
+                targetReps: 3,
+                targetSeconds: 0,
+                plannedEffortLabel: "hard",
+                plannedEffortStimulus: "strength"
+            ),
+            CoachPlannedExercisePrescription(
+                exercise: "pushUp",
+                sets: 3,
+                targetReps: 10,
+                targetSeconds: 0,
+                plannedEffortLabel: "medium",
+                plannedEffortStimulus: "volume"
+            )
+        ]
+    )
+}
+
+private func cleanCoachLog(completedAt: Date) -> CoachLog {
+    CoachLog(
+        id: UUID().uuidString,
+        sessionId: UUID().uuidString,
+        completedAt: completedAt,
+        pullUps: 5,
+        pushUps: 20,
+        plankSeconds: 60,
+        loggedPullUps: true,
+        loggedPushUps: true,
+        loggedPlankSeconds: true,
+        rpe: 6,
+        painLevel: 0,
+        fatigueLevel: 5,
+        notes: "",
+        plannedRPE: 7,
+        actualRPE: 6,
+        rpeDelta: -1,
+        rpeSummary: "RPE - Planned 7 | Actual 6",
+        plannedEffortLabel: "hard",
+        plannedEffortReason: "Clean build work."
     )
 }
 

@@ -98,7 +98,8 @@ struct TrainingEngine {
     ) -> WeeklyPlan {
         let sessionCount = min(max(preferences.weeklySessions, 2), 6)
         let deload = recentLogs.contains { $0.painLevel >= 4 || $0.fatigueLevel >= 9 }
-        let readiness = readinessMultiplier(from: baseline, goals: goals, targetDate: preferences.targetDate, weekIndex: weekIndex)
+        let trainingAnchor = recentTrainingAnchor(from: baseline, recentLogs: recentLogs)
+        let readiness = readinessMultiplier(from: trainingAnchor, goals: goals, targetDate: preferences.targetDate, weekIndex: weekIndex)
         let multiplier = deload ? max(0.55, readiness * 0.65) : readiness
         let focuses = focusSequence(count: sessionCount)
         let selectedDayOffsets = preferences.trainingDays.isEmpty
@@ -113,7 +114,7 @@ struct TrainingEngine {
                 index: index,
                 weekIndex: weekIndex,
                 focus: focuses[index],
-                baseline: baseline,
+                baseline: trainingAnchor,
                 multiplier: multiplier,
                 equipment: preferences.equipment,
                 deload: deload
@@ -178,6 +179,14 @@ struct TrainingEngine {
         return nearPull || nearPush || nearPlank || latest.pullUps >= goals.pullUps || latest.pushUps >= goals.pushUps || latest.plankSeconds >= goals.plankSeconds
     }
 
+    private func recentTrainingAnchor(from baseline: Baseline, recentLogs: [SessionLogInput]) -> Baseline {
+        Baseline(
+            pullUps: recentLogs.filter { $0.loggedPullUps }.map(\.pullUps).max() ?? baseline.pullUps,
+            pushUps: recentLogs.filter { $0.loggedPushUps }.map(\.pushUps).max() ?? baseline.pushUps,
+            plankSeconds: recentLogs.filter { $0.loggedPlankSeconds }.map(\.plankSeconds).max() ?? baseline.plankSeconds
+        )
+    }
+
     private func focusSequence(count: Int) -> [SessionFocus] {
         let base: [SessionFocus] = [.pull, .push, .core, .mixed, .recovery, .mixed]
         return (0..<count).map { base[$0 % base.count] }
@@ -193,9 +202,22 @@ struct TrainingEngine {
         equipment: Set<EquipmentKind>,
         deload: Bool
     ) -> TrainingSessionPlan {
-        let pullSet = capped(value: Double(max(baseline.pullUps, 1)) * 0.50 * multiplier, minimum: 1, maximum: max(1, Int(Double(max(baseline.pullUps, 1)) * 0.85)))
-        let pushSet = capped(value: Double(max(baseline.pushUps, 4)) * 0.55 * multiplier, minimum: 3, maximum: max(3, Int(Double(max(baseline.pushUps, 4)) * 0.75)))
-        let plankHold = capped(value: Double(max(baseline.plankSeconds, 20)) * 0.50 * multiplier, minimum: 15, maximum: max(15, Int(Double(max(baseline.plankSeconds, 20)) * 0.80)))
+        let buildWeek = deload ? 0 : max(0, weekIndex)
+        let pullSet = capped(
+            value: Double(max(baseline.pullUps, 1)) * 0.50 * multiplier + Double((buildWeek + 1) / 2),
+            minimum: 1,
+            maximum: max(1, Int(Double(max(baseline.pullUps, 1)) * 0.90))
+        )
+        let pushSet = capped(
+            value: Double(max(baseline.pushUps, 4)) * 0.55 * multiplier + Double(buildWeek),
+            minimum: 3,
+            maximum: max(3, Int(Double(max(baseline.pushUps, 4)) * 0.85))
+        )
+        let plankHold = capped(
+            value: Double(max(baseline.plankSeconds, 20)) * 0.50 * multiplier + Double(buildWeek * 5),
+            minimum: 15,
+            maximum: max(15, Int(Double(max(baseline.plankSeconds, 20)) * 0.85))
+        )
         let workSets = deload ? 3 : 5
         let mainEffort = deload
             ? PlannedEffort.light("Deloaded because pain or how-you-felt signals need lower stress.")

@@ -37,6 +37,13 @@ const baseContext: CoachContext = {
     bestRecentTests: { pullUps: 5, pushUps: 20, plankSeconds: 60 }
   },
   adherence: { planned: 0, completed: 0, missed: 0, deload: 0 },
+  plannedWork: {
+    recentGoalTargets: {
+      pullUps: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null },
+      pushUps: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null },
+      plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
+    }
+  },
   readiness: { state: "insufficient_history", riskFlags: [] }
 };
 
@@ -80,6 +87,63 @@ test("rejects hard goal work below the useful stimulus floor", () => {
 
   assert.equal(result.accepted, false);
   assert.ok(result.messages.some((message) => message.includes("push-up goal work is below")));
+});
+
+test("rejects static pull and push prescriptions after clean flat recent work", () => {
+  const plan = balancedPlan();
+  const context: CoachContext = {
+    ...baseContext,
+    history: {
+      ...baseContext.history,
+      last5Logs: cleanRecentLogs(),
+      rpeCalibration: {
+        recentPlannedLogCount: 2,
+        averageDeltaLast5: -1,
+        abovePlanBy2Count: 0,
+        belowPlanBy2Count: 1,
+        latestSummary: "RPE - Planned 7 | Actual 6"
+      }
+    },
+    adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
+    plannedWork: {
+      recentGoalTargets: {
+        pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
+        pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
+        plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
+      }
+    }
+  };
+
+  const result = validateWeeklyPlan(plan, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("pull-up work repeats")));
+  assert.ok(result.messages.some((message) => message.includes("push-up work repeats")));
+});
+
+test("accepts flat recent targets when the new plan progresses volume", () => {
+  const plan = balancedPlan();
+  plan.sessions[1].exercises[0] = { ...plan.sessions[1].exercises[0], reps: 4 };
+  plan.sessions[0].exercises[1] = { ...plan.sessions[0].exercises[1], sets: 4 };
+  const context: CoachContext = {
+    ...baseContext,
+    history: {
+      ...baseContext.history,
+      last5Logs: cleanRecentLogs()
+    },
+    adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
+    plannedWork: {
+      recentGoalTargets: {
+        pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
+        pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
+        plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
+      }
+    }
+  };
+
+  const result = validateWeeklyPlan(plan, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
 test("rejects max output unless it is a test", () => {
@@ -234,4 +298,39 @@ function emptyMonth(month: string, isPartial: boolean): CoachContext["history"][
     maxPain: 0,
     maxFatigue: 0
   };
+}
+
+function cleanRecentLogs(): CoachContext["history"]["last5Logs"] {
+  return [
+    {
+      id: "log-1",
+      sessionId: "session-1",
+      completedAt: "2026-05-05T00:00:00Z",
+      pullUps: 5,
+      pushUps: 20,
+      plankSeconds: 60,
+      loggedPullUps: true,
+      loggedPushUps: true,
+      loggedPlankSeconds: true,
+      rpe: 6,
+      painLevel: 0,
+      fatigueLevel: 5,
+      notes: ""
+    },
+    {
+      id: "log-2",
+      sessionId: "session-2",
+      completedAt: "2026-05-08T00:00:00Z",
+      pullUps: 5,
+      pushUps: 20,
+      plankSeconds: 60,
+      loggedPullUps: true,
+      loggedPushUps: true,
+      loggedPlankSeconds: true,
+      rpe: 6,
+      painLevel: 0,
+      fatigueLevel: 5,
+      notes: ""
+    }
+  ];
 }

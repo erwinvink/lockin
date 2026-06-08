@@ -2,9 +2,14 @@ import "dotenv/config";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buildCoachContext } from "./coach/skills/fitness-coach-planner/scripts/build-coach-context";
-import { validateWeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/validate-week-plan";
-import type { CoachContext, CoachRequest, CoachVerdict, WeeklyPlan } from "./coach/skills/fitness-coach-planner/scripts/types";
+import { buildCoachContext } from "./coach/planner/build-coach-context";
+import {
+  disciplineCoachSystemPrompt,
+  disciplineCoachTemperament,
+  flatGoalMetricsRequiringProgression
+} from "./coach/planner/coach-temperament";
+import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
+import type { CoachContext, CoachRequest, CoachVerdict, WeeklyPlan } from "./coach/planner/types";
 import { defaultCoachModel, normalizeRequestedModel, pickTextModelIDs, withDefaultCoachModel } from "./model-selection";
 
 const port = Number(process.env.PORT ?? 8787);
@@ -246,7 +251,8 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
           role: "system",
           content: [
             "You are a human, athlete-facing training coach inside lockin.",
-            "Write like an experienced coach: direct, calm, practical, and not technical.",
+            disciplineCoachSystemPrompt,
+            "Write like an experienced strength coach: direct, calm, practical, and not technical.",
             "Return a short read on the athlete's current state. Do not create or rewrite the week plan.",
             "If there are no completed training logs, say that you only know the starting profile and goals.",
             "If the latest session raises pain, poor how-you-felt feedback, overreaching, or progress concerns, recommend updating the week.",
@@ -262,7 +268,9 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
               keepLatestChangeUnderWords: 45,
               keepRecommendationUnderWords: 45,
               noPlanMutation: true,
-              shouldUpdatePlanWhenNoSessionsArePlanned: true
+              shouldUpdatePlanWhenNoSessionsArePlanned: true,
+              coachTemperament: disciplineCoachTemperament,
+              flatGoalMetricsRequiringProgression: flatGoalMetricsRequiringProgression(context).map((metric) => metric.label)
             }
           })
         }
@@ -298,10 +306,12 @@ function buildCoachPromptPayload(context: CoachContext, repair?: RepairInput): R
       selectedFutureTrainingDayCount: hasSelectedOffsets ? context.profile.trainingDayOffsets.length : null,
       plannedEffort:
         "Every session and exercise must include plannedEffort. These labels are shown in the app before training, so light must mean intentionally light, hard must mean real goal stimulus, and max_output must only be used for a deliberate test.",
-      scheduling:
-        hasSelectedOffsets
-          ? "Schedule exactly one strength session on each selected future training day. Use only allowedDayOffsets and treat all other offsets as rest days. Never schedule dayOffset 0 because today is locked."
-          : "Schedule exactly the requested number of strength sessions across dayOffset 1 through 6. Never schedule dayOffset 0 because today is locked."
+      coachTemperament: disciplineCoachTemperament,
+      progression:
+        "Use coachContext.plannedWork.recentGoalTargets. If clean recent training has repeated the same pull-up, push-up, or plank target, the next normal plan must visibly progress that metric by increasing reps, hold time, sets, or another single stress variable unless safetyFlags explain why not.",
+      scheduling: hasSelectedOffsets
+        ? "Schedule exactly one strength session on each selected future training day. Use only allowedDayOffsets and treat all other offsets as rest days. Never schedule dayOffset 0 because today is locked."
+        : "Schedule exactly the requested number of strength sessions across dayOffset 1 through 6. Never schedule dayOffset 0 because today is locked."
     }
   };
 
@@ -323,11 +333,12 @@ function buildCoachPromptPayload(context: CoachContext, repair?: RepairInput): R
 function normalizeCoachVerdict(verdict: CoachVerdict, context: CoachContext): CoachVerdict {
   const noPlannedSessions = context.adherence.planned === 0;
   const shouldUpdateForReadiness = context.readiness.state === "recovery_needed" || context.readiness.state === "overreaching";
+  const shouldUpdateForFlatProgression = flatGoalMetricsRequiringProgression(context).length > 0;
 
   return {
     ...verdict,
     contextState: context.readiness.state,
-    shouldUpdatePlan: verdict.shouldUpdatePlan || noPlannedSessions || shouldUpdateForReadiness
+    shouldUpdatePlan: verdict.shouldUpdatePlan || noPlannedSessions || shouldUpdateForReadiness || shouldUpdateForFlatProgression
   };
 }
 

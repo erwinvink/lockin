@@ -68,6 +68,16 @@ export type PlannedSession = {
   title: string;
   focus: SessionFocus;
   status: string;
+  exercises?: PlannedExercisePrescription[];
+};
+
+export type PlannedExercisePrescription = {
+  exercise: ExerciseKind;
+  sets: number;
+  targetReps: number;
+  targetSeconds: number;
+  plannedEffortLabel?: EffortLabel;
+  plannedEffortStimulus?: EffortStimulus;
 };
 
 export type MetricSummary = {
@@ -137,10 +147,24 @@ export type CoachContext = {
     missed: number;
     deload: number;
   };
+  plannedWork: {
+    recentGoalTargets: {
+      pullUps: PlannedGoalTrend;
+      pushUps: PlannedGoalTrend;
+      plankSeconds: PlannedGoalTrend;
+    };
+  };
   readiness: {
     state: ContextState;
     riskFlags: string[];
   };
+};
+
+export type PlannedGoalTrend = {
+  latestTarget: number | null;
+  latestVolume: number | null;
+  flatCount: number;
+  latestDate: string | null;
 };
 
 export type WeeklyPlan = {

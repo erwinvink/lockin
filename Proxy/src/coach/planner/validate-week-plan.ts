@@ -1,8 +1,14 @@
+import { flatGoalMetricsRequiringProgression } from "./coach-temperament";
 import type { CoachContext, ContextState, EffortLabel, EffortStimulus, ExerciseKind, SessionFocus } from "./types";
 
 type ValidationResult = {
   accepted: boolean;
   messages: string[];
+};
+
+type GoalWorkSummary = {
+  target: number;
+  volume: number;
 };
 
 const contextStates = new Set<ContextState>([
@@ -60,7 +66,7 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
 
   let previousDayOffset = -1;
   const sessionEffortLabels: EffortLabel[] = [];
-  const usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", number>> = {};
+  const usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>> = {};
 
   for (const [sessionIndex, session] of plan.sessions.entries()) {
     if (!isRecord(session)) {
@@ -272,7 +278,7 @@ function validateWeekEffortPolicy(
   safetyFlags: unknown,
   context: CoachContext,
   sessionEffortLabels: EffortLabel[],
-  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", number>>,
+  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
   messages: string[]
 ) {
   const normalProgressionStates = new Set(["building", "plateau", "insufficient_history"]);
@@ -291,11 +297,20 @@ function validateWeekEffortPolicy(
 
   for (const [metric, multiplier, label] of floors) {
     const best = context.history.bestRecentTests[metric];
-    const prescribed = usefulGoalWork[metric];
+    const prescribed = usefulGoalWork[metric]?.target;
     if (best === null || best < 10 || prescribed === undefined) continue;
     const minimum = Math.ceil(best * multiplier);
     if (prescribed < minimum) {
       messages.push(`Normal progression ${label} goal work is below the useful stimulus floor (${prescribed} < ${minimum}). Mark it light/technique or progress it.`);
+    }
+  }
+
+  for (const { metric, label, latestTarget, latestVolume } of flatGoalMetricsRequiringProgression(context)) {
+    const prescribed = usefulGoalWork[metric];
+    if (!prescribed || (prescribed.target <= latestTarget && prescribed.volume <= latestVolume)) {
+      messages.push(
+        `Normal progression ${label} work repeats the recent flat prescription. Increase reps, hold time, sets, or add safetyFlags with a clear reason.`
+      );
     }
   }
 }
@@ -303,19 +318,33 @@ function validateWeekEffortPolicy(
 function collectUsefulGoalWork(
   exercise: Record<string, unknown>,
   effort: { label: EffortLabel; stimulus: EffortStimulus },
-  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", number>>
+  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>
 ) {
   if (effort.label === "light" || effort.stimulus === "recovery" || effort.stimulus === "technique") return;
 
   const exerciseKind = exercise.exercise;
+  const sets = typeof exercise.sets === "number" && Number.isInteger(exercise.sets) ? exercise.sets : 0;
   const reps = typeof exercise.reps === "number" && Number.isInteger(exercise.reps) ? exercise.reps : 0;
   const seconds = typeof exercise.seconds === "number" && Number.isInteger(exercise.seconds) ? exercise.seconds : 0;
 
   if (exerciseKind === "pullUp") {
-    usefulGoalWork.pullUps = Math.max(usefulGoalWork.pullUps ?? 0, reps);
+    recordGoalWork(usefulGoalWork, "pullUps", reps, reps * sets);
   } else if (exerciseKind === "pushUp") {
-    usefulGoalWork.pushUps = Math.max(usefulGoalWork.pushUps ?? 0, reps);
+    recordGoalWork(usefulGoalWork, "pushUps", reps, reps * sets);
   } else if (exerciseKind === "plank") {
-    usefulGoalWork.plankSeconds = Math.max(usefulGoalWork.plankSeconds ?? 0, seconds);
+    recordGoalWork(usefulGoalWork, "plankSeconds", seconds, seconds * sets);
   }
+}
+
+function recordGoalWork(
+  usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
+  metric: "pullUps" | "pushUps" | "plankSeconds",
+  target: number,
+  volume: number
+) {
+  const previous = usefulGoalWork[metric];
+  usefulGoalWork[metric] = {
+    target: Math.max(previous?.target ?? 0, target),
+    volume: Math.max(previous?.volume ?? 0, volume)
+  };
 }

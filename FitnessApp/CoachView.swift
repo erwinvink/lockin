@@ -5,6 +5,7 @@ struct CoachView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
+    @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \CoachPlan.generatedAt, order: .reverse) private var plans: [CoachPlan]
     @Query(sort: \CoachVerdict.createdAt, order: .reverse) private var verdicts: [CoachVerdict]
     @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
@@ -145,6 +146,7 @@ struct CoachView: View {
                 modelID: selectedModelID,
                 logs: logs,
                 sessions: sessions,
+                prescriptions: prescriptions,
                 weekStart: rollingPlanStart()
             )
             let response = try await LocalCoachClient(endpointString: endpoint).generatePlan(
@@ -181,6 +183,7 @@ struct CoachView: View {
                 modelID: selectedModelID,
                 logs: logs,
                 sessions: sessions,
+                prescriptions: prescriptions,
                 weekStart: rollingPlanStart()
             )
             let response = try await LocalCoachClient(endpointString: endpoint).generateVerdict(request: request)
