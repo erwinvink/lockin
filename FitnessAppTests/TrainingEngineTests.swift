@@ -17,7 +17,37 @@ final class TrainingEngineTests: XCTestCase {
 
         XCTAssertEqual(plan.sessions.count, 4)
         XCTAssertTrue(plan.sessions.allSatisfy { !$0.blocks.isEmpty })
+        XCTAssertTrue(plan.sessions.allSatisfy { $0.estimatedDurationMinutes > 0 })
         XCTAssertTrue(plan.sessions.flatMap(\.blocks).flatMap(\.sets).contains { $0.exercise == .pullUp })
+    }
+
+    func testWorkoutDurationEstimateIncludesTimedWorkRepWorkAndRests() {
+        let sessionId = UUID()
+        let blockId = UUID()
+        let prescriptions = [
+            SetPrescription(
+                sessionId: sessionId,
+                blockId: blockId,
+                orderIndex: 0,
+                exercise: .pushUp,
+                sets: 3,
+                targetReps: 20,
+                restSeconds: 60,
+                intensity: "Hard"
+            ),
+            SetPrescription(
+                sessionId: sessionId,
+                blockId: blockId,
+                orderIndex: 1,
+                exercise: .plank,
+                sets: 2,
+                targetSeconds: 45,
+                restSeconds: 30,
+                intensity: "Moderate"
+            )
+        ]
+
+        XCTAssertEqual(estimatedWorkoutDurationMinutes(for: prescriptions), 9)
     }
 
     func testPainSignalTriggersDeloadScoring() {

@@ -247,6 +247,45 @@ struct EffortPill: View {
     }
 }
 
+struct DurationPill: View {
+    var minutes: Int
+
+    var body: some View {
+        if minutes > 0 {
+            HStack(spacing: 5) {
+                Image(systemName: "clock")
+                Text(displayText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(AppTheme.muted)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(AppTheme.surfaceRaised)
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(AppTheme.divider, lineWidth: 1)
+            )
+            .accessibilityLabel("Estimated duration \(displayText)")
+        }
+    }
+
+    private var displayText: String {
+        if minutes < 60 {
+            return "\(minutes) min"
+        }
+
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        if remainingMinutes == 0 {
+            return "\(hours) hr"
+        }
+        return "\(hours) hr \(remainingMinutes) min"
+    }
+}
+
 struct RPEComparisonPill: View {
     var plannedRPE: Int?
     var actualRPE: Int
@@ -343,6 +382,7 @@ struct ValidationStatusCard: View {
 
 struct WeekPlanTable: View {
     var sessions: [WorkoutSession]
+    var prescriptions: [SetPrescription] = []
     var onSelectSession: (WorkoutSession) -> Void = { _ in }
 
     var body: some View {
@@ -362,7 +402,13 @@ struct WeekPlanTable: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(sessions.prefix(7).enumerated()), id: \.element.id) { index, session in
-                        WeekPlanRow(session: session) {
+                        WeekPlanRow(
+                            session: session,
+                            durationMinutes: estimatedWorkoutDurationMinutes(
+                                for: session,
+                                prescriptions: prescriptionsForSession(session)
+                            )
+                        ) {
                             onSelectSession(session)
                         }
                         if index < min(sessions.count, 7) - 1 {
@@ -380,10 +426,17 @@ struct WeekPlanTable: View {
         }
         .card()
     }
+
+    private func prescriptionsForSession(_ session: WorkoutSession) -> [SetPrescription] {
+        prescriptions
+            .filter { $0.sessionId == session.id }
+            .sorted { $0.orderIndex < $1.orderIndex }
+    }
 }
 
 struct WeekPlanRow: View {
     var session: WorkoutSession
+    var durationMinutes: Int = 0
     var onSelect: () -> Void = {}
 
     var body: some View {
@@ -398,11 +451,16 @@ struct WeekPlanRow: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.text)
                         .lineLimit(1)
-                    if let effortLabel = session.plannedEffortLabel {
-                        EffortPill(
-                            label: effortLabel,
-                            targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
-                        )
+                    if durationMinutes > 0 || session.plannedEffortLabel != nil {
+                        HStack(spacing: 6) {
+                            DurationPill(minutes: durationMinutes)
+                            if let effortLabel = session.plannedEffortLabel {
+                                EffortPill(
+                                    label: effortLabel,
+                                    targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+                                )
+                            }
+                        }
                     }
                 }
                 Spacer()

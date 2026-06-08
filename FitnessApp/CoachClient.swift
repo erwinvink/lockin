@@ -473,6 +473,7 @@ extension CoachPlanResponse {
                     weekIndex: weekIndex,
                     summary: "AI: \(session.purpose)",
                     plannedEffort: inferredSessionEffort(from: session),
+                    estimatedDurationMinutes: max(0, session.estimatedDurationMinutes),
                     blocks: [
                         WorkoutBlockPlan(
                             name: "AI Coach Plan",

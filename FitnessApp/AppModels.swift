@@ -367,6 +367,7 @@ final class WorkoutSession {
     var plannedEffortLabelRaw: String = ""
     var plannedEffortTargetRPE: Int = 0
     var plannedEffortReason: String = ""
+    var estimatedDurationMinutes: Int = 0
     var createdAt: Date = Date()
 
     init(
@@ -379,6 +380,7 @@ final class WorkoutSession {
         scoreImpact: Int = 0,
         summary: String,
         plannedEffort: PlannedEffort? = nil,
+        estimatedDurationMinutes: Int = 0,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -392,6 +394,7 @@ final class WorkoutSession {
         self.plannedEffortLabelRaw = plannedEffort?.label.rawValue ?? ""
         self.plannedEffortTargetRPE = plannedEffort?.targetRPE ?? 0
         self.plannedEffortReason = plannedEffort?.reason ?? ""
+        self.estimatedDurationMinutes = max(0, estimatedDurationMinutes)
         self.createdAt = createdAt
     }
 

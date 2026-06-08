@@ -96,6 +96,9 @@ func persist(
 
     let sessionPlans = maxSessions.map { Array(plan.sessions.prefix($0)) } ?? plan.sessions
     for sessionPlan in sessionPlans {
+        let estimatedDurationMinutes = sessionPlan.estimatedDurationMinutes > 0
+            ? sessionPlan.estimatedDurationMinutes
+            : estimatedWorkoutDurationMinutes(for: sessionPlan.blocks)
         let session = WorkoutSession(
             id: sessionPlan.id,
             scheduledDate: sessionPlan.date,
@@ -103,7 +106,8 @@ func persist(
             weekIndex: sessionPlan.weekIndex,
             focus: sessionPlan.focus,
             summary: sessionPlan.summary,
-            plannedEffort: sessionPlan.plannedEffort
+            plannedEffort: sessionPlan.plannedEffort,
+            estimatedDurationMinutes: estimatedDurationMinutes
         )
         modelContext.insert(session)
 
@@ -226,6 +230,46 @@ func workoutTargetText(_ item: SetPrescription) -> String {
         return "\(item.sets) sets of \(durationText(seconds: item.targetSeconds)) each"
     }
     return "\(item.sets) sets of \(item.targetReps) strict reps each"
+}
+
+func estimatedWorkoutDurationMinutes(for session: WorkoutSession, prescriptions: [SetPrescription]) -> Int {
+    if session.estimatedDurationMinutes > 0 {
+        return session.estimatedDurationMinutes
+    }
+    return estimatedWorkoutDurationMinutes(for: prescriptions)
+}
+
+func estimatedWorkoutDurationMinutes(for blocks: [WorkoutBlockPlan]) -> Int {
+    estimatedWorkoutDurationMinutes(totalSeconds: blocks.flatMap(\.sets).reduce(0) { total, set in
+        total + estimatedExerciseDurationSeconds(
+            sets: set.sets,
+            reps: set.reps,
+            seconds: set.seconds,
+            restSeconds: set.restSeconds
+        )
+    })
+}
+
+func estimatedWorkoutDurationMinutes(for prescriptions: [SetPrescription]) -> Int {
+    estimatedWorkoutDurationMinutes(totalSeconds: prescriptions.reduce(0) { total, prescription in
+        total + estimatedExerciseDurationSeconds(
+            sets: prescription.sets,
+            reps: prescription.targetReps,
+            seconds: prescription.targetSeconds,
+            restSeconds: prescription.restSeconds
+        )
+    })
+}
+
+private func estimatedWorkoutDurationMinutes(totalSeconds: Int) -> Int {
+    guard totalSeconds > 0 else { return 0 }
+    return max(1, Int(ceil(Double(totalSeconds) / 60.0)))
+}
+
+private func estimatedExerciseDurationSeconds(sets: Int, reps: Int, seconds: Int, restSeconds: Int) -> Int {
+    let safeSets = max(0, sets)
+    let workSeconds = max(0, seconds) > 0 ? max(0, seconds) : max(0, reps) * 3
+    return safeSets * (workSeconds + max(0, restSeconds))
 }
 
 func durationText(seconds: Int) -> String {

@@ -400,6 +400,7 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(result.status, .accepted)
         XCTAssertEqual(plan.sessions.count, 4)
         XCTAssertEqual(plan.sessions[2].date, Calendar.current.date(byAdding: .day, value: 5, to: Calendar.current.startOfDay(for: weekStart)))
+        XCTAssertEqual(plan.sessions[0].estimatedDurationMinutes, 40)
         XCTAssertTrue(plan.sessions.allSatisfy { $0.summary.contains("AI:") })
     }
 

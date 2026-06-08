@@ -3,6 +3,7 @@
 
 # Xcode / Swift build products and local user state
 DerivedData/
+Design/
 build/
 .build/
 *.xcuserstate

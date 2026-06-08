@@ -48,7 +48,7 @@ struct TodayView: View {
                 } else if sessions.isEmpty {
                     EmptyPlanCard()
                 } else if let session = futureSession {
-                    UpcomingSessionCard(session: session)
+                    UpcomingSessionCard(session: session, prescriptions: prescriptionsForSession(session))
                 } else {
                     WeekCompleteCard()
                 }
@@ -106,6 +106,10 @@ struct WorkoutPrescriptionCard: View {
     @State private var completedPrescriptionIds: Set<UUID> = []
     @State private var didCompleteSession = false
 
+    private var durationMinutes: Int {
+        estimatedWorkoutDurationMinutes(for: session, prescriptions: prescriptions)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
@@ -113,16 +117,21 @@ struct WorkoutPrescriptionCard: View {
                     .font(.system(.title3, design: .rounded, weight: .bold))
                     .foregroundStyle(AppTheme.text)
                 Spacer(minLength: 12)
-                VStack(alignment: .trailing, spacing: 5) {
-                    Text(session.focus.title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.muted)
+                Text(session.focus.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.muted)
+            }
+
+            if durationMinutes > 0 || session.plannedEffortLabel != nil {
+                HStack(spacing: 8) {
+                    DurationPill(minutes: durationMinutes)
                     if let effortLabel = session.plannedEffortLabel {
                         EffortPill(
                             label: effortLabel,
                             targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
                         )
                     }
+                    Spacer(minLength: 0)
                 }
             }
 
@@ -223,6 +232,11 @@ private struct CompactPrescriptionRow: View {
 
 private struct UpcomingSessionCard: View {
     var session: WorkoutSession
+    var prescriptions: [SetPrescription] = []
+
+    private var durationMinutes: Int {
+        estimatedWorkoutDurationMinutes(for: session, prescriptions: prescriptions)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -233,6 +247,15 @@ private struct UpcomingSessionCard: View {
                 StatusPill(text: "Scheduled", systemImage: "calendar")
             }
             InfoLine(title: "Next session", value: session.title)
+            if durationMinutes > 0 {
+                HStack {
+                    Text("Duration")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                    Spacer()
+                    DurationPill(minutes: durationMinutes)
+                }
+            }
             if let effortLabel = session.plannedEffortLabel {
                 HStack {
                     Text("Planned effort")

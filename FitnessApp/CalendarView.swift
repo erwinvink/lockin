@@ -36,7 +36,7 @@ struct CalendarView: View {
     var body: some View {
         NavigationStack {
             ScreenBackground(title: "Log") {
-                WeekPlanTable(sessions: openSessions, onSelectSession: { selectedSession = $0 })
+                WeekPlanTable(sessions: openSessions, prescriptions: prescriptions, onSelectSession: { selectedSession = $0 })
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Session history")
@@ -152,6 +152,10 @@ private struct FutureWorkoutPreviewSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    private var durationMinutes: Int {
+        estimatedWorkoutDurationMinutes(for: session, prescriptions: prescriptions)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -217,6 +221,7 @@ private struct FutureWorkoutPreviewSheet: View {
 
             HStack(spacing: 8) {
                 StatusPill(text: session.focus.title, systemImage: focusIconName)
+                DurationPill(minutes: durationMinutes)
                 if let effortLabel = session.plannedEffortLabel {
                     EffortPill(
                         label: effortLabel,

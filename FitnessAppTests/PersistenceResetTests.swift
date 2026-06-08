@@ -145,6 +145,8 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertFalse(sessions.contains { $0.id == planned.id })
         XCTAssertTrue(sessions.contains { $0.id == completed.id })
         XCTAssertEqual(sessions.filter { $0.summary.contains("AI:") }.count, 4)
+        let firstAISession = try XCTUnwrap(sessions.first { $0.title == "Full-body base" })
+        XCTAssertEqual(firstAISession.estimatedDurationMinutes, 40)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<PerformanceLog>()).count, 1)
         XCTAssertFalse(blocks.contains { $0.sessionId == planned.id })
         XCTAssertFalse(prescriptions.contains { $0.sessionId == planned.id })

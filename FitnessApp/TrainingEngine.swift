@@ -45,6 +45,7 @@ struct TrainingSessionPlan: Identifiable, Equatable {
     var weekIndex: Int
     var summary: String
     var plannedEffort: PlannedEffort = .medium()
+    var estimatedDurationMinutes: Int = 0
     var blocks: [WorkoutBlockPlan]
 }
 
@@ -263,6 +264,7 @@ struct TrainingEngine {
         }
 
         let title = "\(focus.title) Session \(index + 1)"
+        let blocks = [warmup, main]
         return TrainingSessionPlan(
             date: date,
             title: title,
@@ -270,7 +272,8 @@ struct TrainingEngine {
             weekIndex: weekIndex,
             summary: deload ? "Auto-deloaded from pain/how-you-felt signals." : "Exact work for strict goal progress.",
             plannedEffort: focus == .recovery ? .light("Recovery session keeps the habit without hard stress.") : mainEffort,
-            blocks: [warmup, main]
+            estimatedDurationMinutes: estimatedWorkoutDurationMinutes(for: blocks),
+            blocks: blocks
         )
     }
 
