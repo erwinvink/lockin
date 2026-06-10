@@ -88,7 +88,7 @@ func persist(
     maxSessions: Int? = nil
 ) throws {
     if replacingFuturePlannedSessions {
-        try deleteFuturePlannedSessions(in: modelContext, for: plan.weekStart)
+        try deleteFuturePlannedSessions(in: modelContext, for: plan.weekStart, discipline: .strength)
     }
 
     let coachPlan = CoachPlan(weekStart: plan.weekStart, summary: plan.summary, source: source, validationStatus: .accepted)
@@ -133,6 +133,40 @@ func persist(
     }
 }
 
+func persist(
+    runningWeek: RunningWeekResponse,
+    weekStart: Date,
+    in modelContext: ModelContext,
+    replacingFuturePlannedSessions: Bool = false
+) throws {
+    if replacingFuturePlannedSessions {
+        try deleteFuturePlannedSessions(in: modelContext, for: weekStart, discipline: .running)
+    }
+
+    let calendar = Calendar.current
+    let start = calendar.startOfDay(for: weekStart)
+    for run in runningWeek.sessions {
+        let date = calendar.date(byAdding: .day, value: run.dayOffset, to: start) ?? start
+        let session = WorkoutSession(
+            scheduledDate: date,
+            title: run.title,
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: \(run.purpose)",
+            estimatedDurationMinutes: max(0, run.durationMinutes),
+            discipline: .running,
+            runKind: RunKind(rawValue: run.kind),
+            plannedDistanceKm: run.distanceKm,
+            plannedElevationM: run.elevationMeters,
+            runTargetType: RunTargetType(rawValue: run.target.type),
+            runTargetLow: run.target.low,
+            runTargetHigh: run.target.high,
+            runZone: run.zone
+        )
+        modelContext.insert(session)
+    }
+}
+
 @discardableResult
 func deleteNonAIPlannedSessions(from sessions: [WorkoutSession], in modelContext: ModelContext) throws -> Int {
     let sessionsToDelete = sessions.filter { $0.status == .planned && !$0.summary.hasPrefix("AI:") }
@@ -157,7 +191,7 @@ func deleteNonAIPlannedSessions(from sessions: [WorkoutSession], in modelContext
     return sessionsToDelete.count
 }
 
-private func deleteFuturePlannedSessions(in modelContext: ModelContext, for weekStart: Date) throws {
+private func deleteFuturePlannedSessions(in modelContext: ModelContext, for weekStart: Date, discipline: Discipline?) throws {
     let calendar = Calendar.current
     let start = calendar.startOfDay(for: weekStart)
     let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
@@ -168,7 +202,8 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
         $0.status == .planned &&
         $0.scheduledDate >= start &&
         $0.scheduledDate < end &&
-        $0.scheduledDate >= today
+        $0.scheduledDate >= today &&
+        (discipline == nil || $0.discipline == discipline)
     }
 
     let sessionIds = Set(sessionsToDelete.map(\.id))
