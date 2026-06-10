@@ -12,6 +12,7 @@ import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
 import { validateRunningWeek } from "./coach/planner/validate-running-week";
 import { validateCombinedWeek } from "./coach/planner/validate-combined-week";
 import type { CoachContext, CoachRequest, CoachVerdict, RunningWeek, WeeklyPlan } from "./coach/planner/types";
+import { deleteWorkouts, garminSnapshot, garminStatus, pushWorkouts } from "./garmin/garmin-client";
 import { defaultCoachModel, normalizeRequestedModel, pickTextModelIDs, withDefaultCoachModel } from "./model-selection";
 
 const port = Number(process.env.PORT ?? 8787);
@@ -52,7 +53,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      const context = buildCoachContext(payload);
+      const context = await enrichWithGarmin(buildCoachContext(payload));
       const generated = await generateCoachVerdict(apiKey, model, context);
 
       if (!generated.ok) {
@@ -181,6 +182,38 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         runningWeek,
         strengthWeek: strengthPlan
       });
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/garmin/status") {
+      writeJSON(res, 200, await garminStatus());
+      return;
+    }
+
+    if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/snapshot") {
+      writeJSON(res, 200, await garminSnapshot(parseSinceDays(req.url)));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/garmin/push-workouts") {
+      const payload = JSON.parse(await readBody(req)) as { workouts?: unknown };
+      if (!Array.isArray(payload?.workouts)) {
+        writeJSON(res, 400, { error: "workouts array is required" });
+        return;
+      }
+
+      writeJSON(res, 200, await pushWorkouts(payload.workouts));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/garmin/delete-workouts") {
+      const payload = JSON.parse(await readBody(req)) as { workoutIds?: unknown };
+      if (!Array.isArray(payload?.workoutIds)) {
+        writeJSON(res, 400, { error: "workoutIds array is required" });
+        return;
+      }
+
+      writeJSON(res, 200, await deleteWorkouts(payload.workoutIds));
       return;
     }
 
@@ -337,8 +370,25 @@ async function loadRunningSkillBundle(): Promise<RunningSkillBundle> {
   };
 }
 
-// Task 12 wires the Garmin sidecar here.
+// Attach Garmin wellness to the coach context. Any sidecar failure means the
+// coach simply plans without Garmin data — never block plan generation.
 async function enrichWithGarmin(context: CoachContext): Promise<CoachContext> {
+  try {
+    const snapshot = await garminSnapshot(7);
+    if (!snapshot.status.loggedIn) {
+      return context;
+    }
+
+    // The sidecar promises most-recent-first, but pick by max date anyway.
+    const latest = [...snapshot.wellness].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+
+    context.garmin = { wellness: snapshot.wellness };
+    if (latest && latest.trainingReadiness > 0 && latest.trainingReadiness < 30) {
+      context.readiness.riskFlags.push("garmin: training readiness low");
+    }
+  } catch {
+    // Degraded mode: leave the context untouched.
+  }
   return context;
 }
 
@@ -605,6 +655,12 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 function writeJSON(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+}
+
+function parseSinceDays(rawURL: string): number {
+  const raw = new URL(rawURL, "http://localhost").searchParams.get("sinceDays");
+  const parsed = Number(raw);
+  return raw !== null && raw.trim() !== "" && Number.isFinite(parsed) ? parsed : 7;
 }
 
 async function fetchAvailableModels(apiKey: string): Promise<string[]> {
