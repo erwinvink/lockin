@@ -35,6 +35,7 @@ export type CoachRequest = {
   targetDate: string;
   trainingLogs: TrainingLog[];
   plannedSessions: PlannedSession[];
+  running?: RunningRequest;
 };
 
 export type TrainingLog = {
@@ -158,6 +159,8 @@ export type CoachContext = {
     state: ContextState;
     riskFlags: string[];
   };
+  running?: RunningContext;
+  garmin?: { wellness: GarminWellnessDay[] };
 };
 
 export type PlannedGoalTrend = {
@@ -202,3 +205,57 @@ export type CoachVerdict = {
   contextState: ContextState;
   safetyFlags: string[];
 };
+
+export type RunKind = "easy" | "long" | "recovery" | "hills" | "tempo" | "intervals";
+
+export type RunTarget = { type: "pace" | "hr"; low: number; high: number };
+
+export type RunningWeek = {
+  summary: string;
+  safetyFlags: string[];
+  sessions: Array<{
+    title: string;
+    dayOffset: number;
+    kind: RunKind;
+    purpose: string;
+    distanceKm: number;
+    durationMinutes: number;
+    elevationMeters: number;
+    target: RunTarget;
+    zone: string;
+    notes: string[];
+  }>;
+};
+
+export type RunSummary = {
+  completedAt: string;
+  distanceKm: number;
+  movingSeconds: number;
+  elevationGainM: number;
+  averageHr?: number;
+  rpe?: number;
+  kind?: string;
+};
+
+export type RunningRequest = {
+  raceGoal: { name: string; raceDate: string; distanceKm: number; elevationGainM: number };
+  baselineWeeklyKm: number;
+  longestRecentRunKm: number;
+  runningDays: string[];
+  runningDayOffsets: number[];
+  longRunDay?: string;
+  recentRuns: RunSummary[];
+};
+
+export type GarminWellnessDay = {
+  date: string;
+  sleepScore: number;
+  sleepSeconds: number;
+  hrvStatus: string;
+  hrvMs: number;
+  bodyBattery: number;
+  trainingReadiness: number;
+  restingHr: number;
+};
+
+export type RunningContext = RunningRequest & { weeksToRace: number };
