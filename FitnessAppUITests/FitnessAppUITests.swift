@@ -20,7 +20,7 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Coach"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Ready for the first week"].exists)
-        XCTAssertTrue(app.buttons["Generate AI week"].exists)
+        XCTAssertTrue(app.buttons["Plan my week"].exists)
         XCTAssertTrue(app.staticTexts["What I'll use"].exists)
     }
 

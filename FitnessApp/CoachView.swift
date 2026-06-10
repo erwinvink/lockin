@@ -8,6 +8,8 @@ struct CoachView: View {
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \CoachPlan.generatedAt, order: .reverse) private var plans: [CoachPlan]
     @Query(sort: \CoachVerdict.createdAt, order: .reverse) private var verdicts: [CoachVerdict]
+    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @AppStorage(CoachVerdictRefreshFlag.needsRefreshKey) private var needsVerdictRefresh = false
@@ -62,9 +64,10 @@ struct CoachView: View {
                 )
 
                 Button(action: generateAIWeek) {
-                    Label(isGeneratingPlan ? "Generating" : "Generate AI week", systemImage: "sparkles")
+                    Label(isGeneratingPlan ? "Planning" : "Plan my week", systemImage: "sparkles")
                 }
                 .buttonStyle(PrimaryActionButtonStyle())
+                .accessibilityIdentifier("plan-week-button")
                 .disabled(isGeneratingPlan)
                 .opacity(isGeneratingPlan ? 0.55 : 1)
 
@@ -78,7 +81,8 @@ struct CoachView: View {
                 CoachInputsCard(
                     profile: profile,
                     historyCount: historyLogs.count,
-                    plannedCount: plannedContextSessions.count
+                    plannedCount: plannedContextSessions.count,
+                    raceGoal: raceGoals.first
                 )
 
                 AdvancedCoachControls(
@@ -147,24 +151,53 @@ struct CoachView: View {
                 logs: logs,
                 sessions: sessions,
                 prescriptions: prescriptions,
+                raceGoal: raceGoals.first,
+                runLogs: runLogs,
                 weekStart: rollingPlanStart()
             )
-            let response = try await LocalCoachClient(endpointString: endpoint).generatePlan(
-                request: request,
-                baseline: baseline,
-                preferences: preferences
-            )
-            let plan = response.weeklyPlan(weekStart: request.weekStart)
-            try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
-            try modelContext.save()
-            if profile.remindersEnabled {
-                let reminderSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
-                await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: reminderSessions, at: profile.reminderTime)
+            if raceGoals.first != nil {
+                let response = try await LocalCoachClient(endpointString: endpoint).generateCombinedWeek(
+                    request: request,
+                    baseline: baseline,
+                    preferences: preferences
+                )
+                var strengthPlan = response.strengthWeek.weeklyPlan(weekStart: request.weekStart)
+                strengthPlan.summary = response.summary
+                do {
+                    try persist(plan: strengthPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+                    try persist(runningWeek: response.runningWeek, weekStart: request.weekStart, in: modelContext, replacingFuturePlannedSessions: true)
+                    try modelContext.save()
+                } catch {
+                    modelContext.rollback()
+                    throw error
+                }
+                try await rescheduleRemindersIfEnabled()
+                let strengthCount = strengthPlan.sessions.count
+                let runCount = response.runningWeek.sessions.count
+                generationStatus = runCount == 0
+                    ? "Saved \(strengthCount) strength sessions. The running week is already underway; no new runs were planned."
+                    : "Saved \(strengthCount) strength sessions and \(runCount) runs. Today was left untouched."
+            } else {
+                let response = try await LocalCoachClient(endpointString: endpoint).generatePlan(
+                    request: request,
+                    baseline: baseline,
+                    preferences: preferences
+                )
+                let plan = response.weeklyPlan(weekStart: request.weekStart)
+                try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+                try modelContext.save()
+                try await rescheduleRemindersIfEnabled()
+                generationStatus = "Saved \(plan.sessions.count) future sessions. Today was left untouched."
             }
-            generationStatus = "Saved \(plan.sessions.count) future sessions. Today was left untouched."
         } catch {
             generationStatus = error.localizedDescription
         }
+    }
+
+    private func rescheduleRemindersIfEnabled() async throws {
+        guard profile.remindersEnabled else { return }
+        let reminderSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+        await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: reminderSessions, at: profile.reminderTime)
     }
 
     private func requestVerdict(sourceLogID: UUID?, showSuccess: Bool) async {
@@ -359,6 +392,7 @@ private struct CoachInputsCard: View {
     var profile: UserProfile
     var historyCount: Int
     var plannedCount: Int
+    var raceGoal: RaceGoal?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -369,6 +403,11 @@ private struct CoachInputsCard: View {
             InfoLine(title: "Week shape", value: "\(profile.trainingDayLabels.joined(separator: ", ")) until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("coach-week-shape")
+            if let raceGoal {
+                InfoLine(title: "Race goal", value: raceGoalSummary(raceGoal))
+                InfoLine(title: "Weeks to race", value: weeksToRaceText(raceGoal))
+                InfoLine(title: "Running days", value: runningDaysText)
+            }
             InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
             InfoLine(title: "Log context", value: plannedCount == 0 ? "No sessions in Log yet" : "\(plannedCount) recent or upcoming sessions from Log")
             if !profile.painNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -376,6 +415,26 @@ private struct CoachInputsCard: View {
             }
         }
         .card()
+    }
+
+    private func raceGoalSummary(_ goal: RaceGoal) -> String {
+        let trimmedName = goal.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmedName.isEmpty ? "Race" : trimmedName
+        let distance = goal.distanceKm.formatted(.number.precision(.fractionLength(0...1)))
+        let raceDate = goal.raceDate.formatted(date: .abbreviated, time: .omitted)
+        return "\(name) \(distance) km / \(goal.elevationGainM) m+ on \(raceDate)"
+    }
+
+    private func weeksToRaceText(_ goal: RaceGoal) -> String {
+        let calendar = Calendar.current
+        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: goal.raceDate).day ?? 0)
+        let weeks = (days + 6) / 7
+        return weeks == 1 ? "1 week out" : "\(weeks) weeks out"
+    }
+
+    private var runningDaysText: String {
+        let days = TrainingWeekday.allCases.filter { profile.runningDays.contains($0) }
+        return days.isEmpty ? "No fixed days" : days.map(\.shortTitle).joined(separator: ", ")
     }
 }
 
