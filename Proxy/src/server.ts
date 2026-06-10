@@ -185,7 +185,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       return;
     }
 
-    if (req.method === "GET" && req.url === "/garmin/status") {
+    if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/status") {
       writeJSON(res, 200, await garminStatus());
       return;
     }
@@ -374,8 +374,10 @@ async function loadRunningSkillBundle(): Promise<RunningSkillBundle> {
 // coach simply plans without Garmin data — never block plan generation.
 async function enrichWithGarmin(context: CoachContext): Promise<CoachContext> {
   try {
-    const snapshot = await garminSnapshot(7);
-    if (!snapshot.status.loggedIn) {
+    // Enrichment only consumes status + wellness, and it sits on the coach
+    // request path, so skip activities and keep the timeout budget tight.
+    const snapshot = await garminSnapshot(7, fetch, { includeActivities: false, timeoutMs: 10_000 });
+    if (!snapshot.status.loggedIn || snapshot.wellness.length === 0) {
       return context;
     }
 

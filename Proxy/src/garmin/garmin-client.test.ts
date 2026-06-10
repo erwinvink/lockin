@@ -30,6 +30,15 @@ function failingFetch(): typeof fetch {
   };
 }
 
+// A sidecar that accepts the connection but never answers, and ignores the
+// abort signal — the worst case the timeout budget has to cover.
+function hangingFetch(calls?: RecordedCall[]): typeof fetch {
+  return (input, init) => {
+    calls?.push({ url: String(input), init });
+    return new Promise<Response>(() => {});
+  };
+}
+
 function useServiceURL(t: TestContext, value: string | undefined): void {
   const previous = process.env.GARMIN_SERVICE_URL;
   if (value === undefined) {
@@ -111,6 +120,25 @@ test("garminStatus degrades on a non-200 response and mentions the HTTP status",
   assert.equal(status.ok, false);
   assert.equal(status.loggedIn, false);
   assert.match(status.lastError ?? "", /503/);
+});
+
+test("garminStatus degrades with a distinct message when the sidecar hangs past the budget", { timeout: 2000 }, async (t) => {
+  useServiceURL(t, undefined);
+
+  assert.deepEqual(await garminStatus(hangingFetch(), { timeoutMs: 50 }), {
+    ok: false,
+    loggedIn: false,
+    lastError: "Garmin service timed out."
+  });
+});
+
+test("garminStatus passes the timeout signal to fetch", async (t) => {
+  useServiceURL(t, undefined);
+  const calls: RecordedCall[] = [];
+
+  await garminStatus(stubFetch(() => jsonResponse(onlineStatus), calls), { timeoutMs: 5000 });
+
+  assert.ok(calls[0]?.init?.signal instanceof AbortSignal);
 });
 
 test("garminSnapshot combines status, wellness, and activities", async (t) => {
@@ -201,6 +229,34 @@ test("garminSnapshot degrades fully when the sidecar is unreachable", async (t) 
   });
 });
 
+test("garminSnapshot degrades fully with the timed-out message when the sidecar hangs", { timeout: 2000 }, async (t) => {
+  useServiceURL(t, undefined);
+
+  assert.deepEqual(await garminSnapshot(7, hangingFetch(), { timeoutMs: 50 }), {
+    status: { ok: false, loggedIn: false, lastError: "Garmin service timed out." },
+    wellness: [],
+    activities: []
+  });
+});
+
+test("garminSnapshot skips the activities fetch when includeActivities is false", async (t) => {
+  useServiceURL(t, undefined);
+  const wellness = [wellnessDay("2026-06-10")];
+  const calls: RecordedCall[] = [];
+  const fetchImpl = stubFetch(
+    (url) => (url.endsWith("/status") ? jsonResponse(onlineStatus) : jsonResponse(wellness)),
+    calls
+  );
+
+  const snapshot = await garminSnapshot(7, fetchImpl, { includeActivities: false });
+
+  assert.deepEqual(snapshot, { status: onlineStatus, wellness, activities: [] });
+  assert.deepEqual(
+    calls.map((call) => call.url).sort(),
+    ["http://127.0.0.1:8788/status", "http://127.0.0.1:8788/wellness?days=7"]
+  );
+});
+
 test("pushWorkouts posts the batch and wraps the sidecar results", async (t) => {
   useServiceURL(t, undefined);
   const results = [{ sessionId: "s1", garminWorkoutId: "9001", scheduled: true, error: null }];
@@ -236,6 +292,24 @@ test("pushWorkouts degrades to empty results instead of throwing", async (t) => 
   assert.match(serverError.error ?? "", /502/);
 });
 
+test("pushWorkouts degrades with the timed-out message when the sidecar hangs", { timeout: 2000 }, async (t) => {
+  useServiceURL(t, undefined);
+
+  assert.deepEqual(await pushWorkouts([{ sessionId: "s1" }], hangingFetch(), { timeoutMs: 50 }), {
+    results: [],
+    error: "Garmin service timed out."
+  });
+});
+
+test("pushWorkouts surfaces an unrecognized 200 payload shape as an error", async (t) => {
+  useServiceURL(t, undefined);
+
+  assert.deepEqual(await pushWorkouts([{ sessionId: "s1" }], stubFetch(() => jsonResponse({ ok: true }))), {
+    results: [],
+    error: "Garmin service returned an unrecognized shape."
+  });
+});
+
 test("deleteWorkouts posts ids and wraps the sidecar results", async (t) => {
   useServiceURL(t, undefined);
   const results = [{ workoutId: "9001", deleted: true, error: null }];
@@ -268,4 +342,13 @@ test("deleteWorkouts degrades to empty results instead of throwing", async (t) =
 
   assert.deepEqual(out.results, []);
   assert.equal(out.error, "Garmin service is not reachable.");
+});
+
+test("deleteWorkouts surfaces an unrecognized 200 payload shape as an error", async (t) => {
+  useServiceURL(t, undefined);
+
+  assert.deepEqual(await deleteWorkouts(["9001"], stubFetch(() => jsonResponse("deleted"))), {
+    results: [],
+    error: "Garmin service returned an unrecognized shape."
+  });
 });
