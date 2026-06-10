@@ -20,6 +20,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Python sidecar (GarminService)
+__pycache__/
+GarminService/.venv/
+GarminService/tokens/
+GarminService/.env
+
 # Local secrets and machine-specific env files
 .env
 .env.*
