@@ -14,7 +14,10 @@ enum ModelContainerFactory {
             RankState.self,
             CoachPlan.self,
             CoachDecision.self,
-            CoachVerdict.self
+            CoachVerdict.self,
+            RaceGoal.self,
+            RunLog.self,
+            GarminDailySnapshot.self
         ])
     }
 

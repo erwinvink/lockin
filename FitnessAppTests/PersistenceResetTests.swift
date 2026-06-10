@@ -259,6 +259,95 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(rank.consistencyScore, 18)
     }
 
+    func testWipeAllDataDeletesRunningModels() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+
+        let raceGoal = RaceGoal(
+            name: "Temporary 100K",
+            raceDate: Date(),
+            distanceKm: 100,
+            elevationGainM: 4500,
+            baselineWeeklyKm: 40,
+            longestRecentRunKm: 25
+        )
+        let runLog = RunLog(
+            sessionId: UUID(),
+            distanceKm: 12.5,
+            movingSeconds: 4200,
+            elevationGainM: 180,
+            averageHr: 152,
+            averagePaceSecPerKm: 336,
+            rpe: 6,
+            feelScore: 4,
+            notes: "Temporary"
+        )
+        let snapshot = GarminDailySnapshot(
+            date: Calendar.current.startOfDay(for: Date()),
+            sleepScore: 82,
+            sleepSeconds: 27000,
+            hrvStatus: "balanced",
+            hrvMs: 52,
+            bodyBattery: 70,
+            trainingReadiness: 65,
+            restingHr: 48
+        )
+
+        modelContext.insert(raceGoal)
+        modelContext.insert(runLog)
+        modelContext.insert(snapshot)
+        try modelContext.save()
+
+        try wipeAllData(in: modelContext)
+        try modelContext.save()
+
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RaceGoal>()).count, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<GarminDailySnapshot>()).count, 0)
+    }
+
+    func testDefaultWorkoutSessionDisciplineIsStrength() throws {
+        let session = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Strength default",
+            weekIndex: 1,
+            focus: .pull,
+            summary: "No discipline specified"
+        )
+
+        XCTAssertEqual(session.discipline, .strength)
+        XCTAssertFalse(session.isRun)
+        XCTAssertNil(session.runKind)
+    }
+
+    func testRunningSessionRoundTripsRunFields() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+
+        let session = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Long run",
+            weekIndex: 1,
+            focus: .mixed,
+            summary: "Aerobic endurance",
+            discipline: .running,
+            runKind: .long,
+            plannedDistanceKm: 28.5,
+            plannedElevationM: 950
+        )
+        modelContext.insert(session)
+        try modelContext.save()
+
+        let fetched = try XCTUnwrap(
+            modelContext.fetch(FetchDescriptor<WorkoutSession>()).first { $0.id == session.id }
+        )
+        XCTAssertEqual(fetched.discipline, .running)
+        XCTAssertTrue(fetched.isRun)
+        XCTAssertEqual(fetched.runKind, .long)
+        XCTAssertEqual(fetched.plannedDistanceKm, 28.5)
+        XCTAssertEqual(fetched.plannedElevationM, 950)
+    }
+
     func testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext

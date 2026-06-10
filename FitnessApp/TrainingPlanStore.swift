@@ -196,6 +196,9 @@ func wipeAllData(in modelContext: ModelContext) throws {
     try deleteAll(WorkoutBlock.self, in: modelContext)
     try deleteAll(WorkoutSession.self, in: modelContext)
     try deleteAll(RankState.self, in: modelContext)
+    try deleteAll(RunLog.self, in: modelContext)
+    try deleteAll(RaceGoal.self, in: modelContext)
+    try deleteAll(GarminDailySnapshot.self, in: modelContext)
     try deleteAll(UserProfile.self, in: modelContext)
 }
 
