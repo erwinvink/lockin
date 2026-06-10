@@ -287,8 +287,9 @@ private func isGarminRunningActivityType(_ type: String) -> Bool {
     return normalized.contains("running") || normalized.contains("ultra")
 }
 
-/// Shared "Last sync attempt" formatting for the Garmin rows in Coach and
-/// Settings. 0 means no sync has completed yet.
+/// Shared "Last sync" formatting for the Garmin rows in Coach and Settings.
+/// The timestamp is recorded on successful syncs only; 0 means no sync has
+/// completed yet.
 func relativeSyncText(epochSeconds: Double) -> String {
     guard epochSeconds > 0 else { return "Never" }
     return Date(timeIntervalSince1970: epochSeconds)
@@ -301,6 +302,10 @@ func relativeSyncText(epochSeconds: Double) -> String {
 /// logs. Throws after rolling back any partial ingest, so a failed sync never
 /// leaves half-written snapshots or logs; callers own garminLastSyncAt and
 /// error surfacing.
+///
+/// Caveat (mirrors saveAtomically): rollback() discards ALL unsaved
+/// mainContext changes, not just this sync's — safe under the app's
+/// save-immediately-after-every-mutation convention.
 @MainActor
 func performGarminSync(endpoint: String, in modelContext: ModelContext) async throws -> Int {
     do {

@@ -23,9 +23,34 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testMissedSessionResetsConsistencyStreakImmediately`
   - Confirms missed sessions reset the consistency streak immediately.
 
-- `testTodayOnlyTreatsTodayOrOverdueSessionsAsDue`
-  - Confirms Today treats only today/overdue planned sessions as due.
-  - Confirms future sessions stay scheduled instead of becoming today's action.
+- `testTodayOnlyTreatsCurrentDaySessionsAsDue`
+  - Confirms Today treats only current-day planned sessions as due.
+  - Confirms overdue sessions go to the missed sweep and future sessions stay scheduled.
+
+- `testCompletedRunLogInputScoresPositiveConsistencyAndStreak`
+  - Verifies a completed run log scores positive consistency and a +1 streak without any max-test fields.
+
+- `testVeryWeakRunFeelTriggersDeloadScoring`
+  - Verifies a very weak run feel (high fatigue) triggers deload scoring while still counting the completion.
+
+- `testHowFeltMapsToExactFatigueLevels`
+  - Confirms the 1-5 "how it felt" scale maps to the exact engine fatigue levels (10/8/5/2/0).
+
+- `testRunDistanceTextIsLocaleAwareAndStripsTrailingZero`
+  - Verifies run distance formatting follows the locale decimal separator and drops trailing zeros.
+
+- `testRunPaceTextFormatsSecondsPerKilometre`
+  - Verifies pace formatting renders seconds per kilometre as `m:ss /km`.
+
+- `testRunTargetTextPrefersPaceThenHeartRateThenZone`
+  - Verifies the run target line prefers pace range, then heart-rate range, then zone, then the run kind.
+
+- `testRunTargetTextIgnoresEmptyRanges`
+  - Confirms zero/empty target ranges fall through to the next target source.
+
+- `testDuePlannedSessionsReturnsAllOfTodaySortedRunsFirst`
+  - Verifies all of today's planned sessions are due, sorted runs before strength.
+  - Confirms overdue and future sessions are excluded from due.
 
 ### Coach Validation
 
@@ -43,18 +68,14 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testCoachClientNormalizesBareHostedProxyHost`
   - Verifies entering `lockin.elevenfactor.com` still calls `/generate-week-plan`.
 
-- `testCoachClientRejectsLoopbackProxyHosts`
-  - Verifies loopback proxy hosts are rejected instead of normalized.
+- `testCoachClientRejectsNonHostedProxyHosts`
+  - Verifies loopback, plain-HTTP, and other non-hosted proxy hosts are rejected instead of normalized.
 
 - `testCoachPlanRequestEncodesSelectedModel`
   - Verifies the app sends the selected AI model ID and training days in coach-generation requests.
 
 - `testCoachModelCatalogFallsBackForEmptySelection`
   - Verifies empty model settings fall back to the app default model ID.
-
-- `testAcceptsAIPlanAboveFormerProgressionCapsWhenTechnicallyValid`
-  - Verifies former local progression caps no longer veto skill-owned coaching policy.
-  - Confirms technically valid AI output is accepted.
 
 - `testAcceptsAIPlanWithoutLocalMovementBalancePolicy`
   - Verifies local validation no longer enforces movement-balance policy.
@@ -74,6 +95,69 @@ This file is the durable human-readable test list for the lockin app. It records
   - Confirms AI `dayOffset` values become visible scheduled workout dates.
   - Confirms AI-generated sessions are visibly labeled in summaries.
 
+- `testMakeCoachRequestWithRaceGoalFillsRunningRequest`
+  - Verifies a saved race goal fills the running request (race date, distance, elevation, running days, long-run day, recent runs).
+
+- `testMakeCoachRequestWithoutRaceGoalLeavesRunningNil`
+  - Confirms the running request stays nil without a race goal, so the legacy strength-only route is used.
+
+- `testMakeCoachRequestCapsRecentRunsToMostRecentTwenty`
+  - Verifies recent runs sent to the coach are capped to the most recent twenty.
+
+- `testMakeCoachRequestOmitsLongRunDayOffsetOutsidePlannableRange`
+  - Confirms a long-run day that cannot land in the plannable window is omitted instead of sent stale.
+
+- `testMakeCoachRequestWithEmptyRunningDaysStaysUnconstrained`
+  - Confirms an empty running-day selection sends no day constraint.
+
+- `testMakeCoachRequestOmitsLongRunDayOutsideRunningDays`
+  - Confirms a long-run day outside the selected running days is omitted.
+
+- `testMakeCoachRequestMapsRunFeelScoreToCoachSummaries`
+  - Verifies run feel scores map to the coach-facing log summaries.
+
+- `testRunningWeekValidatorRejectsInvalidTechnicalShape`
+  - Verifies malformed running weeks (bad offsets, distances, targets) are rejected client-side.
+
+- `testRunningWeekValidatorRejectsRunsOutsideSelectedDays`
+  - Verifies runs scheduled outside the selected running days are rejected.
+
+- `testRunningWeekValidatorAcceptsValidWeekOnAllowedOffsets`
+  - Confirms a valid running week on allowed day offsets is accepted.
+
+- `testRunningWeekValidatorAcceptsValidWeekWithoutSelectedDays`
+  - Confirms validation passes without a running-day constraint.
+
+- `testCombinedWeekResponseDecodesProxyShape`
+  - Verifies the `POST /generate-week` combined running + strength response decodes.
+
+- `testGarminStatusResponseDecodesProxyShape`
+  - Verifies `GET /garmin/status` decodes into `GarminStatusResponse`.
+
+- `testGarminSnapshotResponseDecodesProxyShape`
+  - Verifies `GET /garmin/snapshot` decodes status, wellness days, and activities.
+
+- `testGarminSnapshotResponseDecodesTruncatedWellness`
+  - Confirms a throttling-truncated wellness list still decodes; missing days stay missing.
+
+- `testGarminPushWorkoutsBuildsSidecarPayloadFromPlannedRunningSessions`
+  - Verifies planned running sessions convert to the sidecar push payload (title, date, kind, distance, duration, target, notes).
+
+- `testGarminPushWorkoutsKeepsUnsetTargetEmptyForSidecar`
+  - Confirms runs without a target send an empty target instead of fabricated bounds.
+
+- `testGarminPushRequestEncodesSidecarContract`
+  - Verifies the push request JSON matches the sidecar contract exactly.
+
+- `testGarminPushResponseDecodesProxyShape`
+  - Verifies the `{results, error?}` push response decodes.
+
+- `testApplyGarminPushResultsStampsOnlyScheduledMatches`
+  - Confirms only scheduled push results stamp `garminWorkoutId`/push date onto their sessions.
+
+- `testGarminDeleteResponseDecodesProxyShape`
+  - Verifies the `{results, error?}` delete response decodes.
+
 ### Persistence, Reset, and Journey State
 
 - `testWipeAllDataDeletesEveryModel`
@@ -88,6 +172,92 @@ This file is the durable human-readable test list for the lockin app. It records
   - Verifies legacy rules-generated planned sessions are removed.
   - Confirms AI planned sessions and completed history survive cleanup.
   - Confirms blocks and prescriptions for removed planned sessions are deleted.
+
+- `testOverduePlannedSessionsAreAutomaticallyMarkedMissed`
+  - Verifies the missed sweep marks overdue planned strength sessions missed with the rank penalty.
+
+- `testOverduePlannedRunningSessionIsMarkedMissedWithSameRankPenalty`
+  - Verifies a running session past the grace day is missed with the same streak/penalty/consistency impact as strength.
+
+- `testUnloggedRunningSessionGetsOneGraceDayBeforeMissed`
+  - Confirms an unlogged run keeps one grace day for the overnight Garmin sync.
+  - Confirms strength sessions are still missed at the start of the next day.
+
+- `testRunningSessionWithRunLogIsNeverAutoMissed`
+  - Confirms any run log — pending or confirmed — shields the session from the missed sweep.
+
+- `testCompleteRunOnMissedSessionRefundsMissAndScoresNormally`
+  - Walks the Monday-run-confirmed-on-Wednesday trace: sweep misses the run, a late Garmin sync matches it, confirming refunds.
+  - Verifies the miss penalty/consistency refund is exact, completion scores normally, and a double confirm is a no-op.
+
+- `testCompleteRunOnPlannedSessionAppliesConfirmScoring`
+  - Verifies confirming a pending run log completes the session, stores RPE/feel, and applies normal completion scoring.
+
+- `testWipeAllDataDeletesRunningModels`
+  - Verifies reset also deletes race goals, run logs, and wellness snapshots.
+
+- `testDefaultWorkoutSessionDisciplineIsStrength`
+  - Confirms sessions default to the strength discipline.
+
+- `testUnknownDisciplineRawFallsBackToStrength`
+  - Confirms unknown persisted discipline values fall back to strength instead of crashing.
+
+- `testRunningSessionRoundTripsRunFields`
+  - Verifies run kind, distance, elevation, duration, targets, and zone survive persistence round trips.
+
+- `testPersistRunningWeekCreatesRunningSessions`
+  - Verifies a generated running week persists as planned running sessions.
+
+- `testPersistRunningWeekReplacesOnlyFuturePlannedRunningSessions`
+  - Verifies running-week persistence replaces only future planned runs and keeps run history.
+
+- `testPersistStrengthPlanKeepsPlannedRunningSessions`
+  - Confirms persisting a strength week does not touch planned runs.
+
+- `testPersistStrengthPlanKeepsPlannedSessionScheduledToday`
+  - Confirms strength replacement leaves today's planned session in place.
+
+- `testPersistRunningWeekKeepsPlannedRunningSessionScheduledToday`
+  - Confirms running replacement leaves today's planned run in place.
+
+- `testPersistRunningWeekReturnsGarminWorkoutIdsOfDeletedPushedRuns`
+  - Verifies replacing pushed runs returns their Garmin workout ids so the caller can delete them from the watch.
+
+- `testPersistRunningWeekWithoutReplacementReturnsNoStaleIds`
+  - Confirms persistence without replacement returns no stale Garmin ids.
+
+- `testDeleteNonAIPlannedSessionsKeepsAIRunningSessions`
+  - Confirms legacy cleanup keeps AI planned running sessions.
+
+- `testRunningDaysEmptySetRoundTripsThroughPersistence`
+  - Verifies an empty running-day selection survives persistence.
+
+- `testRunningDaysCanonicalizeToAllCasesOrder`
+  - Verifies running days persist in canonical weekday order.
+
+- `testLongRunDayNilRoundTripsThroughPersistence`
+  - Verifies an unset long-run day stays nil through persistence.
+
+- `testIngestWellnessUpsertsOneSnapshotPerCalendarDay`
+  - Verifies Garmin wellness ingest upserts exactly one snapshot per calendar day.
+
+- `testMatchGarminActivitiesCreatesPendingRunLogForSameDayPlannedRun`
+  - Verifies a synced Garmin activity creates a pending run log on the same-day planned run.
+
+- `testMatchGarminActivitiesMatchesMissedRunningSessionOnSameDay`
+  - Confirms a late-synced activity still matches a session the sweep already marked missed.
+
+- `testMatchGarminActivitiesSkipsAlreadyIngestedActivityIds`
+  - Confirms already-ingested Garmin activity ids are not ingested twice.
+
+- `testMatchGarminActivitiesMatchesClosestPlannedDistance`
+  - Verifies an activity matches the same-day run with the closest planned distance.
+
+- `testMatchGarminActivitiesIgnoresActivityWithoutSameDayPlannedRun`
+  - Confirms activities without a same-day planned run are ignored.
+
+- `testMatchGarminActivitiesClaimsEachSessionOnceAndSkipsNonRunningTypes`
+  - Confirms each session is claimed by at most one activity and non-running activity types are skipped.
 
 - `testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards`
   - Creates a zero-baseline `ZeroPlan` profile.
@@ -108,23 +278,28 @@ This file is the durable human-readable test list for the lockin app. It records
   - Completes onboarding with default values.
   - Verifies Today opens with the AI-only empty plan state.
   - Opens Coach.
-  - Verifies Coach shows the generator surface and AI generation action without the initial ready status.
+  - Verifies Coach shows the coach read, the ready-for-the-first-week status, and the `Plan my week` action.
 
 - `testLogShowsEmptyAIOnlyStateAfterOnboarding`
   - Completes onboarding.
   - Verifies Log starts empty until an AI plan is generated.
 
-- `testProgressAndConsistencyScreensAfterOnboarding`
+- `testProgressScreenAfterOnboarding`
   - Completes onboarding.
-  - Tests Progress overview, embedded lift rings, consistency, penalties, and benchmarks.
+  - Tests the Progress overview: streak, best, missed trainings, and embedded lift rings.
 
-- `testCoachTabsAfterOnboarding`
+- `testCoachReadAndAdvancedControlsAfterOnboarding`
   - Completes onboarding.
-  - Tests Coach generator, Context model settings, and Rules surfaces.
+  - Tests the Coach read surface and the Advanced disclosure with model and proxy status controls.
 
 - `testProfileResetFlowUsesAIOnlyPlanCreation`
   - Completes onboarding.
   - Tests Profile/Settings, confirms local fallback controls are absent, verifies reminder toggle/time picker, reset alert, and reset returning to onboarding.
+
+- `testTwoWeekSeedPreviewDataSurfaces`
+  - Launches with the seeded two-week activity fixture.
+  - Verifies the pending Garmin run renders a confirm card above the due session.
+  - Verifies Log history, the future workout preview, Progress readiness and running volume (longest run), and the coach read headline.
 
 ## Screen Coverage Checklist
 
@@ -186,7 +361,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - Add UI test for Coach proxy error display:
   - Point proxy URL to an unavailable endpoint.
-  - Tap `Generate AI week`.
+  - Tap `Plan my week`.
   - Verify the user-facing error explains how to start the proxy.
 
 ### Medium Priority

@@ -388,7 +388,13 @@ private struct GarminCard: View {
                 StatusPill(text: statusText, color: statusColor, systemImage: statusIcon)
             }
 
-            InfoLine(title: "Last sync attempt", value: relativeSyncText(epochSeconds: garminLastSyncAt))
+            InfoLine(title: "Last sync", value: relativeSyncText(epochSeconds: garminLastSyncAt))
+
+            if let lastError = status?.lastError, !lastError.isEmpty {
+                Text(lastError)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
 
             Button(action: syncNow) {
                 Label(isSyncing ? "Syncing" : "Sync now", systemImage: "arrow.triangle.2.circlepath")
@@ -424,18 +430,17 @@ private struct GarminCard: View {
 
     private var statusText: String {
         guard let status else { return statusFailed ? "Unreachable" : "Checking" }
-        guard status.ok else { return "Unreachable" }
-        return status.loggedIn ? "Connected" : "Not logged in"
+        return status.displayState.text
     }
 
     private var statusColor: Color {
         guard let status else { return statusFailed ? AppTheme.warning : AppTheme.muted }
-        return status.ok && status.loggedIn ? AppTheme.accent : AppTheme.warning
+        return status.displayState.isHealthy ? AppTheme.accent : AppTheme.warning
     }
 
     private var statusIcon: String {
         guard let status else { return statusFailed ? "exclamationmark.triangle.fill" : "hourglass" }
-        return status.ok && status.loggedIn ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+        return status.displayState.isHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
     }
 
     private func loadStatus() async {

@@ -626,7 +626,7 @@ private struct GarminSyncRow: View {
                 StatusPill(text: pillText, color: pillColor, systemImage: pillIcon)
             }
 
-            InfoLine(title: "Last sync attempt", value: lastSyncText)
+            InfoLine(title: "Last sync", value: lastSyncText)
 
             if let lastError = status?.lastError, !lastError.isEmpty {
                 Text(lastError)
@@ -659,18 +659,17 @@ private struct GarminSyncRow: View {
 
     private var pillText: String {
         guard let status else { return statusFailed ? "Unreachable" : "Checking" }
-        if status.ok, status.loggedIn { return "Connected" }
-        return status.loggedIn ? "Degraded" : "Not signed in"
+        return status.displayState.text
     }
 
     private var pillColor: Color {
         guard let status else { return statusFailed ? AppTheme.warning : AppTheme.muted }
-        return status.ok && status.loggedIn ? AppTheme.accent : AppTheme.warning
+        return status.displayState.isHealthy ? AppTheme.accent : AppTheme.warning
     }
 
     private var pillIcon: String {
         guard let status else { return statusFailed ? "exclamationmark.triangle.fill" : "hourglass" }
-        return status.ok && status.loggedIn ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+        return status.displayState.isHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
     }
 
     private func loadStatus() async {

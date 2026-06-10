@@ -213,6 +213,18 @@ struct GarminStatusResponse: Codable, Equatable {
     var lastError: String?
 }
 
+extension GarminStatusResponse {
+    /// Shared status vocabulary for every Garmin row (Settings card, Coach
+    /// sync row). Fetch failure (no response at all) is a view-level
+    /// "Unreachable" — this only maps a response we actually received.
+    var displayState: (text: String, isHealthy: Bool) {
+        if loggedIn {
+            return ok ? ("Connected", true) : ("Degraded", false)
+        }
+        return ("Not logged in", false)
+    }
+}
+
 struct GarminWellnessDayResponse: Codable, Equatable {
     var date: String   // "2026-06-08" or full ISO; parsed during ingest
     var sleepScore: Int
