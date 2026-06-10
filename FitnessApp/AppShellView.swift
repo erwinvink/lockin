@@ -44,8 +44,10 @@ struct AppShellView: View {
     private func refreshTrainingPlanState() {
         let retainedSessions = sessions.filter { $0.status != .planned || $0.summary.hasPrefix("AI:") }
         _ = try? deleteNonAIPlannedSessions(from: sessions, in: modelContext)
+        let runLogs = (try? modelContext.fetch(FetchDescriptor<RunLog>())) ?? []
         _ = try? markOverduePlannedSessionsMissed(
             from: retainedSessions,
+            runLogs: runLogs,
             logs: logs,
             profile: profile,
             ranks: ranks,
@@ -73,6 +75,9 @@ struct AppShellView: View {
         do {
             let snapshot = try await client.fetchGarminSnapshot(sinceDays: 7)
             try ingest(wellness: snapshot.wellness, in: modelContext)
+            // Fetch fresh after the await: the @Query snapshot may be stale by
+            // the time the response lands (e.g. the missed sweep ran meanwhile).
+            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
             let existingRunLogs = try modelContext.fetch(FetchDescriptor<RunLog>())
             try matchGarminActivities(
                 snapshot.activities,
@@ -84,7 +89,9 @@ struct AppShellView: View {
             garminLastSyncAt = Date().timeIntervalSince1970
         } catch {
             // Swallowed by design: the next foreground retries, and Settings
-            // shows the Garmin connection state.
+            // shows the Garmin connection state. Drop any partial ingest so
+            // a failed sync never leaves half-written snapshots or logs.
+            modelContext.rollback()
         }
     }
 }

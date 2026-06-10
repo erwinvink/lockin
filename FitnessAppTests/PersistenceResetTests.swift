@@ -242,6 +242,7 @@ final class PersistenceResetTests: XCTestCase {
 
         let processed = try markOverduePlannedSessionsMissed(
             from: [future, overdue, dueToday],
+            runLogs: [],
             logs: [],
             profile: profile,
             ranks: [rank],
@@ -266,7 +267,8 @@ final class PersistenceResetTests: XCTestCase {
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
         let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
         let today = calendar.startOfDay(for: now)
-        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        // Past the one-day Garmin sync grace window, so the run is truly missed.
+        let twoDaysAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -2, to: today))
         let profile = UserProfile(
             targetDate: now,
             weeklySessions: 4,
@@ -277,7 +279,7 @@ final class PersistenceResetTests: XCTestCase {
         )
         let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
         let overdueRun = WorkoutSession(
-            scheduledDate: yesterday,
+            scheduledDate: twoDaysAgo,
             title: "Skipped easy run",
             weekIndex: 0,
             focus: .mixed,
@@ -294,6 +296,7 @@ final class PersistenceResetTests: XCTestCase {
 
         let processed = try markOverduePlannedSessionsMissed(
             from: [overdueRun],
+            runLogs: [],
             logs: [],
             profile: profile,
             ranks: [rank],
@@ -307,6 +310,242 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(rank.streak, 0)
         XCTAssertEqual(rank.penaltyPoints, TrainingEngine.missedSessionPenaltyPoints)
         XCTAssertEqual(rank.consistencyScore, 30 + TrainingEngine.missedSessionConsistencyDelta)
+    }
+
+    func testUnloggedRunningSessionGetsOneGraceDayBeforeMissed() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let twoDaysAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -2, to: today))
+        let profile = UserProfile(
+            targetDate: now,
+            weeklySessions: 4,
+            equipment: [.pullUpBar, .yogaMat],
+            baselinePullUps: 3,
+            baselinePushUps: 12,
+            baselinePlankSeconds: 45
+        )
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let yesterdayRun = plannedRunFixture(scheduledDate: yesterday, distanceKm: 8, title: "Yesterday run")
+        let twoDaysAgoRun = plannedRunFixture(scheduledDate: twoDaysAgo, distanceKm: 10, title: "Two days ago run")
+        let yesterdayStrength = WorkoutSession(
+            scheduledDate: yesterday,
+            title: "Yesterday strength",
+            weekIndex: 0,
+            focus: .pull,
+            summary: "AI: Strength session"
+        )
+
+        modelContext.insert(profile)
+        modelContext.insert(rank)
+        modelContext.insert(yesterdayRun)
+        modelContext.insert(twoDaysAgoRun)
+        modelContext.insert(yesterdayStrength)
+        try modelContext.save()
+
+        let processed = try markOverduePlannedSessionsMissed(
+            from: [yesterdayRun, twoDaysAgoRun, yesterdayStrength],
+            runLogs: [],
+            logs: [],
+            profile: profile,
+            ranks: [rank],
+            in: modelContext,
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(processed, 2)
+        XCTAssertEqual(yesterdayRun.status, .planned, "An unlogged run keeps one grace day for the overnight Garmin sync")
+        XCTAssertEqual(twoDaysAgoRun.status, .missed, "Past the grace day, an unlogged run is missed")
+        XCTAssertEqual(yesterdayStrength.status, .missed, "Strength sessions are still missed at start of the next day")
+    }
+
+    func testRunningSessionWithRunLogIsNeverAutoMissed() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let threeDaysAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -3, to: today))
+        let profile = UserProfile(
+            targetDate: now,
+            weeklySessions: 4,
+            equipment: [.pullUpBar, .yogaMat],
+            baselinePullUps: 3,
+            baselinePushUps: 12,
+            baselinePlankSeconds: 45
+        )
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let pendingLoggedRun = plannedRunFixture(scheduledDate: threeDaysAgo, distanceKm: 8, title: "Pending run")
+        let confirmedLoggedRun = plannedRunFixture(scheduledDate: threeDaysAgo, distanceKm: 12, title: "Confirmed run")
+        let pendingLog = RunLog(sessionId: pendingLoggedRun.id, completedAt: threeDaysAgo, distanceKm: 8.1, source: .garmin, needsConfirmation: true)
+        let confirmedLog = RunLog(sessionId: confirmedLoggedRun.id, completedAt: threeDaysAgo, distanceKm: 12.2, source: .garmin, needsConfirmation: false)
+
+        modelContext.insert(profile)
+        modelContext.insert(rank)
+        modelContext.insert(pendingLoggedRun)
+        modelContext.insert(confirmedLoggedRun)
+        modelContext.insert(pendingLog)
+        modelContext.insert(confirmedLog)
+        try modelContext.save()
+
+        let processed = try markOverduePlannedSessionsMissed(
+            from: [pendingLoggedRun, confirmedLoggedRun],
+            runLogs: [pendingLog, confirmedLog],
+            logs: [],
+            profile: profile,
+            ranks: [rank],
+            in: modelContext,
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(processed, 0)
+        XCTAssertEqual(pendingLoggedRun.status, .planned, "A run awaiting confirmation is never auto-missed")
+        XCTAssertEqual(confirmedLoggedRun.status, .planned, "Any run log shields the session from the missed sweep")
+        XCTAssertEqual(rank.penaltyPoints, 0)
+        XCTAssertEqual(rank.consistencyScore, 30)
+        XCTAssertEqual(rank.streak, 4)
+    }
+
+    func testMatchGarminActivitiesMatchesMissedRunningSessionOnSameDay() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 9)))
+        let missedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 12)
+        missedRun.status = .missed
+        modelContext.insert(missedRun)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-08 07:01:33")],
+            sessions: [missedRun],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched, 1, "A late sync still matches a session the missed sweep already processed")
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        XCTAssertEqual(logs.count, 1)
+        let log = try XCTUnwrap(logs.first)
+        XCTAssertEqual(log.sessionId, missedRun.id)
+        XCTAssertTrue(log.needsConfirmation)
+        XCTAssertEqual(missedRun.status, .missed, "Matching never changes session status; confirmation does")
+    }
+
+    func testCompleteRunOnMissedSessionRefundsMissAndScoresNormally() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        // Monday-run-confirmed-on-Wednesday trace: the sweep marks Monday's
+        // run missed, the late Garmin sync matches it, confirming refunds.
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 8)))
+        let monday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 18)))
+        let profile = UserProfile(
+            targetDate: now,
+            weeklySessions: 4,
+            equipment: [.pullUpBar, .yogaMat],
+            baselinePullUps: 3,
+            baselinePushUps: 12,
+            baselinePlankSeconds: 45
+        )
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let mondayRun = plannedRunFixture(scheduledDate: monday, distanceKm: 12, title: "Monday easy run")
+        modelContext.insert(profile)
+        modelContext.insert(rank)
+        modelContext.insert(mondayRun)
+        try modelContext.save()
+
+        let processed = try markOverduePlannedSessionsMissed(
+            from: [mondayRun],
+            runLogs: [],
+            logs: [],
+            profile: profile,
+            ranks: [rank],
+            in: modelContext,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(processed, 1)
+        XCTAssertEqual(mondayRun.status, .missed)
+        XCTAssertEqual(rank.penaltyPoints, TrainingEngine.missedSessionPenaltyPoints)
+        XCTAssertEqual(rank.consistencyScore, 18)
+        XCTAssertEqual(rank.streak, 0)
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-08 18:05:00")],
+            sessions: [mondayRun],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        XCTAssertEqual(matched, 1)
+        let log = try XCTUnwrap(modelContext.fetch(FetchDescriptor<RunLog>()).first)
+
+        try completeRun(session: mondayRun, log: log, rpe: 6, feelScore: 3, ranks: [rank], in: modelContext)
+
+        XCTAssertEqual(mondayRun.status, .completed)
+        XCTAssertFalse(log.needsConfirmation)
+        XCTAssertEqual(log.rpe, 6)
+        XCTAssertEqual(log.feelScore, 3)
+        XCTAssertEqual(rank.penaltyPoints, 0, "The miss penalty is refunded exactly")
+        XCTAssertEqual(rank.consistencyScore, 40, "Refund restores 30, then normal completion adds 10")
+        XCTAssertEqual(rank.streak, 1, "Streak history is not rewritten; completion adds one from the reset")
+        XCTAssertEqual(rank.bestStreak, 4)
+        XCTAssertEqual(mondayRun.scoreImpact, 10)
+
+        // Double-call is a no-op.
+        try completeRun(session: mondayRun, log: log, rpe: 9, feelScore: 5, ranks: [rank], in: modelContext)
+        XCTAssertEqual(rank.penaltyPoints, 0)
+        XCTAssertEqual(rank.consistencyScore, 40)
+        XCTAssertEqual(rank.streak, 1)
+        XCTAssertEqual(log.rpe, 6)
+        XCTAssertEqual(log.feelScore, 3)
+        XCTAssertEqual(mondayRun.scoreImpact, 10)
+    }
+
+    func testCompleteRunOnPlannedSessionAppliesConfirmScoring() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 9)))
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 12)
+        let pendingLog = RunLog(
+            sessionId: plannedRun.id,
+            completedAt: runDay,
+            distanceKm: 12.2,
+            garminActivityId: "555",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        modelContext.insert(rank)
+        modelContext.insert(plannedRun)
+        modelContext.insert(pendingLog)
+        try modelContext.save()
+
+        try completeRun(session: plannedRun, log: pendingLog, rpe: 8, feelScore: 4, ranks: [rank], in: modelContext)
+
+        XCTAssertEqual(plannedRun.status, .completed)
+        XCTAssertFalse(pendingLog.needsConfirmation)
+        XCTAssertEqual(pendingLog.rpe, 8)
+        XCTAssertEqual(pendingLog.feelScore, 4)
+        XCTAssertEqual(rank.penaltyPoints, 0)
+        XCTAssertEqual(rank.consistencyScore, 42, "RPE 8 earns the effort bonus: 30 + 12")
+        XCTAssertEqual(rank.streak, 5)
+        XCTAssertEqual(rank.bestStreak, 5)
+        XCTAssertEqual(plannedRun.scoreImpact, 12)
     }
 
     func testWipeAllDataDeletesRunningModels() throws {

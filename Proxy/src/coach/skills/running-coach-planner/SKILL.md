@@ -20,6 +20,7 @@ Athlete-facing text should name each session's job plainly: what to run, at what
 Use the deterministic `coachContext` built by the proxy before the model call. It includes:
 
 - `coachContext.running`: race goal, weeks to race, recent runs, baseline weekly km, longest recent run, selected running days with future day offsets, and the long-run day
+- Recent runs may include `feelScore`: 1 very weak … 5 very strong; treat 1-2 as a heavily-weighted warning sign.
 - shared readiness state and risk flags
 - optional `coachContext.garmin` wellness signals (training readiness, body battery, sleep score, HRV status)
 

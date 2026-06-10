@@ -13,11 +13,11 @@ struct TodayView: View {
     var profile: UserProfile
     @State private var loggingSession: WorkoutSession?
     @State private var loggingRunSession: WorkoutSession?
-    @State private var editingPendingRun: PendingRunEdit?
+    @State private var editingPendingRun: PendingRun?
     @State private var pendingLoggingSessionID: UUID?
     @State private var workoutCardResetID = UUID()
 
-    private struct PendingRunEdit: Identifiable {
+    private struct PendingRun: Identifiable {
         let session: WorkoutSession
         let log: RunLog
         var id: UUID { log.id }
@@ -25,6 +25,22 @@ struct TodayView: View {
 
     private var dueSessions: [WorkoutSession] {
         duePlannedSessions(from: sessions)
+    }
+
+    /// Synced runs waiting for athlete confirmation, joined to their session —
+    /// any session, today or past, planned or missed — so a pending card
+    /// survives midnight instead of vanishing with the due list.
+    private var pendingConfirmations: [PendingRun] {
+        runLogs
+            .filter(\.needsConfirmation)
+            .compactMap { log in
+                sessions.first { $0.id == log.sessionId }.map { PendingRun(session: $0, log: log) }
+            }
+            .sorted { $0.session.scheduledDate < $1.session.scheduledDate }
+    }
+
+    private var pendingSessionIds: Set<UUID> {
+        Set(pendingConfirmations.map(\.session.id))
     }
 
     private var futureSession: WorkoutSession? {
@@ -46,19 +62,20 @@ struct TodayView: View {
 
                 TodayHeroCard(rank: rank)
 
+                ForEach(pendingConfirmations) { pending in
+                    ConfirmRunCard(
+                        session: pending.session,
+                        log: pending.log,
+                        onConfirm: { rpe, feel in confirmRun(session: pending.session, log: pending.log, rpe: rpe, feel: feel) },
+                        onEdit: { editingPendingRun = pending }
+                    )
+                }
+
                 if !dueSessions.isEmpty {
-                    ForEach(dueSessions) { session in
+                    // A due session with a pending log already renders above.
+                    ForEach(dueSessions.filter { !pendingSessionIds.contains($0.id) }) { session in
                         if session.isRun {
-                            if let pendingLog = pendingGarminLog(for: session) {
-                                ConfirmRunCard(
-                                    session: session,
-                                    log: pendingLog,
-                                    onConfirm: { rpe, feel in confirmRun(session: session, log: pendingLog, rpe: rpe, feel: feel) },
-                                    onEdit: { editingPendingRun = PendingRunEdit(session: session, log: pendingLog) }
-                                )
-                            } else {
-                                RunPrescriptionCard(session: session, onLog: { beginRunLogging(session) })
-                            }
+                            RunPrescriptionCard(session: session, onLog: { beginRunLogging(session) })
                         } else {
                             WorkoutPrescriptionCard(
                                 session: session,
@@ -90,10 +107,6 @@ struct TodayView: View {
         }
     }
 
-    private func pendingGarminLog(for session: WorkoutSession) -> RunLog? {
-        runLogs.first { $0.sessionId == session.id && $0.needsConfirmation }
-    }
-
     private func blocksForSession(_ session: WorkoutSession) -> [WorkoutBlock] {
         blocks
             .filter { $0.sessionId == session.id }
@@ -117,38 +130,11 @@ struct TodayView: View {
         loggingRunSession = session
     }
 
-    /// Same scoring path as LogRunView.save: a completed run scores without
-    /// strength metrics, with fatigue derived from the feel score.
+    /// completeRun owns the shared confirm/scoring path (including refunding
+    /// a wrongly-applied miss when the run synced after the missed sweep).
     private func confirmRun(session: WorkoutSession, log: RunLog, rpe: Int, feel: Int) {
-        guard session.status == .planned, log.needsConfirmation else { return }
-
-        log.rpe = rpe
-        log.feelScore = feel
-        log.needsConfirmation = false
-        session.status = .completed
-
-        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: feel)
-        let outcome = TrainingEngine().score(
-            log: SessionLogInput(
-                completed: true,
-                pullUps: 0,
-                pushUps: 0,
-                plankSeconds: 0,
-                loggedPullUps: false,
-                loggedPushUps: false,
-                loggedPlankSeconds: false,
-                rpe: rpe,
-                painLevel: 0,
-                fatigueLevel: fatigueLevel
-            ),
-            plannedSession: nil
-        )
-        let rank = ranks.first ?? RankState()
-        if ranks.isEmpty { modelContext.insert(rank) }
-        applyScoreOutcome(outcome, to: rank)
-        session.scoreImpact = outcome.consistencyDelta
-
-        try? modelContext.save()
+        guard log.needsConfirmation else { return }
+        try? completeRun(session: session, log: log, rpe: rpe, feelScore: feel, ranks: ranks, in: modelContext)
     }
 
     private func resetCheckedWorkoutIfLogWasCancelled() {
@@ -320,6 +306,16 @@ private struct ConfirmRunCard: View {
     @State private var rpe = 6
     @State private var howFelt = 3
 
+    /// "Monday's run · 8 Jun" when the session is not scheduled today, so a
+    /// confirmation that survived midnight still names the day it belongs to.
+    private var scheduledDayText: String? {
+        let calendar = Calendar.current
+        guard !calendar.isDateInToday(session.scheduledDate) else { return nil }
+        let weekday = session.scheduledDate.formatted(.dateTime.weekday(.wide))
+        let date = session.scheduledDate.formatted(date: .abbreviated, time: .omitted)
+        return "\(weekday)'s run · \(date)"
+    }
+
     private var actualsText: String {
         var parts: [String] = []
         if log.distanceKm > 0 {
@@ -345,6 +341,12 @@ private struct ConfirmRunCard: View {
                     .foregroundStyle(AppTheme.text)
                 Spacer(minLength: 12)
                 StatusPill(text: "Synced from Garmin", systemImage: "applewatch.radiowaves.left.and.right")
+            }
+
+            if let scheduledDayText {
+                Text(scheduledDayText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.muted)
             }
 
             if !actualsText.isEmpty {

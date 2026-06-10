@@ -29,10 +29,30 @@ func duePlannedSessions(from sessions: [WorkoutSession], now: Date = Date(), cal
         }
 }
 
-func overduePlannedSessions(from sessions: [WorkoutSession], now: Date = Date(), calendar: Calendar = .current) -> [WorkoutSession] {
+/// Planned sessions that should be marked missed. Strength sessions are
+/// overdue as soon as their scheduled day has passed. Running sessions get
+/// one grace day so an evening run can still arrive via the overnight Garmin
+/// sync before the session counts as missed, and a running session with any
+/// RunLog (pending or confirmed) is never overdue — it is awaiting
+/// confirmation, not missed.
+func overduePlannedSessions(
+    from sessions: [WorkoutSession],
+    runLogs: [RunLog],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> [WorkoutSession] {
     let startOfToday = calendar.startOfDay(for: now)
+    let runningGraceCutoff = calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday
+    let loggedSessionIds = Set(runLogs.map(\.sessionId))
     return sessions
-        .filter { $0.status == .planned && $0.scheduledDate < startOfToday }
+        .filter { session in
+            guard session.status == .planned else { return false }
+            if session.discipline == .running {
+                guard !loggedSessionIds.contains(session.id) else { return false }
+                return session.scheduledDate < runningGraceCutoff
+            }
+            return session.scheduledDate < startOfToday
+        }
         .sorted { $0.scheduledDate < $1.scheduledDate }
 }
 
@@ -47,6 +67,7 @@ func nextFuturePlannedSession(from sessions: [WorkoutSession], now: Date = Date(
 @discardableResult
 func markOverduePlannedSessionsMissed(
     from sessions: [WorkoutSession],
+    runLogs: [RunLog],
     logs: [PerformanceLog],
     profile: UserProfile,
     ranks: [RankState],
@@ -54,7 +75,7 @@ func markOverduePlannedSessionsMissed(
     now: Date = Date(),
     calendar: Calendar = .current
 ) throws -> Int {
-    let overdueSessions = overduePlannedSessions(from: sessions, now: now, calendar: calendar)
+    let overdueSessions = overduePlannedSessions(from: sessions, runLogs: runLogs, now: now, calendar: calendar)
     guard !overdueSessions.isEmpty else { return 0 }
 
     let latestLog = logs.sorted { $0.completedAt > $1.completedAt }.first
@@ -85,6 +106,59 @@ func missedSessionOutcome(profile: UserProfile, latestLog: PerformanceLog?) -> S
         ),
         plannedSession: nil
     )
+}
+
+/// The single confirm/scoring path for a run, shared by the Today confirm
+/// card and LogRunView. Sets the athlete feedback on the log, flips the
+/// session to completed, and applies normal completion scoring. If the
+/// session was already auto-marked missed (the run synced after the missed
+/// sweep), the miss penalty and consistency hit are refunded first — streak
+/// history is not rewritten. Calling it again after completion is a no-op.
+func completeRun(
+    session: WorkoutSession,
+    log: RunLog,
+    rpe: Int,
+    feelScore: Int,
+    ranks: [RankState],
+    in modelContext: ModelContext
+) throws {
+    guard session.status != .completed else { return }
+
+    log.rpe = rpe
+    log.feelScore = feelScore
+    log.needsConfirmation = false
+
+    let rank = ranks.first ?? RankState()
+    if ranks.isEmpty { modelContext.insert(rank) }
+
+    if session.status == .missed {
+        // Refund the wrongly-applied miss. missedSessionConsistencyDelta is
+        // negative, so subtracting it restores the lost consistency points.
+        rank.penaltyPoints = max(0, rank.penaltyPoints - TrainingEngine.missedSessionPenaltyPoints)
+        rank.consistencyScore = max(0, rank.consistencyScore - TrainingEngine.missedSessionConsistencyDelta)
+    }
+
+    session.status = .completed
+
+    let outcome = TrainingEngine().score(
+        log: SessionLogInput(
+            completed: true,
+            pullUps: 0,
+            pushUps: 0,
+            plankSeconds: 0,
+            loggedPullUps: false,
+            loggedPushUps: false,
+            loggedPlankSeconds: false,
+            rpe: rpe,
+            painLevel: 0,
+            fatigueLevel: ReadinessScale.fatigueLevel(fromHowFelt: feelScore)
+        ),
+        plannedSession: nil
+    )
+    applyScoreOutcome(outcome, to: rank)
+    session.scoreImpact = outcome.consistencyDelta
+
+    try modelContext.save()
 }
 
 /// Parses the date strings the Garmin proxy passes through: bare ISO dates
@@ -150,9 +224,11 @@ func ingest(
 }
 
 /// Creates pending RunLogs (source garmin, needsConfirmation true) for synced
-/// activities that land on the same calendar day as a planned running session.
-/// The session stays planned until the athlete confirms. Returns the number of
-/// new pending logs.
+/// activities that land on the same calendar day as a planned — or already
+/// auto-missed — running session. A missed session matching here means the run
+/// happened but synced after the missed sweep; confirming it refunds the miss
+/// (see completeRun). Matching never changes session status. Returns the
+/// number of new pending logs.
 @discardableResult
 func matchGarminActivities(
     _ activities: [GarminActivityResponse],
@@ -175,7 +251,7 @@ func matchGarminActivities(
 
         let candidates = sessions.filter {
             $0.discipline == .running &&
-            $0.status == .planned &&
+            ($0.status == .planned || $0.status == .missed) &&
             !claimedSessionIds.contains($0.id) &&
             calendar.isDate($0.scheduledDate, inSameDayAs: startTime)
         }

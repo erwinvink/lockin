@@ -841,6 +841,8 @@ Confirm card in `TodayView`: when a due running session has a `RunLog` with `nee
 
 AMENDED after review: manual run logging leaves a feel-1 (very weak) run as .completed with no deload record and CoachRunSummary carries rpe but not feelScore — Task 13 should either set .deload status for feel<=1 runs or add feelScore to CoachRunSummary (and the proxy RunSummary type) so catastrophic runs reach the coaches.
 
+AMENDED after review (sync-vs-missed policy): unlogged running sessions get a one-day grace before being marked missed (Garmin sync window); running sessions with a pending/confirmed RunLog are never auto-missed; the matcher also matches .missed running sessions; confirming a missed-then-synced run refunds the miss penalty and scores the run normally (streak history is not rewritten); pending confirmations render independently of today's due list so they survive midnight. Shared completeRun() in TrainingPlanStore owns the confirm/scoring path.
+
 ---
 
 ### Task 14: App — readiness strip + running volume on Progress

@@ -672,13 +672,13 @@ struct LogRunView: View {
     }
 
     private func save() {
-        guard session.status == .planned else { return }
+        guard session.status != .completed else { return }
         distanceFieldIsFocused = false
         guard let distanceKm = parsedDistanceKm else { return }
 
         let movingSeconds = max(0, movingMinutes) * 60
         let pace = distanceKm > 0 && movingSeconds > 0 ? Int(Double(movingSeconds) / distanceKm) : 0
-        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: howFelt)
+        let log: RunLog
         if let prefillLog {
             // Editing a synced Garmin log: update it in place (keeping its
             // completedAt, source, and activity id) instead of duplicating it.
@@ -687,12 +687,10 @@ struct LogRunView: View {
             prefillLog.elevationGainM = max(0, elevationGainM)
             prefillLog.averageHr = max(0, averageHr)
             prefillLog.averagePaceSecPerKm = pace
-            prefillLog.rpe = rpe
-            prefillLog.feelScore = howFelt
             prefillLog.notes = notes
-            prefillLog.needsConfirmation = false
+            log = prefillLog
         } else {
-            modelContext.insert(RunLog(
+            log = RunLog(
                 sessionId: session.id,
                 completedAt: Date(),
                 distanceKm: distanceKm,
@@ -705,35 +703,13 @@ struct LogRunView: View {
                 notes: notes,
                 source: .manual,
                 needsConfirmation: false
-            ))
+            )
+            modelContext.insert(log)
         }
-        session.status = .completed
 
-        let outcome = TrainingEngine().score(
-            log: SessionLogInput(
-                completed: true,
-                pullUps: 0,
-                pushUps: 0,
-                plankSeconds: 0,
-                loggedPullUps: false,
-                loggedPushUps: false,
-                loggedPlankSeconds: false,
-                rpe: rpe,
-                painLevel: 0,
-                fatigueLevel: fatigueLevel
-            ),
-            plannedSession: nil
-        )
-        let rank = ranks.first ?? RankState()
-        if ranks.isEmpty { modelContext.insert(rank) }
-        applyScoreOutcome(outcome, to: rank)
-        session.scoreImpact = outcome.consistencyDelta
-
-        do {
-            try modelContext.save()
-        } catch {
-            // Keep the current UX quiet; a failed save just leaves the sheet.
-        }
+        // completeRun owns rpe/feel, status, scoring, the miss refund, and the
+        // save. Keep the current UX quiet; a failed save just leaves the sheet.
+        try? completeRun(session: session, log: log, rpe: rpe, feelScore: howFelt, ranks: ranks, in: modelContext)
         dismiss()
     }
 }

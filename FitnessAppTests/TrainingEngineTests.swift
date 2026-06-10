@@ -133,7 +133,7 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertTrue(duePlannedSessions(from: [future], now: now, calendar: calendar).isEmpty)
         XCTAssertEqual(nextFuturePlannedSession(from: [future], now: now, calendar: calendar)?.id, future.id)
         XCTAssertTrue(duePlannedSessions(from: [overdue], now: now, calendar: calendar).isEmpty)
-        XCTAssertEqual(overduePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [overdue.id])
+        XCTAssertEqual(overduePlannedSessions(from: [future, dueToday, overdue], runLogs: [], now: now, calendar: calendar).map(\.id), [overdue.id])
         XCTAssertEqual(duePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [dueToday.id])
     }
 
