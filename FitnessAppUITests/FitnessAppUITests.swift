@@ -112,6 +112,8 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["BEST"].exists)
         XCTAssertFalse(app.staticTexts["CONSISTENCY"].exists)
         XCTAssertFalse(app.staticTexts["No session due today"].exists)
+        // The seeded pending Garmin run renders a confirm card above the due session.
+        XCTAssertTrue(app.buttons["confirm-run-button"].exists)
         XCTAssertTrue(app.staticTexts["Today Simulation"].exists)
         XCTAssertTrue(app.staticTexts["Pull-up"].exists)
         XCTAssertTrue(app.buttons["exercise-checkbox-unchecked"].exists)
@@ -137,6 +139,15 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Readiness"].exists)
+        XCTAssertTrue(app.staticTexts["RUNNING"].exists)
+        // Longest run (6 weeks) from the confirmed seed long run; weekly sums are
+        // weekday-dependent, so the stable longest-run value is asserted instead.
+        // The decimal separator follows the simulator locale, so match both forms.
+        let longestRun = app.staticTexts.matching(
+            NSPredicate(format: "label MATCHES %@", "16[.,]4 km")
+        ).firstMatch
+        XCTAssertTrue(longestRun.exists)
         XCTAssertTrue(app.staticTexts["MISSED TRAININGS"].exists)
         XCTAssertTrue(app.staticTexts["1"].exists)
         XCTAssertFalse(app.staticTexts["PENALTIES"].exists)

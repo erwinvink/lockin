@@ -68,21 +68,44 @@ struct ProgressView: View {
 private struct ReadinessStripCard: View {
     var snapshot: GarminDailySnapshot
 
+    // Whole calendar days between the snapshot and today, so a stale
+    // snapshot is labeled honestly instead of looking current.
+    private var snapshotAgeDays: Int {
+        let calendar = Calendar.current
+        return calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: snapshot.date),
+            to: calendar.startOfDay(for: Date())
+        ).day ?? 0
+    }
+
+    private var snapshotAgeText: String {
+        switch snapshotAgeDays {
+        case ...0: return "Today"
+        case 1: return "Yesterday"
+        default: return "\(snapshotAgeDays) days ago"
+        }
+    }
+
+    private var snapshotAgeColor: Color {
+        snapshotAgeDays > 1 ? AppTheme.warning : AppTheme.muted
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Readiness")
                     .font(.headline)
                 Spacer()
-                Text(snapshot.date.formatted(date: .abbreviated, time: .omitted))
+                Text(snapshotAgeText)
                     .font(.caption2)
-                    .foregroundStyle(AppTheme.muted)
+                    .foregroundStyle(snapshotAgeColor)
             }
             HStack(spacing: 8) {
                 ReadinessTile(
                     title: "Sleep score",
                     value: metricText(snapshot.sleepScore),
-                    status: "Last night",
+                    status: "Overnight",
                     color: tileColor(hasData: snapshot.sleepScore > 0)
                 )
                 ReadinessTile(
@@ -146,6 +169,7 @@ private struct RunningProgressCard: View {
         runLogs.filter { !$0.needsConfirmation }
     }
 
+    // Calendar weeks (Garmin convention), intentionally not the coach's rolling plan window.
     private var thisWeekInterval: DateInterval? {
         calendar.dateInterval(of: .weekOfYear, for: Date())
     }
@@ -182,7 +206,7 @@ private struct RunningProgressCard: View {
 
     private func volumeText(in interval: DateInterval?) -> String {
         guard let interval else { return "—" }
-        let logs = confirmedLogs.filter { interval.contains($0.completedAt) }
+        let logs = confirmedLogs.filter { interval.start <= $0.completedAt && $0.completedAt < interval.end }
         let km = logs.reduce(0) { $0 + $1.distanceKm }
         let elevation = logs.reduce(0) { $0 + $1.elevationGainM }
         return "\(runDistanceText(km: km)) · \(elevation) m+"

@@ -283,7 +283,7 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
         needsConfirmation: false
     ))
 
-    modelContext.insert(WorkoutSession(
+    let upcomingEasyRun = WorkoutSession(
         scheduledDate: day(1, hour: 7),
         title: "Easy Run",
         weekIndex: 2,
@@ -299,6 +299,23 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
         runTargetLow: 360,
         runTargetHigh: 390,
         runZone: "Z2"
+    )
+    modelContext.insert(upcomingEasyRun)
+    // Pending Garmin auto-match awaiting athlete confirmation: exercises the
+    // Today confirm card and locks in Progress excluding unconfirmed volume.
+    modelContext.insert(RunLog(
+        sessionId: upcomingEasyRun.id,
+        completedAt: day(1, hour: 8),
+        distanceKm: 5.5,
+        movingSeconds: 33 * 60,
+        elevationGainM: 60,
+        averageHr: 138,
+        averagePaceSecPerKm: 360,
+        rpe: 0,
+        feelScore: 3,
+        garminActivityId: "preview-pending-easy-run",
+        source: .garmin,
+        needsConfirmation: true
     ))
 
     let plan = CoachPlan(
