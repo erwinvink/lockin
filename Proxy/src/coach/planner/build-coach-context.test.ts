@@ -128,6 +128,42 @@ test("rounds partial weeks to race up", () => {
   assert.equal(context.running?.weeksToRace, 11);
 });
 
+test("reports zero weeksToRace when the race date equals week start", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Race day", raceDate: "2026-05-25T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 0);
+});
+
+test("reports one week to race when the race is one day after week start", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Tomorrow race", raceDate: "2026-05-26T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 1);
+});
+
+test("reports one week to race when the race is exactly seven days after week start", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Next week race", raceDate: "2026-06-01T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 1);
+});
+
 test("clamps weeksToRace to zero when the race date has passed", () => {
   const request = baseRequest({
     running: runningRequest({

@@ -62,8 +62,9 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
     running: request.running
       ? {
           ...request.running,
+          runningDayOffsets: normalizeFutureDayOffsets(request.running.runningDayOffsets),
           recentRuns: [...request.running.recentRuns]
-            .sort((a, b) => a.completedAt.localeCompare(b.completedAt))
+            .sort((a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime())
             .slice(-20),
           weeksToRace: weeksToRace(request.running.raceGoal.raceDate, request.weekStart)
         }
@@ -72,8 +73,8 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
 }
 
 function weeksToRace(raceDate: string, weekStart: string): number {
-  const raw = Math.ceil((Date.parse(raceDate) - Date.parse(weekStart)) / (7 * 24 * 60 * 60 * 1000));
-  return Number.isFinite(raw) ? Math.max(0, raw) : 0;
+  const days = Math.round((Date.parse(raceDate) - Date.parse(weekStart)) / (24 * 60 * 60 * 1000));
+  return Number.isFinite(days) ? Math.max(0, Math.ceil(days / 7)) : 0;
 }
 
 function collectRiskFlags(
