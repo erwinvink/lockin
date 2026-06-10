@@ -162,21 +162,19 @@ struct CoachView: View {
                     preferences: preferences
                 )
                 var strengthPlan = response.strengthWeek.weeklyPlan(weekStart: request.weekStart)
-                strengthPlan.summary = response.summary
-                do {
+                strengthPlan.summary = response.safetyFlags.isEmpty
+                    ? response.summary
+                    : response.summary + " Watch: " + response.safetyFlags.joined(separator: " ")
+                try saveAtomically {
                     try persist(plan: strengthPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
                     try persist(runningWeek: response.runningWeek, weekStart: request.weekStart, in: modelContext, replacingFuturePlannedSessions: true)
-                    try modelContext.save()
-                } catch {
-                    modelContext.rollback()
-                    throw error
                 }
-                try await rescheduleRemindersIfEnabled()
                 let strengthCount = strengthPlan.sessions.count
                 let runCount = response.runningWeek.sessions.count
                 generationStatus = runCount == 0
-                    ? "Saved \(strengthCount) strength sessions. The running week is already underway; no new runs were planned."
-                    : "Saved \(strengthCount) strength sessions and \(runCount) runs. Today was left untouched."
+                    ? "Saved \(countText(strengthCount, "strength session")). The running week is already underway; no new runs were planned."
+                    : "Saved \(countText(strengthCount, "strength session")) and \(countText(runCount, "run")). Today was left untouched."
+                await rescheduleRemindersReportingFailure()
             } else {
                 let response = try await LocalCoachClient(endpointString: endpoint).generatePlan(
                     request: request,
@@ -184,13 +182,26 @@ struct CoachView: View {
                     preferences: preferences
                 )
                 let plan = response.weeklyPlan(weekStart: request.weekStart)
-                try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
-                try modelContext.save()
-                try await rescheduleRemindersIfEnabled()
-                generationStatus = "Saved \(plan.sessions.count) future sessions. Today was left untouched."
+                try saveAtomically {
+                    try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+                }
+                generationStatus = "Saved \(countText(plan.sessions.count, "future session")). Today was left untouched."
+                await rescheduleRemindersReportingFailure()
             }
         } catch {
             generationStatus = error.localizedDescription
+        }
+    }
+
+    // rollback() discards all unsaved mainContext changes; safe here because the app
+    // saves immediately after every mutation.
+    private func saveAtomically(_ mutate: () throws -> Void) throws {
+        do {
+            try mutate()
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
         }
     }
 
@@ -198,6 +209,22 @@ struct CoachView: View {
         guard profile.remindersEnabled else { return }
         let reminderSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
         await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: reminderSessions, at: profile.reminderTime)
+    }
+
+    /// Reminder refresh failures must not mask a successful plan save: append a mild
+    /// note to the existing status instead of replacing it.
+    private func rescheduleRemindersReportingFailure() async {
+        do {
+            try await rescheduleRemindersIfEnabled()
+        } catch {
+            generationStatus = [generationStatus, "(Reminder refresh failed.)"]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        }
+    }
+
+    private func countText(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
     }
 
     private func requestVerdict(sourceLogID: UUID?, showSuccess: Bool) async {
@@ -429,6 +456,7 @@ private struct CoachInputsCard: View {
         let calendar = Calendar.current
         let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: goal.raceDate).day ?? 0)
         let weeks = (days + 6) / 7
+        if weeks == 0 { return "Race week" }
         return weeks == 1 ? "1 week out" : "\(weeks) weeks out"
     }
 

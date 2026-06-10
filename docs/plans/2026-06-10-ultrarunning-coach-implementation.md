@@ -677,6 +677,8 @@ Button label becomes **"Plan my week"** (`Label(isGeneratingPlan ? "Planning" : 
 
 AMENDED after review: wrap the combined persist (strength + running + single save) in one synchronous do/catch with modelContext.rollback() on throw, no await between the two persists; record the combined response.summary (running + strength) in the CoachPlan row so the running summary isn't lost.
 
+AMENDED after review: combined plan safetyFlags are folded into the persisted CoachPlan summary as a "Watch:" suffix; both branches persist via a shared saveAtomically helper (rollback on throw); reminder rescheduling failures no longer mask a successful save.
+
 ---
 
 ### Task 10: App — run cards in Today, run logging, Log timeline
