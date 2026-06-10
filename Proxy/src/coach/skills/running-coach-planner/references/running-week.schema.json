@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "safetyFlags", "sessions"],
+  "properties": {
+    "summary": { "type": "string" },
+    "safetyFlags": { "type": "array", "items": { "type": "string" } },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "dayOffset",
+          "kind",
+          "purpose",
+          "distanceKm",
+          "durationMinutes",
+          "elevationMeters",
+          "target",
+          "zone",
+          "notes"
+        ],
+        "properties": {
+          "title": { "type": "string" },
+          "dayOffset": { "type": "integer", "minimum": 1, "maximum": 6 },
+          "kind": { "enum": ["easy", "long", "recovery", "hills", "tempo", "intervals"] },
+          "purpose": { "type": "string" },
+          "distanceKm": { "type": "number", "minimum": 0 },
+          "durationMinutes": { "type": "integer", "minimum": 0 },
+          "elevationMeters": { "type": "integer", "minimum": 0 },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "low", "high"],
+            "properties": {
+              "type": { "enum": ["pace", "hr"] },
+              "low": { "type": "integer", "minimum": 0 },
+              "high": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "zone": { "type": "string" },
+          "notes": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}
