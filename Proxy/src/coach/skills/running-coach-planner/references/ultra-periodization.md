@@ -7,7 +7,7 @@ Use `weeksToRace` to pick the phase. Boundaries are guides, not hard cutoffs.
 - Base (more than ~12 weeks out): grow general aerobic volume with easy running. The long run grows gradually. Hills and strides are accents, not workouts.
 - Build (~12 to ~6 weeks out): progress weekly volume, long-run distance, and elevation toward race demand. At most one quality session per week.
 - Peak (~6 to ~3 weeks out): biggest long runs and biggest elevation weeks of the cycle. Keep intensity controlled; specificity beats speed.
-- Taper (final 2-3 weeks): cut volume progressively while keeping light intensity touches early in the taper. Race week is at or below 40% of peak weekly volume.
+- Taper (final 2-3 weeks): cut volume progressively while keeping light intensity touches early in the taper. Race week is at or below 40% of peak weekly volume. Taper begins no later than 21 days out; shorter ultras may begin at 14.
 
 ## Long-Run Progression
 
@@ -18,7 +18,7 @@ Use `weeksToRace` to pick the phase. Boundaries are guides, not hard cutoffs.
 ## Elevation Progression
 
 - Use the race's elevation/distance ratio (total gain in meters divided by distance in km) as the demand target.
-- Progress weekly elevation gain toward that ratio across build and peak; concentrate gain in long runs and hill sessions.
+- Aim weekly elevation gain toward (race elevation/distance ratio) × weekly km across build and peak; concentrate gain in long runs and hill sessions.
 - A large elevation jump counts as an intensity increase under the one-variable rule.
 
 ## Intensity Split
@@ -44,6 +44,8 @@ When any gate trips, downgrade the next hard session to easy and add a safety fl
 - body battery below 25
 - sleep score below 50
 - HRV status "unbalanced" or "low"
+
+Evaluate gates on the most recent wellness day only. Treat 0 or missing values as no data, never as a tripped gate. Match HRV status case-insensitively (devices report values like UNBALANCED).
 
 ## One Variable at a Time
 
