@@ -13,6 +13,35 @@ struct CoachPlanRequest: Codable, Equatable {
     var targetDate: Date
     var trainingLogs: [CoachLog]
     var plannedSessions: [CoachPlannedSession]
+    var running: CoachRunningRequest? = nil
+}
+
+struct CoachRunningGoal: Codable, Equatable {
+    var name: String
+    var raceDate: Date
+    var distanceKm: Double
+    var elevationGainM: Int
+}
+
+struct CoachRunSummary: Codable, Equatable {
+    var completedAt: Date
+    var distanceKm: Double
+    var movingSeconds: Int
+    var elevationGainM: Int
+    var averageHr: Int?
+    var rpe: Int?
+    var kind: String?
+}
+
+struct CoachRunningRequest: Codable, Equatable {
+    var raceGoal: CoachRunningGoal
+    var baselineWeeklyKm: Double
+    var longestRecentRunKm: Double
+    var runningDays: [String]
+    var runningDayOffsets: [Int]
+    var longRunDay: String?
+    var longRunDayOffset: Int?
+    var recentRuns: [CoachRunSummary]
 }
 
 enum CoachModelCatalog {
@@ -127,6 +156,38 @@ struct CoachPlanResponse: Codable, Equatable {
     var contextState: String
     var safetyFlags: [String]
     var sessions: [CoachSessionResponse]
+}
+
+struct RunTargetResponse: Codable, Equatable {
+    var type: String   // "pace" | "hr"
+    var low: Int
+    var high: Int
+}
+
+struct RunSessionResponse: Codable, Equatable {
+    var title: String
+    var dayOffset: Int
+    var kind: String
+    var purpose: String
+    var distanceKm: Double
+    var durationMinutes: Int
+    var elevationMeters: Int
+    var target: RunTargetResponse
+    var zone: String
+    var notes: [String]
+}
+
+struct RunningWeekResponse: Codable, Equatable {
+    var summary: String
+    var safetyFlags: [String]
+    var sessions: [RunSessionResponse]
+}
+
+struct CombinedWeekResponse: Codable, Equatable {
+    var summary: String
+    var safetyFlags: [String]
+    var runningWeek: RunningWeekResponse
+    var strengthWeek: CoachPlanResponse
 }
 
 struct CoachVerdictResponse: Codable, Equatable {
@@ -605,6 +666,43 @@ struct CoachPlanValidator {
     }
 }
 
+struct RunningWeekValidator {
+    func validate(response: RunningWeekResponse, allowedDayOffsets: [Int]) -> PlanValidationResult {
+        var messages: [String] = []
+        let allowed = Set(allowedDayOffsets)
+        var previousDayOffset = -1
+
+        for (index, session) in response.sessions.enumerated() {
+            if !(1...6).contains(session.dayOffset) {
+                messages.append("AI run \(index + 1) must have a day offset from 1 through 6; day offset 0 is today and cannot be planned during a refresh.")
+            }
+
+            if !allowed.isEmpty, (1...6).contains(session.dayOffset), !allowed.contains(session.dayOffset) {
+                messages.append("AI run \(index + 1) is scheduled on a non-running day.")
+            }
+
+            if session.dayOffset <= previousDayOffset {
+                messages.append("AI runs must use strictly increasing day offsets.")
+            }
+            previousDayOffset = session.dayOffset
+
+            if RunKind(rawValue: session.kind) == nil {
+                messages.append("AI run \(index + 1) has an unknown kind.")
+            }
+
+            if session.target.low > session.target.high {
+                messages.append("AI run \(index + 1) has an inverted target range.")
+            }
+
+            if session.distanceKm < 0 || session.durationMinutes < 0 || session.elevationMeters < 0 {
+                messages.append("AI run \(index + 1) has a negative distance, duration, or elevation.")
+            }
+        }
+
+        return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
+    }
+}
+
 extension CoachPlanResponse {
     func weeklyPlan(weekStart: Date, weekIndex: Int = 0) -> WeeklyPlan {
         let calendar = Calendar.current
@@ -662,6 +760,8 @@ func makeCoachRequest(
     logs: [PerformanceLog],
     sessions: [WorkoutSession],
     prescriptions: [SetPrescription] = [],
+    raceGoal: RaceGoal? = nil,
+    runLogs: [RunLog] = [],
     weekStart: Date = rollingPlanStart()
 ) -> CoachPlanRequest {
     let baseline = Baseline(
@@ -676,6 +776,43 @@ func makeCoachRequest(
         weekStart: weekStart
     ).filter { (1...6).contains($0) }
     let prescriptionsBySession = Dictionary(grouping: prescriptions, by: \.sessionId)
+    let running = raceGoal.map { goal in
+        CoachRunningRequest(
+            raceGoal: CoachRunningGoal(
+                name: goal.name,
+                raceDate: Calendar.current.startOfDay(for: goal.raceDate),
+                distanceKm: goal.distanceKm,
+                elevationGainM: goal.elevationGainM
+            ),
+            baselineWeeklyKm: goal.baselineWeeklyKm,
+            longestRecentRunKm: goal.longestRecentRunKm,
+            runningDays: TrainingWeekday.allCases.filter { profile.runningDays.contains($0) }.map(\.rawValue),
+            runningDayOffsets: TrainingWeekday.dayOffsets(
+                for: profile.runningDays,
+                weeklySessions: profile.runningDays.count,
+                weekStart: weekStart
+            ).filter { (1...6).contains($0) },
+            longRunDay: profile.longRunDay?.rawValue,
+            longRunDayOffset: profile.longRunDay
+                .flatMap { TrainingWeekday.dayOffsets(for: [$0], weeklySessions: 1, weekStart: weekStart).first }
+                .flatMap { (1...6).contains($0) ? $0 : nil },
+            recentRuns: runLogs
+                .filter { !$0.needsConfirmation }
+                .sorted { $0.completedAt < $1.completedAt }
+                .suffix(20)
+                .map {
+                    CoachRunSummary(
+                        completedAt: $0.completedAt,
+                        distanceKm: $0.distanceKm,
+                        movingSeconds: $0.movingSeconds,
+                        elevationGainM: $0.elevationGainM,
+                        averageHr: $0.averageHr > 0 ? $0.averageHr : nil,
+                        rpe: $0.rpe > 0 ? $0.rpe : nil,
+                        kind: nil
+                    )
+                }
+        )
+    }
 
     return CoachPlanRequest(
         model: CoachModelCatalog.normalized(modelID),
@@ -739,7 +876,8 @@ func makeCoachRequest(
                         )
                     }
             )
-        }
+        },
+        running: running
     )
 }
 
@@ -765,6 +903,7 @@ struct LocalCoachClient {
     var endpoint: URL
     var session: URLSession = .shared
     var validator = CoachPlanValidator()
+    var runningValidator = RunningWeekValidator()
 
     init(endpointString: String = defaultEndpointString) throws {
         guard let endpoint = Self.normalizedEndpoint(from: endpointString) else { throw CoachClientError.invalidURL }
@@ -805,6 +944,48 @@ struct LocalCoachClient {
         )
         guard validation.status != .rejected else { throw CoachClientError.validationFailed(validation.messages) }
         return plan
+    }
+
+    func generateCombinedWeek(request: CoachPlanRequest, baseline: Baseline, preferences: TrainingPreferences) async throws -> CombinedWeekResponse {
+        guard let weekEndpoint = Self.generateWeekEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: weekEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 240
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(weekEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(weekEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        let combined = try JSONDecoder.coachDecoder.decode(CombinedWeekResponse.self, from: data)
+        let strengthValidation = validator.validate(
+            response: combined.strengthWeek,
+            baseline: baseline,
+            preferences: preferences,
+            weekStart: request.weekStart,
+            plannedSessions: request.plannedSessions,
+            trainingLogs: request.trainingLogs
+        )
+        guard strengthValidation.status != .rejected else { throw CoachClientError.validationFailed(strengthValidation.messages) }
+        let runningValidation = runningValidator.validate(
+            response: combined.runningWeek,
+            allowedDayOffsets: request.running?.runningDayOffsets ?? []
+        )
+        guard runningValidation.status != .rejected else { throw CoachClientError.validationFailed(runningValidation.messages) }
+        return combined
     }
 
     func generateVerdict(request: CoachPlanRequest) async throws -> CoachVerdictResponse {
@@ -894,6 +1075,13 @@ struct LocalCoachClient {
         if components.path.isEmpty || components.path == "/" {
             components.path = "/generate-week-plan"
         }
+        return components.url
+    }
+
+    private static func generateWeekEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/generate-week"
+        components.query = nil
         return components.url
     }
 
