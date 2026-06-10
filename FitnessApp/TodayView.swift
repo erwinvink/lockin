@@ -259,9 +259,14 @@ private struct RunPrescriptionCard: View {
                 StatusPill(text: (session.runKind ?? .easy).title, systemImage: "figure.run")
             }
 
-            if session.estimatedDurationMinutes > 0 {
+            if session.estimatedDurationMinutes > 0 || session.pushedToGarminAt != nil {
                 HStack(spacing: 8) {
-                    DurationPill(minutes: session.estimatedDurationMinutes)
+                    if session.estimatedDurationMinutes > 0 {
+                        DurationPill(minutes: session.estimatedDurationMinutes)
+                    }
+                    if session.pushedToGarminAt != nil {
+                        StatusPill(text: "On your watch", systemImage: "applewatch")
+                    }
                     Spacer(minLength: 0)
                 }
             }
@@ -495,6 +500,15 @@ private struct UpcomingSessionCard: View {
             InfoLine(title: "Next session", value: session.title)
             if session.isRun, session.plannedDistanceKm > 0 {
                 InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
+            }
+            if session.isRun, session.pushedToGarminAt != nil {
+                HStack {
+                    Text("Watch")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.muted)
+                    Spacer()
+                    StatusPill(text: "On your watch", systemImage: "applewatch")
+                }
             }
             if durationMinutes > 0 {
                 HStack {

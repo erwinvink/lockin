@@ -242,6 +242,84 @@ struct GarminSnapshotResponse: Codable, Equatable {
     var activities: [GarminActivityResponse]
 }
 
+struct GarminPushTarget: Codable, Equatable {
+    var type: String   // "pace" | "hr" | "" (sidecar maps unknown/empty to no target)
+    var low: Int
+    var high: Int
+}
+
+struct GarminPushWorkout: Codable, Equatable {
+    var sessionId: String
+    var title: String
+    var date: String   // "yyyy-MM-dd"; the sidecar schedules by calendar date
+    var kind: String
+    var distanceKm: Double
+    var durationMinutes: Int
+    var target: GarminPushTarget
+    var notes: String
+}
+
+struct GarminPushRequest: Codable, Equatable {
+    var workouts: [GarminPushWorkout]
+}
+
+struct GarminPushResultItem: Codable, Equatable {
+    var sessionId: String
+    var garminWorkoutId: String?
+    var scheduled: Bool
+    var error: String?
+}
+
+struct GarminPushResponse: Codable, Equatable {
+    var results: [GarminPushResultItem]
+    var error: String? = nil
+}
+
+struct GarminDeleteRequest: Codable, Equatable {
+    var workoutIds: [String]
+}
+
+struct GarminDeleteResultItem: Codable, Equatable {
+    var workoutId: String
+    var deleted: Bool
+    var error: String?
+}
+
+struct GarminDeleteResponse: Codable, Equatable {
+    var results: [GarminDeleteResultItem]
+    var error: String? = nil
+}
+
+/// Maps planned running sessions onto the sidecar's push contract. Strength
+/// and non-planned sessions never reach the watch. An unset target stays
+/// empty: build_workout maps a non pace/hr type to "no target" on the step.
+func garminPushWorkouts(from sessions: [WorkoutSession], calendar: Calendar = .current) -> [GarminPushWorkout] {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = calendar
+    formatter.timeZone = calendar.timeZone
+    formatter.dateFormat = "yyyy-MM-dd"
+
+    return sessions
+        .filter { $0.discipline == .running && $0.status == .planned }
+        .map { session in
+            GarminPushWorkout(
+                sessionId: session.id.uuidString,
+                title: session.title,
+                date: formatter.string(from: session.scheduledDate),
+                kind: session.runKindRaw,
+                distanceKm: session.plannedDistanceKm,
+                durationMinutes: session.estimatedDurationMinutes,
+                target: GarminPushTarget(
+                    type: session.runTargetTypeRaw,
+                    low: session.runTargetLow,
+                    high: session.runTargetHigh
+                ),
+                notes: session.runZone
+            )
+        }
+}
+
 struct CoachSessionResponse: Codable, Equatable {
     var title: String
     var dayOffset: Int
@@ -1156,6 +1234,63 @@ struct LocalCoachClient {
         return try JSONDecoder.coachDecoder.decode(GarminSnapshotResponse.self, from: data)
     }
 
+    func pushWorkoutsToGarmin(_ workouts: [GarminPushWorkout]) async throws -> GarminPushResponse {
+        guard let pushEndpoint = Self.garminPushEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: pushEndpoint)
+        urlRequest.httpMethod = "POST"
+        // The proxy gives the sidecar a 60s budget per batch; leave headroom.
+        urlRequest.timeoutInterval = 90
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(GarminPushRequest(workouts: workouts))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(pushEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(pushEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminPushResponse.self, from: data)
+    }
+
+    func deleteGarminWorkouts(_ ids: [String]) async throws -> GarminDeleteResponse {
+        guard !ids.isEmpty else { return GarminDeleteResponse(results: []) }
+        guard let deleteEndpoint = Self.garminDeleteEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: deleteEndpoint)
+        urlRequest.httpMethod = "POST"
+        // Same sidecar budget as the push path.
+        urlRequest.timeoutInterval = 90
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(GarminDeleteRequest(workoutIds: ids))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(deleteEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(deleteEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminDeleteResponse.self, from: data)
+    }
+
     private static func normalizedEndpoint(from value: String) -> URL? {
         var rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawValue.isEmpty else { return nil }
@@ -1212,6 +1347,20 @@ struct LocalCoachClient {
         guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
         components.path = "/garmin/snapshot"
         components.queryItems = [URLQueryItem(name: "sinceDays", value: "\(sinceDays)")]
+        return components.url
+    }
+
+    private static func garminPushEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/push-workouts"
+        components.query = nil
+        return components.url
+    }
+
+    private static func garminDeleteEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/delete-workouts"
+        components.query = nil
         return components.url
     }
 

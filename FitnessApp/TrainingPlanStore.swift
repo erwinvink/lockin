@@ -340,14 +340,19 @@ func persist(
     }
 }
 
+/// Returns the Garmin workout ids of replaced runs that were already pushed
+/// to the watch, so the caller can delete them from Garmin before pushing
+/// the fresh week.
+@discardableResult
 func persist(
     runningWeek: RunningWeekResponse,
     weekStart: Date,
     in modelContext: ModelContext,
     replacingFuturePlannedSessions: Bool = false
-) throws {
+) throws -> [String] {
+    var stalePushedGarminIds: [String] = []
     if replacingFuturePlannedSessions {
-        try deleteFuturePlannedSessions(in: modelContext, for: weekStart, discipline: .running)
+        stalePushedGarminIds = try deleteFuturePlannedSessions(in: modelContext, for: weekStart, discipline: .running)
     }
 
     let calendar = Calendar.current
@@ -372,6 +377,7 @@ func persist(
         )
         modelContext.insert(session)
     }
+    return stalePushedGarminIds
 }
 
 @discardableResult
@@ -398,7 +404,10 @@ func deleteNonAIPlannedSessions(from sessions: [WorkoutSession], in modelContext
     return sessionsToDelete.count
 }
 
-private func deleteFuturePlannedSessions(in modelContext: ModelContext, for weekStart: Date, discipline: Discipline?) throws {
+/// Returns the non-empty `garminWorkoutId`s of the deleted running sessions
+/// so a replan can clear the matching structured workouts from the watch.
+@discardableResult
+private func deleteFuturePlannedSessions(in modelContext: ModelContext, for weekStart: Date, discipline: Discipline?) throws -> [String] {
     let calendar = Calendar.current
     let start = calendar.startOfDay(for: weekStart)
     let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
@@ -414,6 +423,10 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
         (discipline == nil || $0.discipline == discipline)
     }
 
+    let stalePushedGarminIds = sessionsToDelete
+        .filter { $0.discipline == .running && !$0.garminWorkoutId.isEmpty }
+        .map(\.garminWorkoutId)
+
     let sessionIds = Set(sessionsToDelete.map(\.id))
     let prescriptions = try modelContext.fetch(FetchDescriptor<SetPrescription>())
     for prescription in prescriptions where sessionIds.contains(prescription.sessionId) {
@@ -428,6 +441,7 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
     for session in sessionsToDelete {
         modelContext.delete(session)
     }
+    return stalePushedGarminIds
 }
 
 func wipeAllData(in modelContext: ModelContext) throws {

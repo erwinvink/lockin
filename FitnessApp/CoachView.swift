@@ -18,6 +18,8 @@ struct CoachView: View {
     @State private var isGeneratingPlan = false
     @State private var isRefreshingVerdict = false
     @State private var isAdvancedExpanded = false
+    @State private var isPushingRunsToWatch = false
+    @State private var garminPushStatus: String?
 
     var profile: UserProfile
 
@@ -77,6 +79,13 @@ struct CoachView: View {
                         .foregroundStyle(AppTheme.muted)
                         .card()
                 }
+
+                GarminSyncRow(
+                    endpoint: endpoint,
+                    isPushing: isPushingRunsToWatch || isGeneratingPlan,
+                    pushStatus: garminPushStatus,
+                    onPush: pushRunsToWatchManually
+                )
 
                 CoachInputsCard(
                     profile: profile,
@@ -165,9 +174,10 @@ struct CoachView: View {
                 strengthPlan.summary = response.safetyFlags.isEmpty
                     ? response.summary
                     : response.summary + " Watch: " + response.safetyFlags.joined(separator: " ")
+                var stalePushedIds: [String] = []
                 try saveAtomically {
                     try persist(plan: strengthPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
-                    try persist(runningWeek: response.runningWeek, weekStart: request.weekStart, in: modelContext, replacingFuturePlannedSessions: true)
+                    stalePushedIds = try persist(runningWeek: response.runningWeek, weekStart: request.weekStart, in: modelContext, replacingFuturePlannedSessions: true)
                 }
                 let strengthCount = strengthPlan.sessions.count
                 let runCount = response.runningWeek.sessions.count
@@ -175,6 +185,9 @@ struct CoachView: View {
                     ? "Saved \(countText(strengthCount, "strength session")). The running week is already underway; no new runs were planned."
                     : "Saved \(countText(strengthCount, "strength session")) and \(countText(runCount, "run")). Today was left untouched."
                 await rescheduleRemindersReportingFailure()
+                if let watchNote = await pushPlannedRunsToWatch(stalePushedIds: stalePushedIds) {
+                    generationStatus = [generationStatus, watchNote].compactMap { $0 }.joined(separator: " ")
+                }
             } else {
                 let response = try await LocalCoachClient(endpointString: endpoint).generatePlan(
                     request: request,
@@ -202,6 +215,88 @@ struct CoachView: View {
         } catch {
             modelContext.rollback()
             throw error
+        }
+    }
+
+    private static let watchRetryNote = "Runs are planned but not all on your watch yet — retry from the Garmin row."
+
+    /// Deletes stale Garmin workouts first, then pushes every future planned
+    /// run that is not on the watch yet, and records the returned workout ids.
+    /// All failures are non-fatal — the plan is already saved and the Garmin
+    /// row offers a retry. Returns a short status note, or nil when there was
+    /// nothing to do.
+    private func pushPlannedRunsToWatch(stalePushedIds: [String]) async -> String? {
+        guard let client = try? LocalCoachClient(endpointString: endpoint) else { return Self.watchRetryNote }
+
+        isPushingRunsToWatch = true
+        defer { isPushingRunsToWatch = false }
+
+        var notes: [String] = []
+        if !stalePushedIds.isEmpty {
+            let staleCleared: Bool
+            do {
+                let response = try await client.deleteGarminWorkouts(stalePushedIds)
+                staleCleared = response.error == nil && response.results.allSatisfy(\.deleted)
+            } catch {
+                staleCleared = false
+            }
+            if !staleCleared {
+                notes.append("Some replaced workouts may still sit on your watch.")
+            }
+        }
+
+        do {
+            let workouts = garminPushWorkouts(from: try futurePlannedRunsAwaitingPush())
+            guard !workouts.isEmpty else {
+                return notes.isEmpty ? nil : notes.joined(separator: " ")
+            }
+
+            let response = try await client.pushWorkoutsToGarmin(workouts)
+            // Re-fetch after the await: the pre-push session references may be
+            // stale by the time the response lands (same rule as AppShellView).
+            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+            let pushedAt = Date()
+            var scheduledCount = 0
+            for result in response.results where result.scheduled {
+                guard let session = sessions.first(where: { $0.id.uuidString == result.sessionId }) else { continue }
+                session.garminWorkoutId = result.garminWorkoutId ?? ""
+                session.pushedToGarminAt = pushedAt
+                scheduledCount += 1
+            }
+            try modelContext.save()
+
+            if scheduledCount == workouts.count, response.error == nil {
+                notes.append("\(countText(scheduledCount, "run")) on your watch.")
+            } else {
+                notes.append(Self.watchRetryNote)
+            }
+        } catch {
+            notes.append(Self.watchRetryNote)
+        }
+        return notes.joined(separator: " ")
+    }
+
+    /// Future planned runs that never made it onto the watch. Today's run is
+    /// excluded: it is locked during replans, so an existing watch workout
+    /// stays valid, and pushing a new one mid-day would land too late anyway.
+    private func futurePlannedRunsAwaitingPush() throws -> [WorkoutSession] {
+        let endOfToday = Calendar.current.dateInterval(of: .day, for: Date())?.end ?? Date()
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+        return sessions.filter {
+            $0.discipline == .running &&
+            $0.status == .planned &&
+            $0.garminWorkoutId.isEmpty &&
+            $0.scheduledDate >= endOfToday
+        }
+    }
+
+    private func pushRunsToWatchManually() {
+        guard !isPushingRunsToWatch, !isGeneratingPlan else { return }
+        enforceHostedEndpoint()
+        garminPushStatus = nil
+        Task {
+            let note = await pushPlannedRunsToWatch(stalePushedIds: [])
+            garminPushStatus = note ?? "All planned runs are already on your watch."
         }
     }
 
@@ -463,6 +558,85 @@ private struct CoachInputsCard: View {
     private var runningDaysText: String {
         let days = TrainingWeekday.allCases.filter { profile.runningDays.contains($0) }
         return days.isEmpty ? "No fixed days" : days.map(\.shortTitle).joined(separator: ", ")
+    }
+}
+
+private struct GarminSyncRow: View {
+    var endpoint: String
+    var isPushing: Bool
+    var pushStatus: String?
+    var onPush: () -> Void
+
+    @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
+    @State private var status: GarminStatusResponse?
+    @State private var statusFailed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Garmin", systemImage: "applewatch")
+                    .font(.headline)
+                Spacer()
+                StatusPill(text: pillText, color: pillColor, systemImage: pillIcon)
+            }
+
+            InfoLine(title: "Last sync attempt", value: lastSyncText)
+
+            if let lastError = status?.lastError, !lastError.isEmpty {
+                Text(lastError)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
+
+            Button(action: onPush) {
+                Label(isPushing ? "Pushing runs" : "Push runs to watch", systemImage: "arrow.up.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .accessibilityIdentifier("garmin-push-retry")
+            .disabled(isPushing)
+            .opacity(isPushing ? 0.55 : 1)
+
+            if let pushStatus {
+                Text(pushStatus)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
+        }
+        .card()
+        .task { await loadStatus() }
+    }
+
+    private var lastSyncText: String {
+        guard garminLastSyncAt > 0 else { return "Never" }
+        return Date(timeIntervalSince1970: garminLastSyncAt)
+            .formatted(.relative(presentation: .named))
+    }
+
+    private var pillText: String {
+        guard let status else { return statusFailed ? "Unreachable" : "Checking" }
+        if status.ok, status.loggedIn { return "Connected" }
+        return status.loggedIn ? "Degraded" : "Not signed in"
+    }
+
+    private var pillColor: Color {
+        guard let status else { return statusFailed ? AppTheme.warning : AppTheme.muted }
+        return status.ok && status.loggedIn ? AppTheme.accent : AppTheme.warning
+    }
+
+    private var pillIcon: String {
+        guard let status else { return statusFailed ? "exclamationmark.triangle.fill" : "hourglass" }
+        return status.ok && status.loggedIn ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private func loadStatus() async {
+        do {
+            status = try await LocalCoachClient(endpointString: endpoint).fetchGarminStatus()
+            statusFailed = false
+        } catch {
+            status = nil
+            statusFailed = true
+        }
     }
 }
 

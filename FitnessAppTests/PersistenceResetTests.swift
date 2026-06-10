@@ -844,6 +844,74 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertFalse(sessions.contains { $0.id == plannedTomorrowRun.id }, "Planned runs scheduled after today are still replaced")
     }
 
+    func testPersistRunningWeekReturnsGarminWorkoutIdsOfDeletedPushedRuns() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let weekStart = calendar.startOfDay(for: Date())
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: weekStart))
+        let dayAfter = try XCTUnwrap(calendar.date(byAdding: .day, value: 2, to: weekStart))
+
+        let pushedFutureRun = WorkoutSession(
+            scheduledDate: tomorrow,
+            title: "Stale pushed run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Stale pushed run",
+            discipline: .running,
+            runKind: .long
+        )
+        pushedFutureRun.garminWorkoutId = "garmin-101"
+        pushedFutureRun.pushedToGarminAt = Date()
+
+        let unpushedFutureRun = WorkoutSession(
+            scheduledDate: dayAfter,
+            title: "Stale unpushed run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Stale unpushed run",
+            discipline: .running,
+            runKind: .easy
+        )
+
+        let pushedTodayRun = WorkoutSession(
+            scheduledDate: weekStart,
+            title: "Today pushed run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Today pushed run",
+            discipline: .running,
+            runKind: .easy
+        )
+        pushedTodayRun.garminWorkoutId = "garmin-locked"
+
+        modelContext.insert(pushedFutureRun)
+        modelContext.insert(unpushedFutureRun)
+        modelContext.insert(pushedTodayRun)
+        try modelContext.save()
+
+        let week = RunningWeekResponse.ultraFixture()
+        let staleIds = try persist(runningWeek: week, weekStart: weekStart, in: modelContext, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        XCTAssertEqual(staleIds, ["garmin-101"], "Only deleted runs that were pushed report their Garmin workout id")
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertFalse(sessions.contains { $0.id == pushedFutureRun.id })
+        XCTAssertFalse(sessions.contains { $0.id == unpushedFutureRun.id })
+        XCTAssertTrue(sessions.contains { $0.id == pushedTodayRun.id }, "A locked today run keeps its Garmin workout")
+    }
+
+    func testPersistRunningWeekWithoutReplacementReturnsNoStaleIds() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+
+        let staleIds = try persist(runningWeek: RunningWeekResponse.ultraFixture(), weekStart: Date(), in: modelContext)
+        try modelContext.save()
+
+        XCTAssertTrue(staleIds.isEmpty)
+    }
+
     func testDeleteNonAIPlannedSessionsKeepsAIRunningSessions() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext

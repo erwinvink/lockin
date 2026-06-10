@@ -909,6 +909,171 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(snapshot.activities.isEmpty)
     }
 
+    func testGarminPushWorkoutsBuildsSidecarPayloadFromPlannedRunningSessions() throws {
+        let calendar = Calendar.current
+        let runDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 13, hour: 9)))
+        let plannedRun = WorkoutSession(
+            scheduledDate: runDate,
+            title: "Hilly long run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Build durability on climbs.",
+            estimatedDurationMinutes: 150,
+            discipline: .running,
+            runKind: .long,
+            plannedDistanceKm: 22,
+            plannedElevationM: 800,
+            runTargetType: .pace,
+            runTargetLow: 360,
+            runTargetHigh: 390,
+            runZone: "Z2"
+        )
+        let completedRun = WorkoutSession(
+            scheduledDate: runDate,
+            title: "Already done run",
+            weekIndex: 0,
+            focus: .mixed,
+            status: .completed,
+            summary: "AI: Done.",
+            discipline: .running,
+            runKind: .easy
+        )
+        let plannedStrength = WorkoutSession(
+            scheduledDate: runDate,
+            title: "Pull day",
+            weekIndex: 0,
+            focus: .pull,
+            summary: "AI: Strength."
+        )
+
+        let workouts = garminPushWorkouts(from: [plannedStrength, completedRun, plannedRun])
+
+        XCTAssertEqual(workouts.count, 1, "Only planned running sessions are pushable")
+        let workout = try XCTUnwrap(workouts.first)
+        XCTAssertEqual(workout.sessionId, plannedRun.id.uuidString)
+        XCTAssertEqual(workout.title, "Hilly long run")
+        XCTAssertEqual(workout.date, "2026-06-13", "The sidecar schedules by calendar date")
+        XCTAssertEqual(workout.kind, "long")
+        XCTAssertEqual(workout.distanceKm, 22)
+        XCTAssertEqual(workout.durationMinutes, 150)
+        XCTAssertEqual(workout.target, GarminPushTarget(type: "pace", low: 360, high: 390))
+        XCTAssertEqual(workout.notes, "Z2")
+    }
+
+    func testGarminPushWorkoutsKeepsUnsetTargetEmptyForSidecar() throws {
+        // build_workout treats an empty target type as no.target, so an unset
+        // app-side target must stay empty instead of inventing a pace range.
+        let zonelessEasyRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Easy shakeout",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Keep it light.",
+            estimatedDurationMinutes: 30,
+            discipline: .running,
+            runKind: .easy
+        )
+
+        let workout = try XCTUnwrap(garminPushWorkouts(from: [zonelessEasyRun]).first)
+
+        XCTAssertEqual(workout.target, GarminPushTarget(type: "", low: 0, high: 0))
+        XCTAssertEqual(workout.notes, "")
+    }
+
+    func testGarminPushRequestEncodesSidecarContract() throws {
+        let request = GarminPushRequest(workouts: [
+            GarminPushWorkout(
+                sessionId: "9E5B2C1A-0000-0000-0000-000000000001",
+                title: "Tempo run",
+                date: "2026-06-12",
+                kind: "tempo",
+                distanceKm: 8,
+                durationMinutes: 45,
+                target: GarminPushTarget(type: "hr", low: 150, high: 162),
+                notes: "Z3"
+            )
+        ])
+
+        let data = try JSONEncoder.coachEncoder.encode(request)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let workouts = try XCTUnwrap(object["workouts"] as? [[String: Any]])
+        let workout = try XCTUnwrap(workouts.first)
+
+        XCTAssertEqual(workout["sessionId"] as? String, "9E5B2C1A-0000-0000-0000-000000000001")
+        XCTAssertEqual(workout["title"] as? String, "Tempo run")
+        XCTAssertEqual(workout["date"] as? String, "2026-06-12")
+        XCTAssertEqual(workout["kind"] as? String, "tempo")
+        XCTAssertEqual(workout["distanceKm"] as? Double, 8)
+        XCTAssertEqual(workout["durationMinutes"] as? Int, 45)
+        XCTAssertEqual(workout["notes"] as? String, "Z3")
+        let target = try XCTUnwrap(workout["target"] as? [String: Any])
+        XCTAssertEqual(target["type"] as? String, "hr")
+        XCTAssertEqual(target["low"] as? Int, 150)
+        XCTAssertEqual(target["high"] as? Int, 162)
+    }
+
+    func testGarminPushResponseDecodesProxyShape() throws {
+        let json = """
+        {
+          "results": [
+            { "sessionId": "A", "garminWorkoutId": "1290881234", "scheduled": true, "error": null },
+            { "sessionId": "B", "garminWorkoutId": null, "scheduled": false, "error": "not logged in" }
+          ]
+        }
+        """
+
+        let response = try JSONDecoder.coachDecoder.decode(GarminPushResponse.self, from: Data(json.utf8))
+
+        XCTAssertNil(response.error)
+        XCTAssertEqual(response.results.count, 2)
+        XCTAssertEqual(response.results[0].sessionId, "A")
+        XCTAssertEqual(response.results[0].garminWorkoutId, "1290881234")
+        XCTAssertTrue(response.results[0].scheduled)
+        XCTAssertNil(response.results[0].error)
+        XCTAssertNil(response.results[1].garminWorkoutId)
+        XCTAssertFalse(response.results[1].scheduled)
+        XCTAssertEqual(response.results[1].error, "not logged in")
+
+        let degradedJSON = """
+        { "results": [], "error": "Garmin service is not reachable." }
+        """
+
+        let degraded = try JSONDecoder.coachDecoder.decode(GarminPushResponse.self, from: Data(degradedJSON.utf8))
+
+        XCTAssertTrue(degraded.results.isEmpty)
+        XCTAssertEqual(degraded.error, "Garmin service is not reachable.")
+    }
+
+    func testGarminDeleteResponseDecodesProxyShape() throws {
+        let json = """
+        {
+          "results": [
+            { "workoutId": "1290881234", "deleted": true, "error": null },
+            { "workoutId": "1290889999", "deleted": false, "error": "API Error 500" }
+          ]
+        }
+        """
+
+        let response = try JSONDecoder.coachDecoder.decode(GarminDeleteResponse.self, from: Data(json.utf8))
+
+        XCTAssertNil(response.error)
+        XCTAssertEqual(response.results.count, 2)
+        XCTAssertEqual(response.results[0].workoutId, "1290881234")
+        XCTAssertTrue(response.results[0].deleted)
+        XCTAssertNil(response.results[0].error)
+        XCTAssertFalse(response.results[1].deleted)
+        XCTAssertEqual(response.results[1].error, "API Error 500")
+
+        let degradedJSON = """
+        { "results": [], "error": "Garmin service timed out." }
+        """
+
+        let degraded = try JSONDecoder.coachDecoder.decode(GarminDeleteResponse.self, from: Data(degradedJSON.utf8))
+
+        XCTAssertTrue(degraded.results.isEmpty)
+        XCTAssertEqual(degraded.error, "Garmin service timed out.")
+    }
+
     func testMakeCoachRequestMapsRunFeelScoreToCoachSummaries() throws {
         let calendar = Calendar.current
         let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
