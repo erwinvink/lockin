@@ -50,14 +50,14 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 - Today (`dayOffset: 0`) is locked. Never create, replace, or repair a run for today.
 - When selected future running-day offsets are provided, use only those offsets. Schedule exactly one run on every provided offset; when load must drop, shorten a day to a recovery run rather than skipping it.
 - If no future running-day offsets are provided, return an empty `sessions` array and use `summary` to explain that this running week is already underway and the next full week starts after the coming rest days.
-- The long run goes on the long-run day when one is provided.
+- The long run goes on the long-run day when one is provided. When the race itself falls in this week, the race session takes precedence and counts as the long run wherever it lands.
 - No weekly volume jump above 15% week-over-week without a safety flag.
-- Never schedule a long run above 1.4x the recent longest run. Hold the cap and add a safety flag explaining the race-demand pressure instead.
+- Never schedule a long run above 1.4x the recent longest run. Hold the cap and add a safety flag explaining the race-demand pressure instead. The race-day session is exempt from this cap; when the race exceeds recent training distance, add a safety flag saying so.
 - `long`, `tempo`, `intervals`, and `hills` all count as hard sessions for weekly balance. If hard sessions exceed half the week's runs (for example a back-to-back long-run week), include a safety flag explaining why.
 - Apply the readiness gates from `references/ultra-periodization.md`: when a gate trips, downgrade the next hard session to easy and add a safety flag.
 - With no recent runs, anchor volume to `baselineWeeklyKm`; if that is also 0, plan a minimal assessment week and flag it.
 - Add safety flags for injury notes, volume jumps, or missing run history.
-- Keep `durationMinutes` roughly equal to `distanceKm` × the target pace midpoint, with an allowance for elevation gain.
+- For pace targets, keep `durationMinutes` roughly equal to `distanceKm` × the target pace midpoint converted to minutes, with an allowance for elevation gain.
 - Never diagnose pain or injury; adjust training and explain the safety reason.
 - Return schema-valid JSON only.
 
