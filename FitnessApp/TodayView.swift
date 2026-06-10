@@ -10,11 +10,12 @@ struct TodayView: View {
 
     var profile: UserProfile
     @State private var loggingSession: WorkoutSession?
+    @State private var loggingRunSession: WorkoutSession?
     @State private var pendingLoggingSessionID: UUID?
     @State private var workoutCardResetID = UUID()
 
-    private var dueSession: WorkoutSession? {
-        duePlannedSession(from: sessions)
+    private var dueSessions: [WorkoutSession] {
+        duePlannedSessions(from: sessions)
     }
 
     private var futureSession: WorkoutSession? {
@@ -36,14 +37,20 @@ struct TodayView: View {
 
                 TodayHeroCard(rank: rank)
 
-                if let session = dueSession {
-                    WorkoutPrescriptionCard(
-                        session: session,
-                        prescriptions: prescriptionsForSession(session),
-                        blocks: blocksForSession(session),
-                        onComplete: { beginLogging(session) }
-                    )
-                    .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
+                if !dueSessions.isEmpty {
+                    ForEach(dueSessions) { session in
+                        if session.isRun {
+                            RunPrescriptionCard(session: session, onLog: { beginRunLogging(session) })
+                        } else {
+                            WorkoutPrescriptionCard(
+                                session: session,
+                                prescriptions: prescriptionsForSession(session),
+                                blocks: blocksForSession(session),
+                                onComplete: { beginLogging(session) }
+                            )
+                            .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
+                        }
+                    }
                     ReadinessSummary(log: latestLog)
                 } else if sessions.isEmpty {
                     EmptyPlanCard()
@@ -55,6 +62,9 @@ struct TodayView: View {
             }
             .sheet(item: $loggingSession, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { session in
                 LogWorkoutView(session: session, profile: profile)
+            }
+            .sheet(item: $loggingRunSession) { session in
+                LogRunView(session: session)
             }
         }
     }
@@ -75,6 +85,11 @@ struct TodayView: View {
         guard session.status == .planned else { return }
         pendingLoggingSessionID = session.id
         loggingSession = session
+    }
+
+    private func beginRunLogging(_ session: WorkoutSession) {
+        guard session.status == .planned else { return }
+        loggingRunSession = session
     }
 
     private func resetCheckedWorkoutIfLogWasCancelled() {
@@ -177,6 +192,88 @@ struct WorkoutPrescriptionCard: View {
     }
 }
 
+private struct RunPrescriptionCard: View {
+    var session: WorkoutSession
+    var onLog: () -> Void
+
+    private var purposeText: String {
+        var purpose = session.summary
+        if purpose.hasPrefix("AI: ") {
+            purpose = String(purpose.dropFirst(4))
+        }
+        return purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(session.title)
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .foregroundStyle(AppTheme.text)
+                Spacer(minLength: 12)
+                StatusPill(text: (session.runKind ?? .easy).title, systemImage: "figure.run")
+            }
+
+            if session.estimatedDurationMinutes > 0 {
+                HStack(spacing: 8) {
+                    DurationPill(minutes: session.estimatedDurationMinutes)
+                    Spacer(minLength: 0)
+                }
+            }
+
+            VStack(spacing: 0) {
+                RunDetailRow(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
+                if session.plannedElevationM > 0 {
+                    Divider()
+                    RunDetailRow(title: "Elevation gain", value: "\(session.plannedElevationM) m+")
+                }
+                Divider()
+                RunDetailRow(title: "Target", value: runTargetText(session: session))
+            }
+            .background(AppTheme.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                    .stroke(AppTheme.divider, lineWidth: 1)
+            )
+
+            if !purposeText.isEmpty {
+                Text(purposeText)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button("Log this run", action: onLog)
+                .buttonStyle(PrimaryActionButtonStyle())
+                .accessibilityIdentifier("log-run-button")
+        }
+        .card(padding: 14)
+    }
+}
+
+private struct RunDetailRow: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.text)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .foregroundStyle(AppTheme.text)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+    }
+}
+
 private struct CompactPrescriptionRow: View {
     var item: SetPrescription
     var block: WorkoutBlock?
@@ -247,6 +344,9 @@ private struct UpcomingSessionCard: View {
                 StatusPill(text: "Scheduled", systemImage: "calendar")
             }
             InfoLine(title: "Next session", value: session.title)
+            if session.isRun, session.plannedDistanceKm > 0 {
+                InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
+            }
             if durationMinutes > 0 {
                 HStack {
                     Text("Duration")

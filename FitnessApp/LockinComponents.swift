@@ -439,6 +439,10 @@ struct WeekPlanRow: View {
     var durationMinutes: Int = 0
     var onSelect: () -> Void = {}
 
+    private var showsRunDistance: Bool {
+        session.isRun && session.plannedDistanceKm > 0
+    }
+
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 10) {
@@ -451,8 +455,15 @@ struct WeekPlanRow: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.text)
                         .lineLimit(1)
-                    if durationMinutes > 0 || session.plannedEffortLabel != nil {
+                    if durationMinutes > 0 || session.plannedEffortLabel != nil || showsRunDistance {
                         HStack(spacing: 6) {
+                            if showsRunDistance {
+                                StatusPill(
+                                    text: runDistanceText(km: session.plannedDistanceKm),
+                                    color: AppTheme.muted,
+                                    systemImage: "figure.run"
+                                )
+                            }
                             DurationPill(minutes: durationMinutes)
                             if let effortLabel = session.plannedEffortLabel {
                                 EffortPill(

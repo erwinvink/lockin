@@ -556,3 +556,238 @@ private struct NotesCard: View {
         .card(padding: 12)
     }
 }
+
+struct LogRunView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query private var ranks: [RankState]
+
+    var session: WorkoutSession
+
+    @FocusState private var distanceFieldIsFocused: Bool
+    @State private var distanceText: String
+    @State private var movingMinutes: Int
+    @State private var elevationGainM: Int
+    @State private var averageHr = 0
+    @State private var rpe = 6
+    @State private var howFelt = 3
+    @State private var notes = ""
+
+    init(session: WorkoutSession) {
+        self.session = session
+        _distanceText = State(initialValue: session.plannedDistanceKm > 0
+            ? session.plannedDistanceKm.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))
+            : "")
+        _movingMinutes = State(initialValue: max(0, session.estimatedDurationMinutes))
+        _elevationGainM = State(initialValue: max(0, session.plannedElevationM))
+    }
+
+    private var parsedDistanceKm: Double? {
+        let normalized = distanceText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value >= 0, value <= 500 else { return nil }
+        return value
+    }
+
+    private var canSave: Bool {
+        parsedDistanceKm != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScreenBackground {
+                RunWorkCard(
+                    distanceText: $distanceText,
+                    movingMinutes: $movingMinutes,
+                    elevationGainM: $elevationGainM,
+                    averageHr: $averageHr,
+                    distanceIsValid: parsedDistanceKm != nil,
+                    distanceFieldIsFocused: $distanceFieldIsFocused
+                )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Readiness")
+                        .font(.headline)
+                    ReadinessSlider(
+                        title: "Perceived effort",
+                        systemImage: "speedometer",
+                        value: $rpe,
+                        range: 1...10,
+                        descriptor: ReadinessScale.perceivedEffort
+                    )
+                    Divider()
+                    ReadinessSlider(
+                        title: "How did you feel?",
+                        systemImage: "face.smiling",
+                        value: $howFelt,
+                        range: 1...5,
+                        descriptor: ReadinessScale.howIFelt
+                    )
+                }
+                .card(padding: 10)
+
+                NotesCard(notes: $notes)
+
+                Button("Save run", action: save)
+                    .buttonStyle(PrimaryActionButtonStyle())
+                    .disabled(!canSave)
+                    .opacity(canSave ? 1 : 0.45)
+                    .accessibilityIdentifier("save-run-button")
+            }
+            .navigationTitle("Log run")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        distanceFieldIsFocused = false
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    private func save() {
+        distanceFieldIsFocused = false
+        guard let distanceKm = parsedDistanceKm else { return }
+
+        let movingSeconds = max(0, movingMinutes) * 60
+        let pace = distanceKm > 0 && movingSeconds > 0 ? Int(Double(movingSeconds) / distanceKm) : 0
+        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: howFelt)
+        let log = RunLog(
+            sessionId: session.id,
+            completedAt: Date(),
+            distanceKm: distanceKm,
+            movingSeconds: movingSeconds,
+            elevationGainM: max(0, elevationGainM),
+            averageHr: max(0, averageHr),
+            averagePaceSecPerKm: pace,
+            rpe: rpe,
+            feelScore: howFelt,
+            notes: notes,
+            source: .manual,
+            needsConfirmation: false
+        )
+        modelContext.insert(log)
+        session.status = .completed
+
+        let outcome = TrainingEngine().score(
+            log: SessionLogInput(
+                completed: true,
+                pullUps: 0,
+                pushUps: 0,
+                plankSeconds: 0,
+                loggedPullUps: false,
+                loggedPushUps: false,
+                loggedPlankSeconds: false,
+                rpe: rpe,
+                painLevel: 0,
+                fatigueLevel: fatigueLevel
+            ),
+            plannedSession: nil
+        )
+        let rank = ranks.first ?? RankState()
+        if ranks.isEmpty { modelContext.insert(rank) }
+        applyScoreOutcome(outcome, to: rank)
+        session.scoreImpact = outcome.consistencyDelta
+
+        do {
+            try modelContext.save()
+        } catch {
+            // Keep the current UX quiet; a failed save just leaves the sheet.
+        }
+        dismiss()
+    }
+}
+
+private struct RunWorkCard: View {
+    @Binding var distanceText: String
+    @Binding var movingMinutes: Int
+    @Binding var elevationGainM: Int
+    @Binding var averageHr: Int
+    var distanceIsValid: Bool
+    @FocusState.Binding var distanceFieldIsFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Run data")
+                    .font(.headline)
+                Spacer()
+                Text("Required")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(AppTheme.accent)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(AppTheme.accentSoft)
+                    .clipShape(Capsule())
+            }
+
+            RunDistanceField(
+                text: $distanceText,
+                isValid: distanceIsValid,
+                isFocused: $distanceFieldIsFocused
+            )
+            IntegerField(title: "Moving time", value: $movingMinutes, range: 0...1_440, suffix: "min")
+            IntegerField(title: "Elevation gain", value: $elevationGainM, range: 0...10_000, suffix: "m")
+            IntegerField(title: "Average heart rate", value: $averageHr, range: 0...250, suffix: "bpm")
+            Text("Leave average heart rate at 0 if you did not measure it.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.muted)
+        }
+        .card(padding: 12)
+    }
+}
+
+private struct RunDistanceField: View {
+    @Binding var text: String
+    var isValid: Bool
+    @FocusState.Binding var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Distance")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.text)
+                .lineLimit(2)
+            Spacer()
+            HStack(spacing: 6) {
+                TextField("", text: $text)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
+                    .frame(width: 70)
+                    .accessibilityLabel("Distance in kilometres")
+                    .accessibilityIdentifier("run-distance-field")
+                    .focused($isFocused)
+                    .onChange(of: text) { _, newValue in
+                        text = String(newValue.filter { $0.isNumber || $0 == "." || $0 == "," }.prefix(6))
+                    }
+                Text("km")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(AppTheme.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                    .stroke(strokeColor, lineWidth: 1)
+            )
+        }
+    }
+
+    private var strokeColor: Color {
+        if !isValid {
+            return AppTheme.warning.opacity(0.7)
+        }
+        return isFocused ? AppTheme.accent.opacity(0.7) : AppTheme.divider
+    }
+}

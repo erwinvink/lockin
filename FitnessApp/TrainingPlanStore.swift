@@ -22,6 +22,22 @@ func duePlannedSession(from sessions: [WorkoutSession], now: Date = Date(), cale
         .first
 }
 
+func duePlannedSessions(from sessions: [WorkoutSession], now: Date = Date(), calendar: Calendar = .current) -> [WorkoutSession] {
+    let startOfToday = calendar.startOfDay(for: now)
+    let endOfToday = calendar.dateInterval(of: .day, for: now)?.end ?? now
+    return sessions
+        .filter { $0.status == .planned && $0.scheduledDate >= startOfToday && $0.scheduledDate < endOfToday }
+        .sorted { lhs, rhs in
+            if lhs.isRun != rhs.isRun {
+                return lhs.isRun
+            }
+            if lhs.scheduledDate != rhs.scheduledDate {
+                return lhs.scheduledDate < rhs.scheduledDate
+            }
+            return lhs.title < rhs.title
+        }
+}
+
 func overduePlannedSessions(from sessions: [WorkoutSession], now: Date = Date(), calendar: Calendar = .current) -> [WorkoutSession] {
     let startOfToday = calendar.startOfDay(for: now)
     return sessions
@@ -327,6 +343,30 @@ func format(seconds: Int) -> String {
     let minutes = seconds / 60
     let seconds = seconds % 60
     return "\(minutes):" + String(format: "%02d", seconds)
+}
+
+func runDistanceText(km: Double, locale: Locale = .current) -> String {
+    "\(km.formatted(.number.precision(.fractionLength(0...1)).locale(locale))) km"
+}
+
+func runPaceText(secondsPerKm: Int) -> String {
+    "\(format(seconds: secondsPerKm)) /km"
+}
+
+func runTargetText(session: WorkoutSession) -> String {
+    let low = session.runTargetLow
+    let high = session.runTargetHigh
+    switch session.runTargetType {
+    case .pace where low > 0 && high > 0:
+        return low == high
+            ? runPaceText(secondsPerKm: low)
+            : "\(format(seconds: low))\u{2013}\(format(seconds: high)) /km"
+    case .hr where low > 0 && high > 0:
+        return low == high ? "\(low) bpm" : "\(low)\u{2013}\(high) bpm"
+    default:
+        let zone = session.runZone.trimmingCharacters(in: .whitespacesAndNewlines)
+        return zone.isEmpty ? "Easy" : zone
+    }
 }
 
 func exerciseMovementDescription(_ exercise: ExerciseKind) -> String {

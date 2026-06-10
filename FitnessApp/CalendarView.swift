@@ -6,6 +6,7 @@ struct CalendarView: View {
     @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     @State private var historyPage = 0
     @State private var selectedSession: WorkoutSession?
 
@@ -47,7 +48,7 @@ struct CalendarView: View {
                             .foregroundStyle(AppTheme.muted)
                     } else {
                         ForEach(pagedHistorySessions) { session in
-                            CalendarSessionRow(session: session, log: logForSession(session))
+                            CalendarSessionRow(session: session, log: logForSession(session), runLog: runLogForSession(session))
                         }
                         if historyTotalPages > 1 {
                             HStack {
@@ -103,11 +104,17 @@ struct CalendarView: View {
     private func logForSession(_ session: WorkoutSession) -> PerformanceLog? {
         logs.first { $0.sessionId == session.id }
     }
+
+    private func runLogForSession(_ session: WorkoutSession) -> RunLog? {
+        guard session.isRun else { return nil }
+        return runLogs.first { $0.sessionId == session.id }
+    }
 }
 
 private struct CalendarSessionRow: View {
     var session: WorkoutSession
     var log: PerformanceLog?
+    var runLog: RunLog?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -124,7 +131,11 @@ private struct CalendarSessionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.title)
                     .font(.subheadline.weight(.semibold))
-                if let log {
+                if session.isRun {
+                    Text(runDistanceSummary)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(AppTheme.muted)
+                } else if let log {
                     RPEComparisonPill(plannedRPE: plannedRPEForDisplay(log: log), actualRPE: log.rpe)
                 }
             }
@@ -132,6 +143,12 @@ private struct CalendarSessionRow: View {
             WorkoutStatusIcon(status: session.status)
         }
         .padding(.vertical, 8)
+    }
+
+    private var runDistanceSummary: String {
+        let planned = "\(runDistanceText(km: session.plannedDistanceKm)) planned"
+        guard let runLog else { return planned }
+        return "\(planned) \u{00B7} \(runDistanceText(km: runLog.distanceKm)) run"
     }
 
     private func plannedRPEForDisplay(log: PerformanceLog) -> Int? {
@@ -162,7 +179,9 @@ private struct FutureWorkoutPreviewSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     previewHeader
 
-                    if prescriptions.isEmpty {
+                    if session.isRun {
+                        RunPreviewDetails(session: session)
+                    } else if prescriptions.isEmpty {
                         EmptyWorkoutPreview(summary: session.summary)
                     } else {
                         VStack(alignment: .leading, spacing: 12) {
@@ -220,7 +239,7 @@ private struct FutureWorkoutPreviewSheet: View {
             }
 
             HStack(spacing: 8) {
-                StatusPill(text: session.focus.title, systemImage: focusIconName)
+                StatusPill(text: focusPillText, systemImage: focusIconName)
                 DurationPill(minutes: durationMinutes)
                 if let effortLabel = session.plannedEffortLabel {
                     EffortPill(
@@ -252,13 +271,20 @@ private struct FutureWorkoutPreviewSheet: View {
             : "Available to log on the scheduled day."
     }
 
+    private var focusPillText: String {
+        session.isRun ? (session.runKind?.title ?? "Run") : session.focus.title
+    }
+
     private var focusIconName: String {
+        if session.isRun {
+            return "figure.run"
+        }
         switch session.focus {
-        case .pull: "arrow.down.circle"
-        case .push: "arrow.up.circle"
-        case .core: "circle.hexagongrid.circle"
-        case .mixed: "square.grid.2x2"
-        case .recovery: "leaf"
+        case .pull: return "arrow.down.circle"
+        case .push: return "arrow.up.circle"
+        case .core: return "circle.hexagongrid.circle"
+        case .mixed: return "square.grid.2x2"
+        case .recovery: return "leaf"
         }
     }
 
@@ -271,6 +297,23 @@ private struct FutureWorkoutPreviewSheet: View {
         prescriptions
             .filter { $0.blockId == block.id }
             .sorted { $0.orderIndex < $1.orderIndex }
+    }
+}
+
+private struct RunPreviewDetails: View {
+    var session: WorkoutSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Run preview")
+                .font(.headline)
+            InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
+            if session.plannedElevationM > 0 {
+                InfoLine(title: "Elevation gain", value: "\(session.plannedElevationM) m+")
+            }
+            InfoLine(title: "Target", value: runTargetText(session: session))
+        }
+        .card(padding: 14)
     }
 }
 

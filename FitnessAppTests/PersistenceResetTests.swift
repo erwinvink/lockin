@@ -259,6 +259,56 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(rank.consistencyScore, 18)
     }
 
+    func testOverduePlannedRunningSessionIsMarkedMissedWithSameRankPenalty() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let profile = UserProfile(
+            targetDate: now,
+            weeklySessions: 4,
+            equipment: [.pullUpBar, .yogaMat],
+            baselinePullUps: 3,
+            baselinePushUps: 12,
+            baselinePlankSeconds: 45
+        )
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let overdueRun = WorkoutSession(
+            scheduledDate: yesterday,
+            title: "Skipped easy run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Easy aerobic run",
+            discipline: .running,
+            runKind: .easy,
+            plannedDistanceKm: 8
+        )
+
+        modelContext.insert(profile)
+        modelContext.insert(rank)
+        modelContext.insert(overdueRun)
+        try modelContext.save()
+
+        let processed = try markOverduePlannedSessionsMissed(
+            from: [overdueRun],
+            logs: [],
+            profile: profile,
+            ranks: [rank],
+            in: modelContext,
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(processed, 1)
+        XCTAssertEqual(overdueRun.status, .missed)
+        XCTAssertEqual(rank.streak, 0)
+        XCTAssertEqual(rank.penaltyPoints, TrainingEngine.missedSessionPenaltyPoints)
+        XCTAssertEqual(rank.consistencyScore, 30 + TrainingEngine.missedSessionConsistencyDelta)
+    }
+
     func testWipeAllDataDeletesRunningModels() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
