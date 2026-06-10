@@ -199,6 +199,35 @@ test("allows the longest run on the race-day offset even when it is not the long
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
+test("keeps the race-day exemption stable across a DST transition", () => {
+  // UK-style spring-forward week: weekStart is GMT local midnight (00:00Z) while
+  // the race date is BST local midnight (23:00Z on the previous UTC day), a raw
+  // difference of 5d23h. Truncating both instants to UTC calendar days computed
+  // offset 5; rounding the raw difference correctly yields offset 6.
+  const context: CoachContext = {
+    ...baseContext,
+    profile: { ...baseContext.profile, weekStart: "2026-03-23T00:00:00Z" },
+    running: {
+      ...baseRunning,
+      raceGoal: { ...baseRunning.raceGoal, raceDate: "2026-03-28T23:00:00Z" }
+    }
+  };
+  const week: RunningWeek = {
+    summary: "Race week across the clock change, with the race effort on Sunday.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy shakeout", 1, "easy", 6),
+      run("Recovery jog", 3, "recovery", 5),
+      run("Pre-race shakeout", 5, "easy", 4),
+      run("Race-day effort", 6, "long", 24)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
 test("places the long run correctly when the week starts mid-week (non-Monday)", () => {
   // weekStart Wednesday: offsets are rolling (thursday=1, saturday=3, sunday=4, tuesday=6),
   // so runningDayOffsets are NOT index-parallel with the Monday-first runningDays list.

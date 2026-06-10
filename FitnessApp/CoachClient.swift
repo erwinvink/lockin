@@ -787,13 +787,19 @@ func makeCoachRequest(
             baselineWeeklyKm: goal.baselineWeeklyKm,
             longestRecentRunKm: goal.longestRecentRunKm,
             runningDays: TrainingWeekday.allCases.filter { profile.runningDays.contains($0) }.map(\.rawValue),
-            runningDayOffsets: TrainingWeekday.dayOffsets(
+            // An empty selection must stay unconstrained; dayOffsets would otherwise
+            // fall back to the default Monday plan and contradict runningDays: [].
+            runningDayOffsets: profile.runningDays.isEmpty ? [] : TrainingWeekday.dayOffsets(
                 for: profile.runningDays,
                 weeklySessions: profile.runningDays.count,
                 weekStart: weekStart
             ).filter { (1...6).contains($0) },
-            longRunDay: profile.longRunDay?.rawValue,
+            // A long-run day outside the selected running days would make the proxy's
+            // placement constraint unsatisfiable, so omit it entirely in that case.
+            longRunDay: profile.longRunDay
+                .flatMap { profile.runningDays.contains($0) ? $0.rawValue : nil },
             longRunDayOffset: profile.longRunDay
+                .flatMap { profile.runningDays.contains($0) ? $0 : nil }
                 .flatMap { TrainingWeekday.dayOffsets(for: [$0], weeklySessions: 1, weekStart: weekStart).first }
                 .flatMap { (1...6).contains($0) ? $0 : nil },
             recentRuns: runLogs

@@ -618,6 +618,51 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(running.recentRuns.isEmpty)
     }
 
+    func testMakeCoachRequestWithEmptyRunningDaysStaysUnconstrained() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [], longRunDay: .saturday)
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [],
+            raceGoal: raceGoalFixture(),
+            runLogs: [],
+            weekStart: weekStart
+        )
+
+        let running = try XCTUnwrap(request.running)
+        XCTAssertEqual(running.runningDays, [])
+        XCTAssertEqual(running.runningDayOffsets, [])
+        XCTAssertNil(running.longRunDay)
+        XCTAssertNil(running.longRunDayOffset)
+    }
+
+    func testMakeCoachRequestOmitsLongRunDayOutsideRunningDays() throws {
+        let calendar = Calendar.current
+        // 2026-06-08 is a Monday, so tuesday/saturday land on offsets 1/5.
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .sunday)
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [],
+            raceGoal: raceGoalFixture(),
+            runLogs: [],
+            weekStart: weekStart
+        )
+
+        let running = try XCTUnwrap(request.running)
+        XCTAssertEqual(running.runningDays, ["tuesday", "saturday"])
+        XCTAssertEqual(running.runningDayOffsets, [1, 5])
+        XCTAssertNil(running.longRunDay)
+        XCTAssertNil(running.longRunDayOffset)
+    }
+
     func testMakeCoachRequestWithoutRaceGoalLeavesRunningNil() throws {
         let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
 
@@ -667,6 +712,16 @@ final class CoachValidationTests: XCTestCase {
 
         let result = RunningWeekValidator().validate(response: week, allowedDayOffsets: [1, 3, 5])
 
+        XCTAssertEqual(result.status, .accepted)
+        XCTAssertTrue(result.messages.isEmpty)
+    }
+
+    func testRunningWeekValidatorAcceptsValidWeekWithoutSelectedDays() {
+        let week = RunningWeekResponse.ultraFixture()
+
+        let result = RunningWeekValidator().validate(response: week, allowedDayOffsets: [])
+
+        XCTAssertFalse(result.messages.contains { $0.contains("non-running day") })
         XCTAssertEqual(result.status, .accepted)
         XCTAssertTrue(result.messages.isEmpty)
     }

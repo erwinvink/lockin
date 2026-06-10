@@ -74,15 +74,13 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
   return { accepted: messages.length === 0, messages };
 }
 
+// Rounding the raw difference (same approach as weeksToRace) keeps the offset
+// stable when local-midnight instants straddle UTC calendar days across a DST
+// transition; truncating both to UTC days would be off by one in that case.
 function raceOffset(context: CoachContext): number | null {
   const raceDate = context.running?.raceGoal.raceDate;
   const weekStart = context.profile.weekStart;
   if (!raceDate || !weekStart) return null;
-  const diffDays = Math.round((startOfUTCDay(raceDate) - startOfUTCDay(weekStart)) / 86_400_000);
-  return diffDays >= 1 && diffDays <= 6 ? diffDays : null;
-}
-
-function startOfUTCDay(iso: string): number {
-  const date = new Date(iso);
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const diffDays = Math.round((Date.parse(raceDate) - Date.parse(weekStart)) / 86_400_000);
+  return Number.isFinite(diffDays) && diffDays >= 1 && diffDays <= 6 ? diffDays : null;
 }
