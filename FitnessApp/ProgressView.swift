@@ -5,6 +5,9 @@ struct ProgressView: View {
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query private var ranks: [RankState]
+    @Query(sort: \GarminDailySnapshot.date, order: .reverse) private var snapshots: [GarminDailySnapshot]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
+    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
 
     var profile: UserProfile
 
@@ -38,6 +41,12 @@ struct ProgressView: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let snapshot = snapshots.first {
+                ReadinessStripCard(snapshot: snapshot)
+            }
+            if let raceGoal = raceGoals.first {
+                RunningProgressCard(raceGoal: raceGoal, runLogs: runLogs)
+            }
             HStack(spacing: 8) {
                 MetricCard(title: "Streak", value: "\(rank.streak)", subtitle: "Current sessions", systemImage: "flame.fill")
                 MetricCard(title: "Best", value: "\(rank.displayedBestStreak)", subtitle: "Best streak", systemImage: "checkmark.seal.fill")
@@ -53,5 +62,143 @@ struct ProgressView: View {
             ProgressRing(title: "Push-ups", current: latestPushUps, goal: profile.goalPushUps, benchmark: "Benchmark: 50 reps")
             ProgressRing(title: "Plank", current: latestPlankSeconds, goal: profile.goalPlankSeconds, seconds: true, benchmark: "Benchmark: 2:00")
         }
+    }
+}
+
+private struct ReadinessStripCard: View {
+    var snapshot: GarminDailySnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Readiness")
+                    .font(.headline)
+                Spacer()
+                Text(snapshot.date.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.muted)
+            }
+            HStack(spacing: 8) {
+                ReadinessTile(
+                    title: "Sleep score",
+                    value: metricText(snapshot.sleepScore),
+                    status: "Last night",
+                    color: tileColor(hasData: snapshot.sleepScore > 0)
+                )
+                ReadinessTile(
+                    title: "HRV status",
+                    value: hrvValue,
+                    status: hrvDetail,
+                    color: tileColor(hasData: hrvValue != "—")
+                )
+                ReadinessTile(
+                    title: "Body battery",
+                    value: metricText(snapshot.bodyBattery),
+                    status: "Charge",
+                    color: tileColor(hasData: snapshot.bodyBattery > 0)
+                )
+            }
+            HStack(spacing: 8) {
+                ReadinessTile(
+                    title: "Training readiness",
+                    value: metricText(snapshot.trainingReadiness),
+                    status: "Score",
+                    color: tileColor(hasData: snapshot.trainingReadiness > 0)
+                )
+                ReadinessTile(
+                    title: "Resting HR",
+                    value: metricText(snapshot.restingHr),
+                    status: "bpm",
+                    color: tileColor(hasData: snapshot.restingHr > 0)
+                )
+            }
+        }
+    }
+
+    // The Garmin sidecar zero-fills missing metrics, so zero means "no data".
+    private func metricText(_ value: Int) -> String {
+        value > 0 ? "\(value)" : "—"
+    }
+
+    private var hrvValue: String {
+        let trimmed = snapshot.hrvStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "—" }
+        return trimmed.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private var hrvDetail: String {
+        snapshot.hrvMs > 0 ? "\(snapshot.hrvMs) ms" : "Overnight"
+    }
+
+    private func tileColor(hasData: Bool) -> Color {
+        hasData ? AppTheme.accent : AppTheme.muted
+    }
+}
+
+private struct RunningProgressCard: View {
+    var raceGoal: RaceGoal
+    var runLogs: [RunLog]
+
+    private var calendar: Calendar { Calendar.current }
+
+    // Only confirmed runs count toward volume; pending Garmin matches are excluded.
+    private var confirmedLogs: [RunLog] {
+        runLogs.filter { !$0.needsConfirmation }
+    }
+
+    private var thisWeekInterval: DateInterval? {
+        calendar.dateInterval(of: .weekOfYear, for: Date())
+    }
+
+    private var lastWeekInterval: DateInterval? {
+        guard let thisWeek = thisWeekInterval,
+              let lastWeekStart = calendar.date(byAdding: .weekOfYear, value: -1, to: thisWeek.start)
+        else { return nil }
+        return DateInterval(start: lastWeekStart, end: thisWeek.start)
+    }
+
+    private var longestRecentRunKm: Double {
+        let cutoff = calendar.date(byAdding: .weekOfYear, value: -6, to: calendar.startOfDay(for: Date())) ?? Date()
+        return confirmedLogs
+            .filter { $0.completedAt >= cutoff }
+            .map(\.distanceKm)
+            .max() ?? 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Running".uppercased())
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.text)
+            InfoLine(title: "This week", value: volumeText(in: thisWeekInterval))
+            InfoLine(title: "Last week", value: volumeText(in: lastWeekInterval))
+            InfoLine(title: "Longest run (6 weeks)", value: longestRunText)
+            Label(raceCountdownText, systemImage: "flag.checkered")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.gold)
+        }
+        .card()
+    }
+
+    private func volumeText(in interval: DateInterval?) -> String {
+        guard let interval else { return "—" }
+        let logs = confirmedLogs.filter { interval.contains($0.completedAt) }
+        let km = logs.reduce(0) { $0 + $1.distanceKm }
+        let elevation = logs.reduce(0) { $0 + $1.elevationGainM }
+        return "\(runDistanceText(km: km)) · \(elevation) m+"
+    }
+
+    private var longestRunText: String {
+        longestRecentRunKm > 0 ? runDistanceText(km: longestRecentRunKm) : "—"
+    }
+
+    // Same weeks math as CoachView's weeksToRaceText: ceil of remaining days / 7.
+    private var raceCountdownText: String {
+        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: raceGoal.raceDate).day ?? 0)
+        let weeks = (days + 6) / 7
+        if weeks == 0 { return "Race week" }
+        let trimmedName = raceGoal.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmedName.isEmpty ? "Race" : trimmedName
+        return weeks == 1 ? "1 week to \(name)" : "\(weeks) weeks to \(name)"
     }
 }
