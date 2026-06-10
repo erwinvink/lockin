@@ -378,11 +378,11 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
 }
 ```
 
-Note: `runningDays` and `runningDayOffsets` are parallel arrays (same construction as `trainingDays`/`trainingDayOffsets` in the app), so the index lookup above is valid; state this in a comment.
-
 **Step 5: Run tests → pass. `npm run typecheck`.**
 
 **Step 6: Commit** — `Add running week validator and running coach types`
+
+AMENDED after review: longRunDay name-index lookup was wrong (arrays are not parallel for non-Monday week starts); the app sends `running.longRunDayOffset` computed app-side, and the validator compares against it directly, with tie- and race-day-aware placement.
 
 ---
 
@@ -461,7 +461,7 @@ export function validateCombinedWeek(running: RunningWeek, strength: WeeklyPlan)
 
 - `const runningSkillRoot = join(process.cwd(), "src", "coach", "skills", "running-coach-planner");`
 - `loadRunningSkillBundle()` — reads `SKILL.md`, `references/ultra-periodization.md`, `references/running-week.schema.json` (mirror `loadSkillBundle`).
-- `generateRunningWeek(apiKey, model, bundle, context, repair?)` — mirror `generateWeeklyPlan`, schema name `running_week_plan`, system prompt = skill instructions + periodization reference, user content = `JSON.stringify({ coachContext: context, outputRules: { todayIsLocked: true, selectedRunningDays: context.running?.runningDays ?? [], allowedDayOffsets: context.running?.runningDayOffsets ?? [], longRunDay: context.running?.longRunDay ?? null } , repairRequest? })`.
+- `generateRunningWeek(apiKey, model, bundle, context, repair?)` — mirror `generateWeeklyPlan`, schema name `running_week_plan`, system prompt = skill instructions + periodization reference, user content = `JSON.stringify({ coachContext: context, outputRules: { todayIsLocked: true, selectedRunningDays: context.running?.runningDays ?? [], allowedDayOffsets: context.running?.runningDayOffsets ?? [], longRunDay: context.running?.longRunDay ?? null, longRunDayOffset: context.running?.longRunDayOffset ?? null } , repairRequest? })`.
 - Route `POST /generate-week`:
   1. Parse `CoachRequest`; require `payload.running` (400 if missing: `"running goal is required for /generate-week"`).
   2. `const context = buildCoachContext(payload);` then `await enrichWithGarmin(context)` (no-op stub until Task 12 — define `async function enrichWithGarmin(context) { return context; }` now with a `// Task 12 wires the sidecar` comment).
@@ -563,7 +563,7 @@ struct CombinedWeekResponse: Codable, Equatable {
 }
 ```
 
-Add `var running: CoachRunningRequest? = nil` to `CoachPlanRequest`. Extend `makeCoachRequest` with new optional parameters `raceGoal: RaceGoal? = nil, runLogs: [RunLog] = []`; when `raceGoal != nil`, build `CoachRunningRequest` (runningDays from `profile.runningDays` normalized like training days; offsets via `TrainingWeekday.dayOffsets(for: profile.runningDays, weeklySessions: profile.runningDays.count, weekStart: weekStart)` filtered to `1...6`; `longRunDay = profile.longRunDay?.rawValue`; recentRuns from the last 20 `RunLog`s where `needsConfirmation == false`).
+Add `var running: CoachRunningRequest? = nil` to `CoachPlanRequest`. Extend `makeCoachRequest` with new optional parameters `raceGoal: RaceGoal? = nil, runLogs: [RunLog] = []`; when `raceGoal != nil`, build `CoachRunningRequest` (runningDays from `profile.runningDays` normalized like training days; offsets via `TrainingWeekday.dayOffsets(for: profile.runningDays, weeklySessions: profile.runningDays.count, weekStart: weekStart)` filtered to `1...6`; `longRunDay = profile.longRunDay?.rawValue`; recentRuns from the last 20 `RunLog`s where `needsConfirmation == false`). longRunDayOffset: compute via `TrainingWeekday.dayOffsets(for: [longRunDay], weeklySessions: 1, weekStart: weekStart).first`, filtered to `1...6` (omit when nil); normalize raceDate to `Calendar.current.startOfDay(for:)` before encoding.
 
 Add `RunningWeekValidator` (struct, same shape as `CoachPlanValidator.validate` but for `RunningWeekResponse` against allowed offsets — port the Task 3 rules that matter client-side: offsets, ordering, target sanity, known kind).
 

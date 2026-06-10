@@ -238,12 +238,21 @@ export type RunSummary = {
 };
 
 export type RunningRequest = {
-  raceGoal: { name: string; raceDate: string; distanceKm: number; elevationGainM: number };
+  raceGoal: {
+    name: string;
+    // ISO-8601 instant, normalized to local start-of-day by the app (same encoder as weekStart, so UTC day-diff math is timezone-stable)
+    raceDate: string;
+    distanceKm: number;
+    elevationGainM: number;
+  };
   baselineWeeklyKm: number;
   longestRecentRunKm: number;
   runningDays: string[];
   runningDayOffsets: number[];
   longRunDay?: string;
+  // Offset of the long-run day relative to weekStart, computed app-side with the
+  // same machinery as runningDayOffsets; omitted when the long-run day is today or past.
+  longRunDayOffset?: number;
   recentRuns: RunSummary[];
 };
 

@@ -12,20 +12,20 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
   const hasSafetyFlags = week.safetyFlags.length > 0;
 
   if (hasSelectedDays && week.sessions.length !== allowed.length) {
-    messages.push(`Running week must contain exactly ${allowed.length} runs, one per selected running day.`);
+    messages.push(`Running week must contain exactly ${allowed.length} runs, one per remaining running day this week.`);
   }
 
   let previousOffset = -1;
   for (const [index, session] of week.sessions.entries()) {
     const label = `Run ${index + 1}`;
-    if (session.dayOffset < 1 || session.dayOffset > 6) {
+    if (session.dayOffset < 1 || session.dayOffset > 6 || !Number.isInteger(session.dayOffset)) {
       messages.push(`${label} must use dayOffset 1 through 6; today is locked.`);
     }
     if (hasSelectedDays && !allowed.includes(session.dayOffset)) {
       messages.push(`${label} is scheduled on a non-running day.`);
     }
     if (session.dayOffset <= previousOffset) {
-      messages.push("Runs must use strictly increasing day offsets.");
+      messages.push(`${label} must use a day offset strictly later than the previous run.`);
     }
     previousOffset = session.dayOffset;
     if (session.target.low > session.target.high) {
@@ -37,8 +37,8 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
   }
 
   const longest = running?.longestRecentRunKm ?? 0;
-  const longRun = [...week.sessions].sort((a, b) => b.distanceKm - a.distanceKm)[0];
-  if (longRun && longest > 0 && longRun.distanceKm > longest * 1.4 && !hasSafetyFlags) {
+  const maxDistance = week.sessions.reduce((max, session) => Math.max(max, session.distanceKm), 0);
+  if (longest > 0 && maxDistance > longest * 1.4 && !hasSafetyFlags) {
     messages.push("Long run jumps more than 40% past the recent longest run without safety flags.");
   }
 
@@ -47,14 +47,26 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
     messages.push("More than half the week is hard running without safety flags.");
   }
 
-  // Race-day offset: when the race lands inside this planning window, the race
-  // session takes long-run precedence wherever it falls (mirrors SKILL.md).
-  const raceDayOffset = raceOffset(context);
-  if (running?.longRunDay && hasSelectedDays && longRun && longRun.dayOffset !== raceDayOffset) {
-    // runningDays and runningDayOffsets are parallel arrays (same construction
-    // as the app's trainingDays/trainingDayOffsets), so the index lookup is valid.
-    const longRunOffset = running.runningDayOffsets[running.runningDays.indexOf(running.longRunDay)];
-    if (longRunOffset !== undefined && longRunOffset >= 1 && longRun.dayOffset !== longRunOffset) {
+  // Long-run placement: the maximal-distance session(s) must include the selected
+  // long-run day. The app sends running.longRunDayOffset computed with the same
+  // machinery as runningDayOffsets (omitted when the long-run day is today or past),
+  // so it is compared directly — no name-to-offset lookup. Race exemption: when the
+  // race lands inside this planning window, a maximal-distance session on the race
+  // day takes long-run precedence wherever it falls (mirrors SKILL.md).
+  const longRunDayOffset = running?.longRunDayOffset;
+  const longestRuns = week.sessions.filter((session) => session.distanceKm === maxDistance);
+  if (
+    typeof longRunDayOffset === "number" &&
+    longRunDayOffset >= 1 &&
+    longRunDayOffset <= 6 &&
+    hasSelectedDays &&
+    longestRuns.length > 0 &&
+    maxDistance > 0
+  ) {
+    const raceDayOffset = raceOffset(context);
+    const onRaceDay = raceDayOffset !== null && longestRuns.some((session) => session.dayOffset === raceDayOffset);
+    const onLongRunDay = longestRuns.some((session) => session.dayOffset === longRunDayOffset);
+    if (!onRaceDay && !onLongRunDay) {
       messages.push("The longest run must land on the selected long-run day.");
     }
   }

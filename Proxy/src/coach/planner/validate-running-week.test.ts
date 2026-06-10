@@ -10,6 +10,7 @@ const baseRunning: RunningContext = {
   runningDays: ["tuesday", "thursday", "saturday", "sunday"],
   runningDayOffsets: [1, 3, 5, 6],
   longRunDay: "saturday",
+  longRunDayOffset: 5,
   recentRuns: [],
   weeksToRace: 18
 };
@@ -93,7 +94,7 @@ test("rejects non-increasing day offsets", () => {
   const result = validateRunningWeek(week, baseContext);
 
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("strictly increasing")));
+  assert.ok(result.messages.some((message) => message.includes("strictly later than the previous run")));
 });
 
 test("rejects fewer runs than selected running days", () => {
@@ -198,8 +199,122 @@ test("allows the longest run on the race-day offset even when it is not the long
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
+test("places the long run correctly when the week starts mid-week (non-Monday)", () => {
+  // weekStart Wednesday: offsets are rolling (thursday=1, saturday=3, sunday=4, tuesday=6),
+  // so runningDayOffsets are NOT index-parallel with the Monday-first runningDays list.
+  const context = wednesdayContext();
+  const week: RunningWeek = {
+    summary: "Mid-week start with the long run on Saturday.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy aerobic run", 1, "easy", 8),
+      run("Long trail run", 3, "long", 22),
+      run("Recovery jog", 4, "recovery", 6),
+      run("Easy aerobic run", 6, "easy", 7)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("rejects the longest run off the long-run day when the week starts mid-week (non-Monday)", () => {
+  const context = wednesdayContext();
+  const week: RunningWeek = {
+    summary: "Mid-week start with the long run drifting to Sunday.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy aerobic run", 1, "easy", 8),
+      run("Easy aerobic run", 3, "easy", 8),
+      run("Long trail run", 4, "long", 22),
+      run("Recovery jog", 6, "recovery", 6)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("long-run day")));
+});
+
+test("accepts co-longest runs when one of them lands on the long-run day", () => {
+  const week: RunningWeek = {
+    summary: "Tempo and long run share the top distance; the long run holds Saturday.",
+    safetyFlags: [],
+    sessions: [
+      run("Tempo blocks", 1, "tempo", 10),
+      run("Easy aerobic run", 3, "easy", 6),
+      run("Long trail run", 5, "long", 10),
+      run("Recovery jog", 6, "recovery", 5)
+    ]
+  };
+
+  const result = validateRunningWeek(week, baseContext);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("skips long-run placement when longRunDayOffset is absent", () => {
+  const context = contextWith({ longRunDayOffset: undefined });
+  const week = validWeek();
+  week.sessions[1] = { ...week.sessions[1], distanceKm: 24, durationMinutes: 150 };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("still enforces long-run placement when the race date is unparseable", () => {
+  const context = contextWith({
+    raceGoal: { ...baseRunning.raceGoal, raceDate: "not-a-date" }
+  });
+  const week = validWeek();
+  week.sessions[1] = { ...week.sessions[1], distanceKm: 24, durationMinutes: 150 };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("long-run day")));
+});
+
+test("rejects the longest run when it lands on neither the race day nor the long-run day", () => {
+  const context = contextWith({
+    raceGoal: { ...baseRunning.raceGoal, raceDate: "2026-05-17T00:00:00Z" }
+  });
+  const week: RunningWeek = {
+    summary: "Race week, but the longest effort drifts to Thursday.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy shakeout", 1, "easy", 6),
+      run("Long trail run", 3, "long", 24),
+      run("Pre-race shakeout", 5, "easy", 5),
+      run("Recovery jog", 6, "recovery", 4)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("long-run day")));
+});
+
+test("rejects a non-integer day offset even when it falls inside 1 through 6", () => {
+  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
+  const week: RunningWeek = {
+    summary: "Improvised plan with a fractional offset.",
+    safetyFlags: [],
+    sessions: [run("Easy aerobic run", 2.5, "easy", 8)]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("dayOffset 1 through 6")));
+});
+
 test("still applies ordering, target, negative, jump, and balance checks when no running days are selected", () => {
-  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined });
+  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
   const week: RunningWeek = {
     summary: "Improvised mid-week plan",
     safetyFlags: [],
@@ -213,7 +328,7 @@ test("still applies ordering, target, negative, jump, and balance checks when no
   const result = validateRunningWeek(week, context);
 
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("strictly increasing")));
+  assert.ok(result.messages.some((message) => message.includes("strictly later than the previous run")));
   assert.ok(result.messages.some((message) => message.includes("target low")));
   assert.ok(result.messages.some((message) => message.includes("negative")));
   assert.ok(result.messages.some((message) => message.includes("40%")));
@@ -223,7 +338,7 @@ test("still applies ordering, target, negative, jump, and balance checks when no
 });
 
 test("accepts an empty session list when the running week is already underway", () => {
-  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined });
+  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
   const week: RunningWeek = {
     summary: "This running week is already underway; the next full week starts after the coming rest days.",
     safetyFlags: [],
@@ -239,6 +354,23 @@ function contextWith(overrides: Partial<RunningContext>): CoachContext {
   return {
     ...baseContext,
     running: { ...baseRunning, ...overrides }
+  };
+}
+
+function wednesdayContext(): CoachContext {
+  // 2026-05-13 is a Wednesday. Offsets are computed relative to the rolling
+  // weekStart, so saturday sits at offset 3 even though it is third in the
+  // Monday-first runningDays list (where indexOf would wrongly point at offset 4).
+  return {
+    ...baseContext,
+    profile: { ...baseContext.profile, weekStart: "2026-05-13T00:00:00Z" },
+    running: {
+      ...baseRunning,
+      runningDays: ["tuesday", "thursday", "saturday", "sunday"],
+      runningDayOffsets: [1, 3, 4, 6],
+      longRunDay: "saturday",
+      longRunDayOffset: 3
+    }
   };
 }
 
