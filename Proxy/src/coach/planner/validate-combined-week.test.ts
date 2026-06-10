@@ -27,6 +27,7 @@ test("flags a max_output strength session stacked on a hard run day", () => {
 
   assert.equal(messages.length, 1);
   assert.ok(messages[0].includes("max_output"));
+  assert.ok(messages[0].includes("Lower the effort, or move it to another selected training day."));
 });
 
 test("accepts hard strength on an easy run day", () => {

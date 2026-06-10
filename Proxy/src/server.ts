@@ -82,7 +82,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      if (Number.isNaN(Date.parse(payload.running.raceGoal.raceDate))) {
+      if (Number.isNaN(Date.parse(payload.running.raceGoal?.raceDate))) {
         writeJSON(res, 400, { error: "running raceGoal.raceDate must be an ISO-8601 date" });
         return;
       }

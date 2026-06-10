@@ -9,9 +9,9 @@ export function validateCombinedWeek(running: RunningWeek, strength: WeeklyPlan)
   const messages: string[] = [];
   for (const session of strength.sessions) {
     if (hardRunOffsets.has(session.dayOffset) &&
-        ["very_hard", "max_output"].includes(session.plannedEffort.label)) {
+        ["very_hard", "max_output"].includes(session.plannedEffort?.label ?? "")) {
       messages.push(
-        `Strength session "${session.title}" stacks ${session.plannedEffort.label} effort on a hard run day (offset ${session.dayOffset}). Lower it or move it.`
+        `Strength session "${session.title}" stacks ${session.plannedEffort.label} effort on a hard run day (offset ${session.dayOffset}). Lower the effort, or move it to another selected training day.`
       );
     }
   }

@@ -567,7 +567,7 @@ Add `var running: CoachRunningRequest? = nil` to `CoachPlanRequest`. Extend `mak
 
 Add `RunningWeekValidator` (struct, same shape as `CoachPlanValidator.validate` but for `RunningWeekResponse` against allowed offsets — port the Task 3 rules that matter client-side: offsets, ordering, target sanity, known kind).
 
-Add `func generateCombinedWeek(request:baseline:preferences:) async throws -> CombinedWeekResponse` to `LocalCoachClient`, POSTing to path `/generate-week` (add a `generateWeekEndpoint(from:)` helper like `verdictEndpoint`), decoding `CombinedWeekResponse`, validating the strength part with the existing `CoachPlanValidator` and the running part with `RunningWeekValidator`, throwing `CoachClientError.validationFailed` on rejection.
+Add `func generateCombinedWeek(request:baseline:preferences:) async throws -> CombinedWeekResponse` to `LocalCoachClient`, POSTing to path `/generate-week` (add a `generateWeekEndpoint(from:)` helper like `verdictEndpoint`), decoding `CombinedWeekResponse`, validating the strength part with the existing `CoachPlanValidator` and the running part with `RunningWeekValidator`, throwing `CoachClientError.validationFailed` on rejection. Use `timeoutInterval = 240` for this request — the route makes 2–4 sequential model calls, so the 120s used by generatePlan is not enough.
 
 **Step 4: Run tests → pass. Build.**
 
