@@ -809,6 +809,130 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(combined.strengthWeek.sessions.first?.plannedEffort?.label, "hard")
         XCTAssertEqual(combined.strengthWeek.sessions.first?.exercises.first?.exercise, "pullUp")
     }
+
+    func testGarminStatusResponseDecodesProxyShape() throws {
+        let degradedJSON = """
+        { "ok": false, "loggedIn": true, "lastError": "Garmin service timed out." }
+        """
+
+        let degraded = try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: Data(degradedJSON.utf8))
+
+        XCTAssertFalse(degraded.ok)
+        XCTAssertTrue(degraded.loggedIn)
+        XCTAssertEqual(degraded.lastError, "Garmin service timed out.")
+
+        let healthyJSON = """
+        { "ok": true, "loggedIn": true, "lastError": null }
+        """
+
+        let healthy = try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: Data(healthyJSON.utf8))
+
+        XCTAssertTrue(healthy.ok)
+        XCTAssertTrue(healthy.loggedIn)
+        XCTAssertNil(healthy.lastError)
+    }
+
+    func testGarminSnapshotResponseDecodesProxyShape() throws {
+        let json = """
+        {
+          "status": { "ok": true, "loggedIn": true, "lastError": null },
+          "wellness": [
+            {
+              "date": "2026-06-08",
+              "sleepScore": 82,
+              "sleepSeconds": 27360,
+              "hrvStatus": "BALANCED",
+              "hrvMs": 52,
+              "bodyBattery": 71,
+              "trainingReadiness": 64,
+              "restingHr": 47
+            }
+          ],
+          "activities": [
+            {
+              "garminActivityId": "19519498613",
+              "startTime": "2026-06-08 07:01:33",
+              "activityType": "trail_running",
+              "distanceKm": 12.03,
+              "movingSeconds": 4480,
+              "elevationGainM": 156,
+              "averageHr": 148,
+              "averagePaceSecPerKm": 374,
+              "name": "Utrecht Hardlopen"
+            }
+          ]
+        }
+        """
+
+        let snapshot = try JSONDecoder.coachDecoder.decode(GarminSnapshotResponse.self, from: Data(json.utf8))
+
+        XCTAssertTrue(snapshot.status.ok)
+        XCTAssertTrue(snapshot.status.loggedIn)
+        XCTAssertNil(snapshot.status.lastError)
+        XCTAssertEqual(snapshot.wellness.count, 1)
+        let day = try XCTUnwrap(snapshot.wellness.first)
+        XCTAssertEqual(day.date, "2026-06-08")
+        XCTAssertEqual(day.sleepScore, 82)
+        XCTAssertEqual(day.sleepSeconds, 27_360)
+        XCTAssertEqual(day.hrvStatus, "BALANCED")
+        XCTAssertEqual(day.hrvMs, 52)
+        XCTAssertEqual(day.bodyBattery, 71)
+        XCTAssertEqual(day.trainingReadiness, 64)
+        XCTAssertEqual(day.restingHr, 47)
+        XCTAssertEqual(snapshot.activities.count, 1)
+        let activity = try XCTUnwrap(snapshot.activities.first)
+        XCTAssertEqual(activity.garminActivityId, "19519498613")
+        XCTAssertEqual(activity.startTime, "2026-06-08 07:01:33")
+        XCTAssertEqual(activity.activityType, "trail_running")
+        XCTAssertEqual(activity.distanceKm, 12.03)
+        XCTAssertEqual(activity.movingSeconds, 4_480)
+        XCTAssertEqual(activity.elevationGainM, 156)
+        XCTAssertEqual(activity.averageHr, 148)
+        XCTAssertEqual(activity.averagePaceSecPerKm, 374)
+        XCTAssertEqual(activity.name, "Utrecht Hardlopen")
+    }
+
+    func testGarminSnapshotResponseDecodesTruncatedWellness() throws {
+        let json = """
+        {
+          "status": { "ok": false, "loggedIn": true, "lastError": "throttled" },
+          "wellness": [],
+          "activities": []
+        }
+        """
+
+        let snapshot = try JSONDecoder.coachDecoder.decode(GarminSnapshotResponse.self, from: Data(json.utf8))
+
+        XCTAssertFalse(snapshot.status.ok)
+        XCTAssertEqual(snapshot.status.lastError, "throttled")
+        XCTAssertTrue(snapshot.wellness.isEmpty)
+        XCTAssertTrue(snapshot.activities.isEmpty)
+    }
+
+    func testMakeCoachRequestMapsRunFeelScoreToCoachSummaries() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
+        let runLogs = [
+            RunLog(completedAt: weekStart.addingTimeInterval(-2 * 86_400), distanceKm: 30, movingSeconds: 12_000, rpe: 9, feelScore: 1),
+            RunLog(completedAt: weekStart.addingTimeInterval(-86_400), distanceKm: 6, movingSeconds: 2_400, feelScore: 0)
+        ]
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [],
+            raceGoal: raceGoalFixture(),
+            runLogs: runLogs,
+            weekStart: weekStart
+        )
+
+        let running = try XCTUnwrap(request.running)
+        XCTAssertEqual(running.recentRuns.count, 2)
+        XCTAssertEqual(running.recentRuns[0].feelScore, 1, "A catastrophic run feel must reach the coach")
+        XCTAssertNil(running.recentRuns[1].feelScore, "Unset feel (0) is omitted instead of sent as 0")
+    }
 }
 
 private func coachVerdictFixture(sourceLogId: UUID?, createdAt: Date) -> CoachVerdict {

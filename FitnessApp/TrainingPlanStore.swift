@@ -13,15 +13,6 @@ func rollingPlanEnd(date: Date = Date(), calendar: Calendar = .current) -> Date 
     calendar.date(byAdding: .day, value: 7, to: rollingPlanStart(date: date, calendar: calendar)) ?? rollingPlanStart(date: date, calendar: calendar)
 }
 
-func duePlannedSession(from sessions: [WorkoutSession], now: Date = Date(), calendar: Calendar = .current) -> WorkoutSession? {
-    let startOfToday = calendar.startOfDay(for: now)
-    let endOfToday = calendar.dateInterval(of: .day, for: now)?.end ?? now
-    return sessions
-        .filter { $0.status == .planned && $0.scheduledDate >= startOfToday && $0.scheduledDate < endOfToday }
-        .sorted { $0.scheduledDate < $1.scheduledDate }
-        .first
-}
-
 func duePlannedSessions(from sessions: [WorkoutSession], now: Date = Date(), calendar: Calendar = .current) -> [WorkoutSession] {
     let startOfToday = calendar.startOfDay(for: now)
     let endOfToday = calendar.dateInterval(of: .day, for: now)?.end ?? now
@@ -94,6 +85,130 @@ func missedSessionOutcome(profile: UserProfile, latestLog: PerformanceLog?) -> S
         ),
         plannedSession: nil
     )
+}
+
+/// Parses the date strings the Garmin proxy passes through: bare ISO dates
+/// ("2026-06-08"), full ISO-8601 instants, and Garmin's local activity time
+/// ("2026-06-08 07:01:33"). Wall-clock formats are read in the calendar's
+/// time zone so calendar-day matching stays consistent.
+func parseGarminDate(_ value: String, calendar: Calendar = .current) -> Date? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    let isoWithFractionalSeconds = ISO8601DateFormatter()
+    isoWithFractionalSeconds.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = isoWithFractionalSeconds.date(from: trimmed) { return date }
+
+    if let date = ISO8601DateFormatter().date(from: trimmed) { return date }
+
+    for format in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd"] {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = format
+        if let date = formatter.date(from: trimmed) { return date }
+    }
+    return nil
+}
+
+/// Upserts exactly one GarminDailySnapshot per calendar day. Days missing
+/// from the response (throttled sidecar) are left absent, never zero-filled.
+func ingest(
+    wellness: [GarminWellnessDayResponse],
+    in modelContext: ModelContext,
+    calendar: Calendar = .current
+) throws {
+    guard !wellness.isEmpty else { return }
+
+    let existing = try modelContext.fetch(FetchDescriptor<GarminDailySnapshot>())
+    var snapshotsByDay: [Date: GarminDailySnapshot] = [:]
+    for snapshot in existing {
+        snapshotsByDay[calendar.startOfDay(for: snapshot.date)] = snapshot
+    }
+
+    for day in wellness {
+        guard let parsed = parseGarminDate(day.date, calendar: calendar) else { continue }
+        let dayStart = calendar.startOfDay(for: parsed)
+        let snapshot: GarminDailySnapshot
+        if let found = snapshotsByDay[dayStart] {
+            snapshot = found
+        } else {
+            snapshot = GarminDailySnapshot(date: dayStart)
+            modelContext.insert(snapshot)
+            snapshotsByDay[dayStart] = snapshot
+        }
+        snapshot.date = dayStart
+        snapshot.sleepScore = day.sleepScore
+        snapshot.sleepSeconds = day.sleepSeconds
+        snapshot.hrvStatus = day.hrvStatus
+        snapshot.hrvMs = day.hrvMs
+        snapshot.bodyBattery = day.bodyBattery
+        snapshot.trainingReadiness = day.trainingReadiness
+        snapshot.restingHr = day.restingHr
+        snapshot.fetchedAt = Date()
+    }
+}
+
+/// Creates pending RunLogs (source garmin, needsConfirmation true) for synced
+/// activities that land on the same calendar day as a planned running session.
+/// The session stays planned until the athlete confirms. Returns the number of
+/// new pending logs.
+@discardableResult
+func matchGarminActivities(
+    _ activities: [GarminActivityResponse],
+    sessions: [WorkoutSession],
+    existingRunLogs: [RunLog],
+    in modelContext: ModelContext,
+    calendar: Calendar = .current
+) throws -> Int {
+    var knownActivityIds = Set(existingRunLogs.map(\.garminActivityId).filter { !$0.isEmpty })
+    // A session already holding a pending/confirmed log is never a candidate,
+    // and each session takes at most one activity per batch.
+    var claimedSessionIds = Set(existingRunLogs.map(\.sessionId))
+    var created = 0
+
+    for activity in activities {
+        // The proxy only forwards running activities; this is a defensive check.
+        guard isGarminRunningActivityType(activity.activityType) else { continue }
+        guard !activity.garminActivityId.isEmpty, !knownActivityIds.contains(activity.garminActivityId) else { continue }
+        guard let startTime = parseGarminDate(activity.startTime, calendar: calendar) else { continue }
+
+        let candidates = sessions.filter {
+            $0.discipline == .running &&
+            $0.status == .planned &&
+            !claimedSessionIds.contains($0.id) &&
+            calendar.isDate($0.scheduledDate, inSameDayAs: startTime)
+        }
+        guard let session = candidates.min(by: {
+            abs($0.plannedDistanceKm - activity.distanceKm) < abs($1.plannedDistanceKm - activity.distanceKm)
+        }) else { continue }
+
+        modelContext.insert(RunLog(
+            sessionId: session.id,
+            completedAt: startTime,
+            distanceKm: activity.distanceKm,
+            movingSeconds: activity.movingSeconds,
+            elevationGainM: activity.elevationGainM,
+            averageHr: activity.averageHr,
+            averagePaceSecPerKm: activity.averagePaceSecPerKm,
+            rpe: 0,
+            feelScore: 3,
+            garminActivityId: activity.garminActivityId,
+            source: .garmin,
+            needsConfirmation: true
+        ))
+        knownActivityIds.insert(activity.garminActivityId)
+        claimedSessionIds.insert(session.id)
+        created += 1
+    }
+    return created
+}
+
+/// Mirrors the sidecar's running filter (any typeKey containing "running" or
+/// "ultra": running, trail_running, ultra_run, treadmill_running, ...).
+private func isGarminRunningActivityType(_ type: String) -> Bool {
+    let normalized = type.lowercased()
+    return normalized.contains("running") || normalized.contains("ultra")
 }
 
 func persist(

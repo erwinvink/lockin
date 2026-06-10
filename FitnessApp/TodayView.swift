@@ -2,17 +2,26 @@ import SwiftData
 import SwiftUI
 
 struct TodayView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     @Query private var ranks: [RankState]
 
     var profile: UserProfile
     @State private var loggingSession: WorkoutSession?
     @State private var loggingRunSession: WorkoutSession?
+    @State private var editingPendingRun: PendingRunEdit?
     @State private var pendingLoggingSessionID: UUID?
     @State private var workoutCardResetID = UUID()
+
+    private struct PendingRunEdit: Identifiable {
+        let session: WorkoutSession
+        let log: RunLog
+        var id: UUID { log.id }
+    }
 
     private var dueSessions: [WorkoutSession] {
         duePlannedSessions(from: sessions)
@@ -40,7 +49,16 @@ struct TodayView: View {
                 if !dueSessions.isEmpty {
                     ForEach(dueSessions) { session in
                         if session.isRun {
-                            RunPrescriptionCard(session: session, onLog: { beginRunLogging(session) })
+                            if let pendingLog = pendingGarminLog(for: session) {
+                                ConfirmRunCard(
+                                    session: session,
+                                    log: pendingLog,
+                                    onConfirm: { rpe, feel in confirmRun(session: session, log: pendingLog, rpe: rpe, feel: feel) },
+                                    onEdit: { editingPendingRun = PendingRunEdit(session: session, log: pendingLog) }
+                                )
+                            } else {
+                                RunPrescriptionCard(session: session, onLog: { beginRunLogging(session) })
+                            }
                         } else {
                             WorkoutPrescriptionCard(
                                 session: session,
@@ -66,7 +84,14 @@ struct TodayView: View {
             .sheet(item: $loggingRunSession) { session in
                 LogRunView(session: session)
             }
+            .sheet(item: $editingPendingRun) { edit in
+                LogRunView(session: edit.session, prefilledFrom: edit.log)
+            }
         }
+    }
+
+    private func pendingGarminLog(for session: WorkoutSession) -> RunLog? {
+        runLogs.first { $0.sessionId == session.id && $0.needsConfirmation }
     }
 
     private func blocksForSession(_ session: WorkoutSession) -> [WorkoutBlock] {
@@ -90,6 +115,40 @@ struct TodayView: View {
     private func beginRunLogging(_ session: WorkoutSession) {
         guard session.status == .planned else { return }
         loggingRunSession = session
+    }
+
+    /// Same scoring path as LogRunView.save: a completed run scores without
+    /// strength metrics, with fatigue derived from the feel score.
+    private func confirmRun(session: WorkoutSession, log: RunLog, rpe: Int, feel: Int) {
+        guard session.status == .planned, log.needsConfirmation else { return }
+
+        log.rpe = rpe
+        log.feelScore = feel
+        log.needsConfirmation = false
+        session.status = .completed
+
+        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: feel)
+        let outcome = TrainingEngine().score(
+            log: SessionLogInput(
+                completed: true,
+                pullUps: 0,
+                pushUps: 0,
+                plankSeconds: 0,
+                loggedPullUps: false,
+                loggedPushUps: false,
+                loggedPlankSeconds: false,
+                rpe: rpe,
+                painLevel: 0,
+                fatigueLevel: fatigueLevel
+            ),
+            plannedSession: nil
+        )
+        let rank = ranks.first ?? RankState()
+        if ranks.isEmpty { modelContext.insert(rank) }
+        applyScoreOutcome(outcome, to: rank)
+        session.scoreImpact = outcome.consistencyDelta
+
+        try? modelContext.save()
     }
 
     private func resetCheckedWorkoutIfLogWasCancelled() {
@@ -249,6 +308,94 @@ private struct RunPrescriptionCard: View {
                 .accessibilityIdentifier("log-run-button")
         }
         .card(padding: 14)
+    }
+}
+
+private struct ConfirmRunCard: View {
+    var session: WorkoutSession
+    var log: RunLog
+    var onConfirm: (_ rpe: Int, _ feel: Int) -> Void
+    var onEdit: () -> Void
+
+    @State private var rpe = 6
+    @State private var howFelt = 3
+
+    private var actualsText: String {
+        var parts: [String] = []
+        if log.distanceKm > 0 {
+            parts.append(runDistanceText(km: log.distanceKm))
+        }
+        if log.movingSeconds > 0 {
+            parts.append(Self.movingTimeText(seconds: log.movingSeconds))
+        }
+        if log.elevationGainM > 0 {
+            parts.append("\(log.elevationGainM) m+")
+        }
+        if log.averageHr > 0 {
+            parts.append("avg \(log.averageHr) bpm")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(session.title)
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .foregroundStyle(AppTheme.text)
+                Spacer(minLength: 12)
+                StatusPill(text: "Synced from Garmin", systemImage: "applewatch.radiowaves.left.and.right")
+            }
+
+            if !actualsText.isEmpty {
+                Text(actualsText)
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .foregroundStyle(AppTheme.text)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                            .stroke(AppTheme.divider, lineWidth: 1)
+                    )
+            }
+
+            ReadinessSlider(
+                title: "Perceived effort",
+                systemImage: "speedometer",
+                value: $rpe,
+                range: 1...10,
+                descriptor: ReadinessScale.perceivedEffort
+            )
+            Divider()
+            ReadinessSlider(
+                title: "How did you feel?",
+                systemImage: "face.smiling",
+                value: $howFelt,
+                range: 1...5,
+                descriptor: ReadinessScale.howIFelt
+            )
+
+            Button("Confirm run") { onConfirm(rpe, howFelt) }
+                .buttonStyle(PrimaryActionButtonStyle())
+                .accessibilityIdentifier("confirm-run-button")
+
+            Button("Edit details", action: onEdit)
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("edit-run-details-button")
+        }
+        .card(padding: 14)
+    }
+
+    private static func movingTimeText(seconds: Int) -> String {
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        if hours > 0 {
+            return "\(hours):" + String(format: "%02d", minutes)
+        }
+        return "\(max(1, minutes)) min"
     }
 }
 

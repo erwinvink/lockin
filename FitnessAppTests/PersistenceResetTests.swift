@@ -717,6 +717,232 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertFalse(session.isRun)
     }
 
+    func testIngestWellnessUpsertsOneSnapshotPerCalendarDay() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+
+        try ingest(
+            wellness: [
+                wellnessDayFixture(date: "2026-06-08", sleepScore: 70),
+                wellnessDayFixture(date: "2026-06-09", sleepScore: 80)
+            ],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        let firstPass = try modelContext.fetch(FetchDescriptor<GarminDailySnapshot>())
+        XCTAssertEqual(firstPass.count, 2, "Days missing from the response stay absent instead of being zero-filled")
+        let monday = try XCTUnwrap(firstPass.first { calendar.component(.day, from: $0.date) == 8 })
+        XCTAssertEqual(monday.date, try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8))))
+        XCTAssertEqual(monday.sleepScore, 70)
+        XCTAssertEqual(monday.sleepSeconds, 27_360)
+        XCTAssertEqual(monday.hrvStatus, "BALANCED")
+        XCTAssertEqual(monday.hrvMs, 52)
+        XCTAssertEqual(monday.bodyBattery, 71)
+        XCTAssertEqual(monday.trainingReadiness, 64)
+        XCTAssertEqual(monday.restingHr, 47)
+
+        let beforeSecondIngest = Date()
+        try ingest(
+            wellness: [wellnessDayFixture(date: "2026-06-08T00:00:00Z", sleepScore: 75, restingHr: 51)],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        let secondPass = try modelContext.fetch(FetchDescriptor<GarminDailySnapshot>())
+        XCTAssertEqual(secondPass.count, 2, "Re-ingesting an existing day updates it instead of duplicating it")
+        let updatedMonday = try XCTUnwrap(secondPass.first { calendar.component(.day, from: $0.date) == 8 })
+        XCTAssertEqual(updatedMonday.id, monday.id)
+        XCTAssertEqual(updatedMonday.sleepScore, 75)
+        XCTAssertEqual(updatedMonday.restingHr, 51)
+        XCTAssertGreaterThanOrEqual(updatedMonday.fetchedAt, beforeSecondIngest)
+    }
+
+    func testMatchGarminActivitiesCreatesPendingRunLogForSameDayPlannedRun() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 9)))
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 12)
+        modelContext.insert(plannedRun)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-08 07:01:33")],
+            sessions: [plannedRun],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched, 1)
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        XCTAssertEqual(logs.count, 1)
+        let log = try XCTUnwrap(logs.first)
+        XCTAssertEqual(log.sessionId, plannedRun.id)
+        XCTAssertEqual(log.garminActivityId, "19519498613")
+        XCTAssertEqual(log.source, .garmin)
+        XCTAssertTrue(log.needsConfirmation)
+        XCTAssertEqual(log.distanceKm, 12.03)
+        XCTAssertEqual(log.movingSeconds, 4_480)
+        XCTAssertEqual(log.elevationGainM, 156)
+        XCTAssertEqual(log.averageHr, 148)
+        XCTAssertEqual(log.averagePaceSecPerKm, 374)
+        XCTAssertEqual(log.rpe, 0)
+        XCTAssertEqual(log.feelScore, 3)
+        XCTAssertEqual(
+            log.completedAt,
+            try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 7, minute: 1, second: 33)))
+        )
+        XCTAssertEqual(plannedRun.status, .planned, "Confirmation, not sync, flips the session to completed")
+    }
+
+    func testMatchGarminActivitiesSkipsAlreadyIngestedActivityIds() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 9)))
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 12)
+        // The earlier ingest may have matched a different (since replanned) session;
+        // the activity id alone must block a duplicate log.
+        let alreadyIngested = RunLog(
+            sessionId: UUID(),
+            completedAt: runDay,
+            distanceKm: 12.03,
+            garminActivityId: "19519498613",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        modelContext.insert(plannedRun)
+        modelContext.insert(alreadyIngested)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-08 07:01:33")],
+            sessions: [plannedRun],
+            existingRunLogs: [alreadyIngested],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 1)
+        XCTAssertEqual(plannedRun.status, .planned)
+    }
+
+    func testMatchGarminActivitiesMatchesClosestPlannedDistance() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 9)))
+        let shortRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 8, title: "Easy shakeout")
+        let longRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 21, title: "Long run")
+        modelContext.insert(shortRun)
+        modelContext.insert(longRun)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-08 07:01:33", distanceKm: 20.5)],
+            sessions: [shortRun, longRun],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched, 1)
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        XCTAssertEqual(logs.count, 1)
+        XCTAssertEqual(logs.first?.sessionId, longRun.id, "The closest planned distance wins")
+        XCTAssertEqual(shortRun.status, .planned)
+        XCTAssertEqual(longRun.status, .planned)
+    }
+
+    func testMatchGarminActivitiesIgnoresActivityWithoutSameDayPlannedRun() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let activityDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 9)))
+        let dayAfter = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: activityDay))
+        let strengthToday = WorkoutSession(
+            scheduledDate: activityDay,
+            title: "Pull day",
+            weekIndex: 0,
+            focus: .pull,
+            summary: "AI: Strength session"
+        )
+        let runTomorrow = plannedRunFixture(scheduledDate: dayAfter, distanceKm: 12)
+        let completedRunToday = plannedRunFixture(scheduledDate: activityDay, distanceKm: 12, title: "Already logged run")
+        completedRunToday.status = .completed
+        modelContext.insert(strengthToday)
+        modelContext.insert(runTomorrow)
+        modelContext.insert(completedRunToday)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-08 07:01:33")],
+            sessions: [strengthToday, runTomorrow, completedRunToday],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched, 0, "Unplanned runs are ignored; only planned running sessions on the same day match")
+        XCTAssertTrue(try modelContext.fetch(FetchDescriptor<RunLog>()).isEmpty)
+    }
+
+    func testMatchGarminActivitiesClaimsEachSessionOnceAndSkipsNonRunningTypes() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8, hour: 9)))
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 12)
+        modelContext.insert(plannedRun)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [
+                garminActivityFixture(id: "111", startTime: "2026-06-08 06:00:00", activityType: "cycling"),
+                garminActivityFixture(id: "222", startTime: "2026-06-08 07:01:33"),
+                garminActivityFixture(id: "333", startTime: "2026-06-08 18:30:00", distanceKm: 5.1)
+            ],
+            sessions: [plannedRun],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched, 1, "One activity per session per batch; non-running types never match")
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        XCTAssertEqual(logs.count, 1)
+        XCTAssertEqual(logs.first?.garminActivityId, "222")
+
+        // A session already holding a pending log is not a candidate on later syncs either.
+        let rematch = try matchGarminActivities(
+            [garminActivityFixture(id: "444", startTime: "2026-06-08 19:00:00")],
+            sessions: [plannedRun],
+            existingRunLogs: logs,
+            in: modelContext,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(rematch, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 1)
+    }
+
     func testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
@@ -808,4 +1034,63 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(rank.consistencyScore, 90)
         XCTAssertEqual(rank.bestStreak, 9)
     }
+}
+
+private func wellnessDayFixture(
+    date: String,
+    sleepScore: Int = 82,
+    sleepSeconds: Int = 27_360,
+    hrvStatus: String = "BALANCED",
+    hrvMs: Int = 52,
+    bodyBattery: Int = 71,
+    trainingReadiness: Int = 64,
+    restingHr: Int = 47
+) -> GarminWellnessDayResponse {
+    GarminWellnessDayResponse(
+        date: date,
+        sleepScore: sleepScore,
+        sleepSeconds: sleepSeconds,
+        hrvStatus: hrvStatus,
+        hrvMs: hrvMs,
+        bodyBattery: bodyBattery,
+        trainingReadiness: trainingReadiness,
+        restingHr: restingHr
+    )
+}
+
+private func garminActivityFixture(
+    id: String = "19519498613",
+    startTime: String,
+    activityType: String = "running",
+    distanceKm: Double = 12.03,
+    movingSeconds: Int = 4_480,
+    elevationGainM: Int = 156,
+    averageHr: Int = 148,
+    averagePaceSecPerKm: Int = 374,
+    name: String = "Utrecht Hardlopen"
+) -> GarminActivityResponse {
+    GarminActivityResponse(
+        garminActivityId: id,
+        startTime: startTime,
+        activityType: activityType,
+        distanceKm: distanceKm,
+        movingSeconds: movingSeconds,
+        elevationGainM: elevationGainM,
+        averageHr: averageHr,
+        averagePaceSecPerKm: averagePaceSecPerKm,
+        name: name
+    )
+}
+
+private func plannedRunFixture(scheduledDate: Date, distanceKm: Double, title: String = "Easy run") -> WorkoutSession {
+    WorkoutSession(
+        scheduledDate: scheduledDate,
+        title: title,
+        weekIndex: 0,
+        focus: .mixed,
+        summary: "AI: Easy aerobic run",
+        discipline: .running,
+        runKind: .easy,
+        plannedDistanceKm: distanceKm
+    )
 }

@@ -130,11 +130,11 @@ final class TrainingEngineTests: XCTestCase {
         let dueToday = WorkoutSession(scheduledDate: today, title: "Today", weekIndex: 1, focus: .mixed, summary: "Current")
         let future = WorkoutSession(scheduledDate: tomorrow, title: "Tomorrow", weekIndex: 1, focus: .push, summary: "Future")
 
-        XCTAssertNil(duePlannedSession(from: [future], now: now, calendar: calendar))
+        XCTAssertTrue(duePlannedSessions(from: [future], now: now, calendar: calendar).isEmpty)
         XCTAssertEqual(nextFuturePlannedSession(from: [future], now: now, calendar: calendar)?.id, future.id)
-        XCTAssertNil(duePlannedSession(from: [overdue], now: now, calendar: calendar))
+        XCTAssertTrue(duePlannedSessions(from: [overdue], now: now, calendar: calendar).isEmpty)
         XCTAssertEqual(overduePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [overdue.id])
-        XCTAssertEqual(duePlannedSession(from: [future, dueToday, overdue], now: now, calendar: calendar)?.id, dueToday.id)
+        XCTAssertEqual(duePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [dueToday.id])
     }
 
     func testCompletedRunLogInputScoresPositiveConsistencyAndStreak() {

@@ -375,7 +375,7 @@ private struct ReadinessInputCard: View {
     }
 }
 
-private struct ReadinessSlider: View {
+struct ReadinessSlider: View {
     var title: String
     var systemImage: String
     @Binding var value: Int
@@ -564,6 +564,10 @@ struct LogRunView: View {
 
     var session: WorkoutSession
 
+    /// Pending Garmin log being edited; save() updates it in place instead of
+    /// inserting a duplicate.
+    private let prefillLog: RunLog?
+
     @FocusState private var distanceFieldIsFocused: Bool
     @State private var distanceText: String
     @State private var movingMinutes: Int
@@ -575,11 +579,26 @@ struct LogRunView: View {
 
     init(session: WorkoutSession) {
         self.session = session
+        self.prefillLog = nil
         _distanceText = State(initialValue: session.plannedDistanceKm > 0
             ? session.plannedDistanceKm.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))
             : "")
         _movingMinutes = State(initialValue: max(0, session.estimatedDurationMinutes))
         _elevationGainM = State(initialValue: max(0, session.plannedElevationM))
+    }
+
+    init(session: WorkoutSession, prefilledFrom log: RunLog) {
+        self.session = session
+        self.prefillLog = log
+        _distanceText = State(initialValue: log.distanceKm > 0
+            ? log.distanceKm.formatted(.number.precision(.fractionLength(0...2)).grouping(.never))
+            : "")
+        _movingMinutes = State(initialValue: max(0, log.movingSeconds / 60))
+        _elevationGainM = State(initialValue: max(0, log.elevationGainM))
+        _averageHr = State(initialValue: max(0, log.averageHr))
+        _rpe = State(initialValue: (1...10).contains(log.rpe) ? log.rpe : 6)
+        _howFelt = State(initialValue: (1...5).contains(log.feelScore) ? log.feelScore : 3)
+        _notes = State(initialValue: log.notes)
     }
 
     private var parsedDistanceKm: Double? {
@@ -660,21 +679,34 @@ struct LogRunView: View {
         let movingSeconds = max(0, movingMinutes) * 60
         let pace = distanceKm > 0 && movingSeconds > 0 ? Int(Double(movingSeconds) / distanceKm) : 0
         let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: howFelt)
-        let log = RunLog(
-            sessionId: session.id,
-            completedAt: Date(),
-            distanceKm: distanceKm,
-            movingSeconds: movingSeconds,
-            elevationGainM: max(0, elevationGainM),
-            averageHr: max(0, averageHr),
-            averagePaceSecPerKm: pace,
-            rpe: rpe,
-            feelScore: howFelt,
-            notes: notes,
-            source: .manual,
-            needsConfirmation: false
-        )
-        modelContext.insert(log)
+        if let prefillLog {
+            // Editing a synced Garmin log: update it in place (keeping its
+            // completedAt, source, and activity id) instead of duplicating it.
+            prefillLog.distanceKm = distanceKm
+            prefillLog.movingSeconds = movingSeconds
+            prefillLog.elevationGainM = max(0, elevationGainM)
+            prefillLog.averageHr = max(0, averageHr)
+            prefillLog.averagePaceSecPerKm = pace
+            prefillLog.rpe = rpe
+            prefillLog.feelScore = howFelt
+            prefillLog.notes = notes
+            prefillLog.needsConfirmation = false
+        } else {
+            modelContext.insert(RunLog(
+                sessionId: session.id,
+                completedAt: Date(),
+                distanceKm: distanceKm,
+                movingSeconds: movingSeconds,
+                elevationGainM: max(0, elevationGainM),
+                averageHr: max(0, averageHr),
+                averagePaceSecPerKm: pace,
+                rpe: rpe,
+                feelScore: howFelt,
+                notes: notes,
+                source: .manual,
+                needsConfirmation: false
+            ))
+        }
         session.status = .completed
 
         let outcome = TrainingEngine().score(

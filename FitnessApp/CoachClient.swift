@@ -30,6 +30,7 @@ struct CoachRunSummary: Codable, Equatable {
     var elevationGainM: Int
     var averageHr: Int?
     var rpe: Int?
+    var feelScore: Int? = nil   // 1 very weak ... 5 very strong; nil when never set
     var kind: String?
 }
 
@@ -204,6 +205,41 @@ struct CoachProxyHealthResponse: Codable, Equatable {
     var ok: Bool
     var hasApiKey: Bool
     var defaultModel: String
+}
+
+struct GarminStatusResponse: Codable, Equatable {
+    var ok: Bool
+    var loggedIn: Bool
+    var lastError: String?
+}
+
+struct GarminWellnessDayResponse: Codable, Equatable {
+    var date: String   // "2026-06-08" or full ISO; parsed during ingest
+    var sleepScore: Int
+    var sleepSeconds: Int
+    var hrvStatus: String
+    var hrvMs: Int
+    var bodyBattery: Int
+    var trainingReadiness: Int
+    var restingHr: Int
+}
+
+struct GarminActivityResponse: Codable, Equatable {
+    var garminActivityId: String
+    var startTime: String   // Garmin local time "2026-06-08 07:01:33" or ISO
+    var activityType: String
+    var distanceKm: Double
+    var movingSeconds: Int
+    var elevationGainM: Int
+    var averageHr: Int
+    var averagePaceSecPerKm: Int
+    var name: String
+}
+
+struct GarminSnapshotResponse: Codable, Equatable {
+    var status: GarminStatusResponse
+    var wellness: [GarminWellnessDayResponse]
+    var activities: [GarminActivityResponse]
 }
 
 struct CoachSessionResponse: Codable, Equatable {
@@ -814,6 +850,7 @@ func makeCoachRequest(
                         elevationGainM: $0.elevationGainM,
                         averageHr: $0.averageHr > 0 ? $0.averageHr : nil,
                         rpe: $0.rpe > 0 ? $0.rpe : nil,
+                        feelScore: $0.feelScore > 0 ? $0.feelScore : nil,
                         kind: nil
                     )
                 }
@@ -1067,6 +1104,58 @@ struct LocalCoachClient {
         return try JSONDecoder.coachDecoder.decode(CoachModelsResponse.self, from: data)
     }
 
+    func fetchGarminStatus() async throws -> GarminStatusResponse {
+        guard let statusEndpoint = Self.garminStatusEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: statusEndpoint)
+        urlRequest.timeoutInterval = 15
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(statusEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(statusEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: data)
+    }
+
+    func fetchGarminSnapshot(sinceDays: Int = 7) async throws -> GarminSnapshotResponse {
+        guard let snapshotEndpoint = Self.garminSnapshotEndpoint(from: endpoint, sinceDays: sinceDays) else {
+            throw CoachClientError.invalidURL
+        }
+        var urlRequest = URLRequest(url: snapshotEndpoint)
+        // The proxy route budget is 120s (a cold sidecar cache serializes ~29
+        // upstream Garmin calls), so leave headroom on top of that.
+        urlRequest.timeoutInterval = 150
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(snapshotEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(snapshotEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminSnapshotResponse.self, from: data)
+    }
+
     private static func normalizedEndpoint(from value: String) -> URL? {
         var rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawValue.isEmpty else { return nil }
@@ -1109,6 +1198,20 @@ struct LocalCoachClient {
         guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
         components.path = "/models"
         components.query = nil
+        return components.url
+    }
+
+    private static func garminStatusEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/status"
+        components.query = nil
+        return components.url
+    }
+
+    private static func garminSnapshotEndpoint(from endpoint: URL, sinceDays: Int) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/snapshot"
+        components.queryItems = [URLQueryItem(name: "sinceDays", value: "\(sinceDays)")]
         return components.url
     }
 
