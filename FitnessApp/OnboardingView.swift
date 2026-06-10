@@ -15,11 +15,19 @@ struct OnboardingView: View {
     @State private var selectedEquipment: Set<EquipmentKind> = [.pullUpBar, .yogaMat]
     @State private var strictForm = true
     @State private var painNotes = ""
+    @State private var isTrainingForRace = false
+    @State private var raceName = ""
+    @State private var raceDate = Calendar.current.date(byAdding: .weekOfYear, value: 16, to: Date()) ?? Date()
+    @State private var raceDistanceKm = 50
+    @State private var raceElevationGainM = 1000
+    @State private var runningDays: Set<TrainingWeekday> = [.tuesday, .thursday, .saturday]
+    @State private var longRunDay: TrainingWeekday = .saturday
 
     private var canCreateProfile: Bool {
         strictForm &&
         selectedEquipment.contains(.pullUpBar) &&
-        (2...6).contains(selectedTrainingDays.count)
+        (2...6).contains(selectedTrainingDays.count) &&
+        (!isTrainingForRace || !runningDays.isEmpty)
     }
 
     var body: some View {
@@ -39,6 +47,16 @@ struct OnboardingView: View {
                     goalPullUps: $goalPullUps,
                     goalPushUps: $goalPushUps,
                     goalPlankSeconds: $goalPlankSeconds
+                )
+
+                RaceGoalCard(
+                    isTrainingForRace: $isTrainingForRace,
+                    raceName: $raceName,
+                    raceDate: $raceDate,
+                    raceDistanceKm: $raceDistanceKm,
+                    raceElevationGainM: $raceElevationGainM,
+                    runningDays: $runningDays,
+                    longRunDay: $longRunDay
                 )
 
                 ScheduleCard(
@@ -84,6 +102,20 @@ struct OnboardingView: View {
         )
         modelContext.insert(profile)
         modelContext.insert(RankState())
+        if isTrainingForRace {
+            modelContext.insert(
+                RaceGoal(
+                    name: raceName,
+                    raceDate: raceDate,
+                    distanceKm: Double(raceDistanceKm),
+                    elevationGainM: raceElevationGainM
+                )
+            )
+            profile.runningDays = runningDays
+            profile.longRunDay = runningDays.contains(longRunDay)
+                ? longRunDay
+                : TrainingWeekday.allCases.last { runningDays.contains($0) }
+        }
         try? modelContext.save()
     }
 }
@@ -126,6 +158,67 @@ private struct GoalTargetCard: View {
     }
 }
 
+private struct RaceGoalCard: View {
+    @Binding var isTrainingForRace: Bool
+    @Binding var raceName: String
+    @Binding var raceDate: Date
+    @Binding var raceDistanceKm: Int
+    @Binding var raceElevationGainM: Int
+    @Binding var runningDays: Set<TrainingWeekday>
+    @Binding var longRunDay: TrainingWeekday
+
+    private var orderedRunningDays: [TrainingWeekday] {
+        TrainingWeekday.allCases.filter { runningDays.contains($0) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Running")
+                .font(.headline)
+            Toggle("I'm also training for a race", isOn: $isTrainingForRace)
+                .tint(AppTheme.accent)
+            if isTrainingForRace {
+                TextField("Race name", text: $raceName)
+                    .textInputAutocapitalization(.words)
+                    .textFieldStyle(.roundedBorder)
+                DatePicker("Race date", selection: $raceDate, displayedComponents: .date)
+                IntegerField(title: "Distance", value: $raceDistanceKm, range: 1...500, suffix: "km")
+                IntegerField(title: "Elevation gain", value: $raceElevationGainM, range: 0...30_000, suffix: "m+")
+                TrainingDaysPicker(
+                    selectedDays: $runningDays,
+                    title: "Running days",
+                    minDays: 1,
+                    maxDays: 7,
+                    caption: "Pick 1 to 7 days. The coach schedules runs only on those days."
+                )
+                if !orderedRunningDays.isEmpty {
+                    HStack {
+                        Text("Long run day")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(AppTheme.text)
+                        Spacer()
+                        Picker("Long run day", selection: $longRunDay) {
+                            ForEach(orderedRunningDays) { day in
+                                Text(day.title).tag(day)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .tint(AppTheme.accent)
+                        .labelsHidden()
+                    }
+                }
+            }
+        }
+        .card()
+        .onChange(of: runningDays) { _, newDays in
+            guard !newDays.isEmpty, !newDays.contains(longRunDay) else { return }
+            if let fallback = TrainingWeekday.allCases.last(where: { newDays.contains($0) }) {
+                longRunDay = fallback
+            }
+        }
+    }
+}
+
 private struct ScheduleCard: View {
     @Binding var targetDate: Date
     @Binding var selectedTrainingDays: Set<TrainingWeekday>
@@ -146,16 +239,21 @@ private struct ScheduleCard: View {
 
 struct TrainingDaysPicker: View {
     @Binding var selectedDays: Set<TrainingWeekday>
+    var title: String = "Training days"
+    var minDays: Int = 2
+    var maxDays: Int = 6
+    var caption: String? = "Pick 2 to 6 days. The AI coach will only schedule future sessions on those selected days."
+    var preventsEmptySelection: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Training days")
+                Text(title)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(selectedDays.count) per week")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle((2...6).contains(selectedDays.count) ? AppTheme.muted : AppTheme.warning)
+                    .foregroundStyle((minDays...maxDays).contains(selectedDays.count) ? AppTheme.muted : AppTheme.warning)
             }
             HStack(spacing: 6) {
                 ForEach(TrainingWeekday.allCases) { day in
@@ -175,19 +273,29 @@ struct TrainingDaysPicker: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!selectedDays.contains(day) && selectedDays.count >= 6)
+                    .disabled(isToggleDisabled(for: day))
                 }
             }
-            Text("Pick 2 to 6 days. The AI coach will only schedule future sessions on those selected days.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+            if let caption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
         }
+    }
+
+    private func isToggleDisabled(for day: TrainingWeekday) -> Bool {
+        if selectedDays.contains(day) {
+            return preventsEmptySelection && selectedDays.count <= 1
+        }
+        return selectedDays.count >= maxDays
     }
 
     private func toggle(_ day: TrainingWeekday) {
         if selectedDays.contains(day) {
+            guard !(preventsEmptySelection && selectedDays.count <= 1) else { return }
             selectedDays.remove(day)
-        } else if selectedDays.count < 6 {
+        } else if selectedDays.count < maxDays {
             selectedDays.insert(day)
         }
     }

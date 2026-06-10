@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
+    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
@@ -19,6 +20,15 @@ struct SettingsView: View {
                 WeekScheduleCard(
                     profile: profile,
                     onScheduleChange: saveTrainingDays
+                )
+                RunningGoalCard(
+                    profile: profile,
+                    raceGoal: raceGoals.first,
+                    onCreateGoal: createRaceGoal,
+                    onRemoveGoal: removeRaceGoal,
+                    onRunningDaysChange: saveRunningDays,
+                    onLongRunDayChange: saveLongRunDay,
+                    onGoalChange: saveRaceGoalEdits
                 )
                 ReminderSettingsCard(
                     profile: profile,
@@ -49,6 +59,45 @@ struct SettingsView: View {
     private func saveTrainingDays(_ days: Set<TrainingWeekday>) {
         profile.trainingDays = days
         try? modelContext.save()
+    }
+
+    private func createRaceGoal() {
+        let raceDate = Calendar.current.date(byAdding: .weekOfYear, value: 16, to: Date()) ?? Date()
+        modelContext.insert(RaceGoal(raceDate: raceDate, distanceKm: 50, elevationGainM: 1_000))
+        if profile.runningDays.isEmpty {
+            profile.runningDays = [.tuesday, .thursday, .saturday]
+            profile.longRunDay = .saturday
+        } else if profile.longRunDay.map({ profile.runningDays.contains($0) }) != true {
+            profile.longRunDay = latestDay(in: profile.runningDays)
+        }
+        try? modelContext.save()
+    }
+
+    private func removeRaceGoal(_ goal: RaceGoal) {
+        modelContext.delete(goal)
+        try? modelContext.save()
+    }
+
+    private func saveRunningDays(_ days: Set<TrainingWeekday>) {
+        guard !days.isEmpty else { return }
+        profile.runningDays = days
+        if profile.longRunDay.map({ days.contains($0) }) != true {
+            profile.longRunDay = latestDay(in: days)
+        }
+        try? modelContext.save()
+    }
+
+    private func saveLongRunDay(_ day: TrainingWeekday) {
+        profile.longRunDay = day
+        try? modelContext.save()
+    }
+
+    private func saveRaceGoalEdits() {
+        try? modelContext.save()
+    }
+
+    private func latestDay(in days: Set<TrainingWeekday>) -> TrainingWeekday? {
+        TrainingWeekday.allCases.last { days.contains($0) }
     }
 
     private func saveReminderPreference(_ enabled: Bool) {
@@ -160,6 +209,159 @@ private struct WeekScheduleCard: View {
     }
 }
 
+private struct RunningGoalCard: View {
+    var profile: UserProfile
+    var raceGoal: RaceGoal?
+    var onCreateGoal: () -> Void
+    var onRemoveGoal: (RaceGoal) -> Void
+    var onRunningDaysChange: (Set<TrainingWeekday>) -> Void
+    var onLongRunDayChange: (TrainingWeekday) -> Void
+    var onGoalChange: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Running")
+                .font(.headline)
+            if let raceGoal {
+                RaceGoalEditor(
+                    profile: profile,
+                    goal: raceGoal,
+                    onRemoveGoal: onRemoveGoal,
+                    onRunningDaysChange: onRunningDaysChange,
+                    onLongRunDayChange: onLongRunDayChange,
+                    onGoalChange: onGoalChange
+                )
+            } else {
+                Text("Set a race goal to unlock the ultra coach.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+                Button(action: onCreateGoal) {
+                    Label("Set up running", systemImage: "figure.run")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("running-setup-button")
+            }
+        }
+        .card()
+    }
+}
+
+private struct RaceGoalEditor: View {
+    var profile: UserProfile
+    var goal: RaceGoal
+    var onRemoveGoal: (RaceGoal) -> Void
+    var onRunningDaysChange: (Set<TrainingWeekday>) -> Void
+    var onLongRunDayChange: (TrainingWeekday) -> Void
+    var onGoalChange: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            TextField("Race name", text: nameBinding)
+                .textInputAutocapitalization(.words)
+                .textFieldStyle(.roundedBorder)
+            DatePicker("Race date", selection: raceDateBinding, displayedComponents: .date)
+            IntegerField(title: "Distance", value: distanceBinding, range: 1...500, suffix: "km")
+            IntegerField(title: "Elevation gain", value: elevationBinding, range: 0...30_000, suffix: "m+")
+            IntegerField(title: "Baseline weekly volume", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
+            IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
+            TrainingDaysPicker(
+                selectedDays: runningDaysBinding,
+                title: "Running days",
+                minDays: 1,
+                maxDays: 7,
+                caption: "Pick 1 to 7 days. At least one running day is needed while a race goal is set.",
+                preventsEmptySelection: true
+            )
+            HStack {
+                Text("Long run day")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.text)
+                Spacer()
+                Picker("Long run day", selection: longRunDayBinding) {
+                    ForEach(orderedRunningDays) { day in
+                        Text(day.title).tag(day)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(AppTheme.accent)
+                .labelsHidden()
+            }
+            Button(role: .destructive) {
+                onRemoveGoal(goal)
+            } label: {
+                Label("Remove race goal", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+        }
+    }
+
+    private var orderedRunningDays: [TrainingWeekday] {
+        TrainingWeekday.allCases.filter { profile.runningDays.contains($0) }
+    }
+
+    private var nameBinding: Binding<String> {
+        Binding(
+            get: { goal.name },
+            set: { goal.name = $0; onGoalChange() }
+        )
+    }
+
+    private var raceDateBinding: Binding<Date> {
+        Binding(
+            get: { goal.raceDate },
+            set: { goal.raceDate = $0; onGoalChange() }
+        )
+    }
+
+    private var distanceBinding: Binding<Int> {
+        Binding(
+            get: { Int(goal.distanceKm.rounded()) },
+            set: { goal.distanceKm = Double($0); onGoalChange() }
+        )
+    }
+
+    private var elevationBinding: Binding<Int> {
+        Binding(
+            get: { goal.elevationGainM },
+            set: { goal.elevationGainM = $0; onGoalChange() }
+        )
+    }
+
+    private var baselineWeeklyBinding: Binding<Int> {
+        Binding(
+            get: { Int(goal.baselineWeeklyKm.rounded()) },
+            set: { goal.baselineWeeklyKm = Double($0); onGoalChange() }
+        )
+    }
+
+    private var longestRecentRunBinding: Binding<Int> {
+        Binding(
+            get: { Int(goal.longestRecentRunKm.rounded()) },
+            set: { goal.longestRecentRunKm = Double($0); onGoalChange() }
+        )
+    }
+
+    private var runningDaysBinding: Binding<Set<TrainingWeekday>> {
+        Binding(
+            get: { profile.runningDays },
+            set: { onRunningDaysChange($0) }
+        )
+    }
+
+    private var longRunDayBinding: Binding<TrainingWeekday> {
+        Binding(
+            get: {
+                profile.longRunDay
+                    ?? TrainingWeekday.allCases.last { profile.runningDays.contains($0) }
+                    ?? .saturday
+            },
+            set: { onLongRunDayChange($0) }
+        )
+    }
+}
+
 private struct ReminderSettingsCard: View {
     var profile: UserProfile
     var onReminderToggle: (Bool) -> Void
@@ -200,7 +402,7 @@ private struct ResetCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Reset")
                 .font(.headline)
-            Text("Deletes profile, measurements, goals, sessions, logs, streak data, coach plans, coach decisions, and pending workout reminders.")
+            Text("Deletes profile, measurements, goals, race goal, sessions, logs, runs, streak data, coach plans, coach decisions, and pending workout reminders.")
                 .font(.caption)
                 .foregroundStyle(AppTheme.muted)
             Button(role: .destructive, action: onResetTap) {
