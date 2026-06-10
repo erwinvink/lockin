@@ -287,6 +287,45 @@ private func isGarminRunningActivityType(_ type: String) -> Bool {
     return normalized.contains("running") || normalized.contains("ultra")
 }
 
+/// Shared "Last sync attempt" formatting for the Garmin rows in Coach and
+/// Settings. 0 means no sync has completed yet.
+func relativeSyncText(epochSeconds: Double) -> String {
+    guard epochSeconds > 0 else { return "Never" }
+    return Date(timeIntervalSince1970: epochSeconds)
+        .formatted(.relative(presentation: .named))
+}
+
+/// The Garmin pull shared by the app-shell background sync and the Settings
+/// "Sync now" button: fetch the 7-day snapshot, ingest wellness, match
+/// activities to planned runs, save. Returns the number of new pending run
+/// logs. Throws after rolling back any partial ingest, so a failed sync never
+/// leaves half-written snapshots or logs; callers own garminLastSyncAt and
+/// error surfacing.
+@MainActor
+func performGarminSync(endpoint: String, in modelContext: ModelContext) async throws -> Int {
+    do {
+        let client = try LocalCoachClient(endpointString: endpoint)
+        let snapshot = try await client.fetchGarminSnapshot(sinceDays: 7)
+        try ingest(wellness: snapshot.wellness, in: modelContext)
+        // Fetch fresh after the await: any view snapshot the caller holds may
+        // be stale by the time the response lands (e.g. the missed sweep ran
+        // meanwhile).
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        let existingRunLogs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        let created = try matchGarminActivities(
+            snapshot.activities,
+            sessions: sessions,
+            existingRunLogs: existingRunLogs,
+            in: modelContext
+        )
+        try modelContext.save()
+        return created
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
+}
+
 func persist(
     plan: WeeklyPlan,
     in modelContext: ModelContext,

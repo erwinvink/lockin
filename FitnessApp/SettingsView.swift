@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
+    @AppStorage("coachProxyEndpoint") private var coachEndpoint = LocalCoachClient.defaultEndpointString
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
@@ -30,6 +31,7 @@ struct SettingsView: View {
                     onLongRunDayChange: saveLongRunDay,
                     onGoalChange: saveRaceGoalEdits
                 )
+                GarminCard(endpoint: coachEndpoint)
                 ReminderSettingsCard(
                     profile: profile,
                     onReminderToggle: saveReminderPreference,
@@ -363,6 +365,107 @@ private struct RaceGoalEditor: View {
             },
             set: { onLongRunDayChange($0) }
         )
+    }
+}
+
+private struct GarminCard: View {
+    var endpoint: String
+
+    @Environment(\.modelContext) private var modelContext
+    @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
+    @State private var status: GarminStatusResponse?
+    @State private var statusFailed = false
+    @State private var isSyncing = false
+    @State private var syncResult: String?
+    @State private var syncError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Garmin")
+                    .font(.headline)
+                Spacer()
+                StatusPill(text: statusText, color: statusColor, systemImage: statusIcon)
+            }
+
+            InfoLine(title: "Last sync attempt", value: relativeSyncText(epochSeconds: garminLastSyncAt))
+
+            Button(action: syncNow) {
+                Label(isSyncing ? "Syncing" : "Sync now", systemImage: "arrow.triangle.2.circlepath")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .accessibilityIdentifier("garmin-sync-now")
+            .disabled(isSyncing)
+            .opacity(isSyncing ? 0.55 : 1)
+
+            if let syncResult {
+                Text(syncResult)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.muted)
+            }
+
+            if let syncError {
+                Text(syncError)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.warning)
+            }
+
+            Text("Garmin login lives on the lockin server. If this shows Not logged in, run the login step on the server.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.muted)
+            Text("When Garmin is unreachable, coaching continues from your logged training.")
+                .font(.caption)
+                .foregroundStyle(AppTheme.muted)
+        }
+        .card()
+        .task { await loadStatus() }
+    }
+
+    private var statusText: String {
+        guard let status else { return statusFailed ? "Unreachable" : "Checking" }
+        guard status.ok else { return "Unreachable" }
+        return status.loggedIn ? "Connected" : "Not logged in"
+    }
+
+    private var statusColor: Color {
+        guard let status else { return statusFailed ? AppTheme.warning : AppTheme.muted }
+        return status.ok && status.loggedIn ? AppTheme.accent : AppTheme.warning
+    }
+
+    private var statusIcon: String {
+        guard let status else { return statusFailed ? "exclamationmark.triangle.fill" : "hourglass" }
+        return status.ok && status.loggedIn ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private func loadStatus() async {
+        do {
+            status = try await LocalCoachClient(endpointString: endpoint).fetchGarminStatus()
+            statusFailed = false
+        } catch {
+            status = nil
+            statusFailed = true
+        }
+    }
+
+    private func syncNow() {
+        guard !isSyncing else { return }
+        isSyncing = true
+        syncResult = nil
+        syncError = nil
+        Task {
+            defer { isSyncing = false }
+            do {
+                let newRuns = try await performGarminSync(endpoint: endpoint, in: modelContext)
+                garminLastSyncAt = Date().timeIntervalSince1970
+                syncResult = newRuns > 0
+                    ? "Synced — \(newRuns) new \(newRuns == 1 ? "run" : "runs") to confirm"
+                    : "Synced"
+            } catch {
+                syncError = error.localizedDescription
+            }
+            await loadStatus()
+        }
     }
 }
 

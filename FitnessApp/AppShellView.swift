@@ -57,41 +57,22 @@ struct AppShellView: View {
     }
 
     /// Pulls the Garmin snapshot at most every 30 minutes. All failures stay
-    /// silent here; Settings surfaces the Garmin status separately.
+    /// silent here; Settings surfaces the Garmin status and sync errors
+    /// separately.
     private func syncGarminIfDue() {
         guard !isSyncingGarmin else { return }
         guard Date().timeIntervalSince1970 - garminLastSyncAt > Self.garminSyncInterval else { return }
-        guard let client = try? LocalCoachClient(endpointString: coachEndpoint) else { return }
 
         isSyncingGarmin = true
         Task {
             defer { isSyncingGarmin = false }
-            await syncGarmin(client: client)
-        }
-    }
-
-    @MainActor
-    private func syncGarmin(client: LocalCoachClient) async {
-        do {
-            let snapshot = try await client.fetchGarminSnapshot(sinceDays: 7)
-            try ingest(wellness: snapshot.wellness, in: modelContext)
-            // Fetch fresh after the await: the @Query snapshot may be stale by
-            // the time the response lands (e.g. the missed sweep ran meanwhile).
-            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
-            let existingRunLogs = try modelContext.fetch(FetchDescriptor<RunLog>())
-            try matchGarminActivities(
-                snapshot.activities,
-                sessions: sessions,
-                existingRunLogs: existingRunLogs,
-                in: modelContext
-            )
-            try modelContext.save()
-            garminLastSyncAt = Date().timeIntervalSince1970
-        } catch {
-            // Swallowed by design: the next foreground retries, and Settings
-            // shows the Garmin connection state. Drop any partial ingest so
-            // a failed sync never leaves half-written snapshots or logs.
-            modelContext.rollback()
+            do {
+                _ = try await performGarminSync(endpoint: coachEndpoint, in: modelContext)
+                garminLastSyncAt = Date().timeIntervalSince1970
+            } catch {
+                // Swallowed by design: performGarminSync already rolled back
+                // any partial ingest, and the next foreground retries.
+            }
         }
     }
 }

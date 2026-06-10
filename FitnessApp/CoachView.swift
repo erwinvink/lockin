@@ -654,9 +654,7 @@ private struct GarminSyncRow: View {
     }
 
     private var lastSyncText: String {
-        guard garminLastSyncAt > 0 else { return "Never" }
-        return Date(timeIntervalSince1970: garminLastSyncAt)
-            .formatted(.relative(presentation: .named))
+        relativeSyncText(epochSeconds: garminLastSyncAt)
     }
 
     private var pillText: String {
