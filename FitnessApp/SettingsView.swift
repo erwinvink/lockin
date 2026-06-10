@@ -8,6 +8,7 @@ struct SettingsView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @AppStorage("coachProxyEndpoint") private var coachEndpoint = LocalCoachClient.defaultEndpointString
+    @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
@@ -158,6 +159,11 @@ struct SettingsView: View {
             WorkoutNotificationScheduler().clearWorkoutReminders()
             try wipeAllData(in: modelContext)
             try modelContext.save()
+            // The wiped data includes the synced snapshots and run logs, so
+            // "Last sync" must read Never again and the next foreground must
+            // re-pull. The pending-delete stash is deliberately kept: those
+            // pushed watch workouts still need cleanup on the Garmin side.
+            garminLastSyncAt = 0
         } catch {
             resetError = error.localizedDescription
         }

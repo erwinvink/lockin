@@ -672,7 +672,12 @@ struct LogRunView: View {
     }
 
     private func save() {
-        guard session.status != .completed else { return }
+        // Completed through another path while the sheet was open (e.g. the
+        // confirm card): just close instead of appearing frozen.
+        guard session.status != .completed else {
+            dismiss()
+            return
+        }
         distanceFieldIsFocused = false
         guard let distanceKm = parsedDistanceKm else { return }
 

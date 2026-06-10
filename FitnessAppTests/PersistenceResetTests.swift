@@ -548,6 +548,44 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(plannedRun.scoreImpact, 12)
     }
 
+    func testCompleteRunOnCompletedSessionAbsorbsPendingLogWithoutRescoring() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 9)))
+        // A Garmin activity matched while the manual log sheet was open: the
+        // manual path completed the session first, leaving this log pending.
+        let completedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 12)
+        completedRun.status = .completed
+        completedRun.scoreImpact = 12
+        let rank = RankState(consistencyScore: 42, streak: 5, bestStreak: 5)
+        let pendingLog = RunLog(
+            sessionId: completedRun.id,
+            completedAt: runDay,
+            distanceKm: 12.2,
+            garminActivityId: "555",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        modelContext.insert(rank)
+        modelContext.insert(completedRun)
+        modelContext.insert(pendingLog)
+        try modelContext.save()
+
+        try completeRun(session: completedRun, log: pendingLog, rpe: 8, feelScore: 4, ranks: [rank], in: modelContext)
+
+        XCTAssertFalse(pendingLog.needsConfirmation, "The redundant duplicate is absorbed, not stranded as a zombie confirm card")
+        XCTAssertEqual(completedRun.status, .completed)
+        XCTAssertEqual(pendingLog.rpe, 0, "No athlete feedback is applied to the absorbed log")
+        XCTAssertEqual(pendingLog.feelScore, 3)
+        XCTAssertEqual(rank.consistencyScore, 42, "An already-completed session is never rescored")
+        XCTAssertEqual(rank.streak, 5)
+        XCTAssertEqual(rank.bestStreak, 5)
+        XCTAssertEqual(rank.penaltyPoints, 0)
+        XCTAssertEqual(completedRun.scoreImpact, 12)
+    }
+
     func testWipeAllDataDeletesRunningModels() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext

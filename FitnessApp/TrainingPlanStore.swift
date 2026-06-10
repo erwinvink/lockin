@@ -113,7 +113,8 @@ func missedSessionOutcome(profile: UserProfile, latestLog: PerformanceLog?) -> S
 /// session to completed, and applies normal completion scoring. If the
 /// session was already auto-marked missed (the run synced after the missed
 /// sweep), the miss penalty and consistency hit are refunded first — streak
-/// history is not rewritten. Calling it again after completion is a no-op.
+/// history is not rewritten. Calling it again after completion never rescores;
+/// it only absorbs a still-pending duplicate log.
 func completeRun(
     session: WorkoutSession,
     log: RunLog,
@@ -122,7 +123,13 @@ func completeRun(
     ranks: [RankState],
     in modelContext: ModelContext
 ) throws {
-    guard session.status != .completed else { return }
+    guard session.status != .completed else {
+        // The session was completed through another path, so the pending
+        // duplicate is absorbed rather than stranded as a zombie confirm card.
+        log.needsConfirmation = false
+        try modelContext.save()
+        return
+    }
 
     log.rpe = rpe
     log.feelScore = feelScore
@@ -296,10 +303,17 @@ func relativeSyncText(epochSeconds: Double) -> String {
         .formatted(.relative(presentation: .named))
 }
 
+enum GarminSyncError: LocalizedError {
+    case notLoggedIn
+    var errorDescription: String? { "Garmin is not logged in on the server — nothing synced." }
+}
+
 /// The Garmin pull shared by the app-shell background sync and the Settings
 /// "Sync now" button: fetch the 7-day snapshot, ingest wellness, match
 /// activities to planned runs, save. Returns the number of new pending run
-/// logs. Throws after rolling back any partial ingest, so a failed sync never
+/// logs. A snapshot from a logged-out sidecar throws GarminSyncError.notLoggedIn
+/// instead of "succeeding" with nothing, so callers retry and Settings can say
+/// why. Throws after rolling back any partial ingest, so a failed sync never
 /// leaves half-written snapshots or logs; callers own garminLastSyncAt and
 /// error surfacing.
 ///
@@ -311,6 +325,9 @@ func performGarminSync(endpoint: String, in modelContext: ModelContext) async th
     do {
         let client = try LocalCoachClient(endpointString: endpoint)
         let snapshot = try await client.fetchGarminSnapshot(sinceDays: 7)
+        // A logged-out sidecar returns empty wellness/activities; ingest and
+        // matching would be skipped anyway, so report the truth instead.
+        guard snapshot.status.loggedIn else { throw GarminSyncError.notLoggedIn }
         try ingest(wellness: snapshot.wellness, in: modelContext)
         // Fetch fresh after the await: any view snapshot the caller holds may
         // be stale by the time the response lands (e.g. the missed sweep ran

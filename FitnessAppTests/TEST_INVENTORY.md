@@ -193,6 +193,10 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testCompleteRunOnPlannedSessionAppliesConfirmScoring`
   - Verifies confirming a pending run log completes the session, stores RPE/feel, and applies normal completion scoring.
 
+- `testCompleteRunOnCompletedSessionAbsorbsPendingLogWithoutRescoring`
+  - Verifies confirming a pending log on an already-completed session absorbs the duplicate (needsConfirmation cleared) instead of stranding a zombie confirm card.
+  - Confirms no rescoring happens: rank values, score impact, and session status are unchanged.
+
 - `testWipeAllDataDeletesRunningModels`
   - Verifies reset also deletes race goals, run logs, and wellness snapshots.
 
