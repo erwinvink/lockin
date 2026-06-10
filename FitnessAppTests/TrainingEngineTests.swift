@@ -182,6 +182,14 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(outcome.consistencyDelta, 0)
     }
 
+    func testHowFeltMapsToExactFatigueLevels() {
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 1), 10)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 2), 8)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 3), 5)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 4), 2)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 5), 0)
+    }
+
     func testRunDistanceTextIsLocaleAwareAndStripsTrailingZero() {
         XCTAssertEqual(runDistanceText(km: 12.5, locale: Locale(identifier: "en_US")), "12.5 km")
         XCTAssertEqual(runDistanceText(km: 52.5, locale: Locale(identifier: "nl_NL")), "52,5 km")

@@ -453,13 +453,13 @@ private struct ReadinessSlider: View {
     }
 }
 
-private struct ReadinessDescriptor {
+struct ReadinessDescriptor {
     var label: String
     var detail: String
     var color: Color
 }
 
-private enum ReadinessScale {
+enum ReadinessScale {
     static func perceivedEffort(_ value: Int) -> ReadinessDescriptor {
         switch value {
         case 1:
@@ -586,7 +586,7 @@ struct LogRunView: View {
         let normalized = distanceText
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(normalized), value >= 0, value <= 500 else { return nil }
+        guard let value = Double(normalized), value > 0, value <= 500 else { return nil }
         return value
     }
 
@@ -653,6 +653,7 @@ struct LogRunView: View {
     }
 
     private func save() {
+        guard session.status == .planned else { return }
         distanceFieldIsFocused = false
         guard let distanceKm = parsedDistanceKm else { return }
 
