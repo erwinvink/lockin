@@ -1044,6 +1044,41 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(degraded.error, "Garmin service is not reachable.")
     }
 
+    func testApplyGarminPushResultsStampsOnlyScheduledMatches() {
+        let scheduledRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Tempo run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Quality.",
+            discipline: .running,
+            runKind: .tempo
+        )
+        let failedRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Easy run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Recovery.",
+            discipline: .running,
+            runKind: .easy
+        )
+        let stampDate = Date(timeIntervalSince1970: 1_750_000_000)
+        let results = [
+            GarminPushResultItem(sessionId: scheduledRun.id.uuidString, garminWorkoutId: "1290881234", scheduled: true, error: nil),
+            GarminPushResultItem(sessionId: failedRun.id.uuidString, garminWorkoutId: nil, scheduled: false, error: "not logged in"),
+            GarminPushResultItem(sessionId: UUID().uuidString, garminWorkoutId: "777", scheduled: true, error: nil)
+        ]
+
+        let applied = applyGarminPushResults(results, to: [scheduledRun, failedRun], at: stampDate)
+
+        XCTAssertEqual(applied, 1, "Only the scheduled result with a matching session is applied")
+        XCTAssertEqual(scheduledRun.garminWorkoutId, "1290881234")
+        XCTAssertEqual(scheduledRun.pushedToGarminAt, stampDate)
+        XCTAssertTrue(failedRun.garminWorkoutId.isEmpty, "Failed results must not stamp the session")
+        XCTAssertNil(failedRun.pushedToGarminAt)
+    }
+
     func testGarminDeleteResponseDecodesProxyShape() throws {
         let json = """
         {

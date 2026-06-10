@@ -20,6 +20,10 @@ struct CoachView: View {
     @State private var isAdvancedExpanded = false
     @State private var isPushingRunsToWatch = false
     @State private var garminPushStatus: String?
+    /// JSON-encoded [String] of Garmin workout ids whose delete failed; the
+    /// next push attempt retries them (the sidecar tolerates 404s, so retried
+    /// deletes are idempotent).
+    @AppStorage("garminPendingDeleteIds") private var garminPendingDeleteIdsJSON = ""
 
     var profile: UserProfile
 
@@ -70,8 +74,8 @@ struct CoachView: View {
                 }
                 .buttonStyle(PrimaryActionButtonStyle())
                 .accessibilityIdentifier("plan-week-button")
-                .disabled(isGeneratingPlan)
-                .opacity(isGeneratingPlan ? 0.55 : 1)
+                .disabled(isGeneratingPlan || isPushingRunsToWatch)
+                .opacity(isGeneratingPlan || isPushingRunsToWatch ? 0.55 : 1)
 
                 if let generationStatus {
                     Text(generationStatus)
@@ -116,6 +120,9 @@ struct CoachView: View {
     }
 
     private func generateAIWeek() {
+        // A replan while a push is in flight would delete sessions whose
+        // garminWorkoutId has not landed yet, orphaning workouts on the watch.
+        guard !isPushingRunsToWatch else { return }
         enforceHostedEndpoint()
         Task { await requestPlan() }
     }
@@ -220,11 +227,11 @@ struct CoachView: View {
 
     private static let watchRetryNote = "Runs are planned but not all on your watch yet — retry from the Garmin row."
 
-    /// Deletes stale Garmin workouts first, then pushes every future planned
-    /// run that is not on the watch yet, and records the returned workout ids.
-    /// All failures are non-fatal — the plan is already saved and the Garmin
-    /// row offers a retry. Returns a short status note, or nil when there was
-    /// nothing to do.
+    /// Deletes stale Garmin workouts first (including ids stashed from earlier
+    /// failed deletes), then pushes every future planned run that is not on
+    /// the watch yet, and records the returned workout ids. All failures are
+    /// non-fatal — the plan is already saved and the Garmin row offers a
+    /// retry. Returns a short status note, or nil when there was nothing to do.
     private func pushPlannedRunsToWatch(stalePushedIds: [String]) async -> String? {
         guard let client = try? LocalCoachClient(endpointString: endpoint) else { return Self.watchRetryNote }
 
@@ -232,17 +239,12 @@ struct CoachView: View {
         defer { isPushingRunsToWatch = false }
 
         var notes: [String] = []
-        if !stalePushedIds.isEmpty {
-            let staleCleared: Bool
-            do {
-                let response = try await client.deleteGarminWorkouts(stalePushedIds)
-                staleCleared = response.error == nil && response.results.allSatisfy(\.deleted)
-            } catch {
-                staleCleared = false
-            }
-            if !staleCleared {
-                notes.append("Some replaced workouts may still sit on your watch.")
-            }
+        // Stash before deleting so the ids survive a failed call or an app
+        // exit; the drain retries the whole stash and keeps only what failed.
+        stashPendingDeletes(stalePushedIds)
+        let staleCleared = await drainPendingDeletes(client: client)
+        if !staleCleared {
+            notes.append("Some replaced workouts may still sit on your watch.")
         }
 
         do {
@@ -252,18 +254,23 @@ struct CoachView: View {
             }
 
             let response = try await client.pushWorkoutsToGarmin(workouts)
+            // A workout that uploaded but failed to schedule sits invisibly in
+            // the Garmin library; stash it for the best-effort delete below.
+            let unscheduledIds = response.results
+                .filter { !$0.scheduled }
+                .compactMap(\.garminWorkoutId)
+                .filter { !$0.isEmpty }
+            stashPendingDeletes(unscheduledIds)
+
             // Re-fetch after the await: the pre-push session references may be
             // stale by the time the response lands (same rule as AppShellView).
             let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
-            let pushedAt = Date()
-            var scheduledCount = 0
-            for result in response.results where result.scheduled {
-                guard let session = sessions.first(where: { $0.id.uuidString == result.sessionId }) else { continue }
-                session.garminWorkoutId = result.garminWorkoutId ?? ""
-                session.pushedToGarminAt = pushedAt
-                scheduledCount += 1
-            }
+            let scheduledCount = applyGarminPushResults(response.results, to: sessions)
             try modelContext.save()
+
+            if !unscheduledIds.isEmpty {
+                _ = await drainPendingDeletes(client: client)
+            }
 
             if scheduledCount == workouts.count, response.error == nil {
                 notes.append("\(countText(scheduledCount, "run")) on your watch.")
@@ -274,6 +281,45 @@ struct CoachView: View {
             notes.append(Self.watchRetryNote)
         }
         return notes.joined(separator: " ")
+    }
+
+    // MARK: Pending Garmin deletes
+
+    private func loadPendingDeleteIds() -> [String] {
+        (try? JSONDecoder().decode([String].self, from: Data(garminPendingDeleteIdsJSON.utf8))) ?? []
+    }
+
+    private func savePendingDeleteIds(_ ids: [String]) {
+        garminPendingDeleteIdsJSON = (try? JSONEncoder().encode(ids))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+    }
+
+    /// Merges the ids into the retention stash, preserving order and dropping
+    /// duplicates.
+    private func stashPendingDeletes(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        var merged = loadPendingDeleteIds()
+        var seen = Set(merged)
+        for id in ids where seen.insert(id).inserted {
+            merged.append(id)
+        }
+        savePendingDeleteIds(merged)
+    }
+
+    /// Tries to delete every stashed workout id and keeps only the failures
+    /// for the next push attempt. Returns true when the stash is empty
+    /// afterwards.
+    private func drainPendingDeletes(client: LocalCoachClient) async -> Bool {
+        let ids = loadPendingDeleteIds()
+        guard !ids.isEmpty else { return true }
+
+        var remaining = ids
+        if let response = try? await client.deleteGarminWorkouts(ids) {
+            let deletedIds = Set(response.results.filter(\.deleted).map(\.workoutId))
+            remaining = ids.filter { !deletedIds.contains($0) }
+        }
+        savePendingDeleteIds(remaining)
+        return remaining.isEmpty
     }
 
     /// Future planned runs that never made it onto the watch. Today's run is

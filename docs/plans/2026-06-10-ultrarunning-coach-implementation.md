@@ -878,6 +878,8 @@ AMENDED after review (sync-vs-missed policy): unlogged running sessions get a on
 
 AMENDED after review: replans delete planned running sessions and with them their garminWorkoutIds, which would orphan already-pushed workouts on the Garmin calendar. Task 15 must: (a) have deleteFuturePlannedSessions (or the calling flow) collect garminWorkoutIds of deleted running sessions, (b) add a sidecar endpoint DELETE /workouts (batch by id) + proxy passthrough POST /garmin/delete-workouts, and (c) call it before pushing the new week. Task 11 should include the sidecar delete capability from the start.
 
+AMENDED after review: planning is gated on in-flight pushes; failed stale-delete ids are stashed in @AppStorage(garminPendingDeleteIds) and drained on every push attempt; created-but-not-scheduled workouts are best-effort deleted. Residual accepted risk (document in Task 17): a successful push followed by a failed local save AND app termination before any later save can leave an unrecorded workout on the watch.
+
 ---
 
 # Phase 4 — Polish + ship

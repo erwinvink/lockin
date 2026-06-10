@@ -320,6 +320,21 @@ func garminPushWorkouts(from sessions: [WorkoutSession], calendar: Calendar = .c
         }
 }
 
+/// Stamps `garminWorkoutId` and `pushedToGarminAt` onto the sessions named by
+/// the scheduled push results. Failed items and session ids that match no
+/// session are ignored. Returns how many sessions were stamped.
+@discardableResult
+func applyGarminPushResults(_ results: [GarminPushResultItem], to sessions: [WorkoutSession], at date: Date = Date()) -> Int {
+    var applied = 0
+    for result in results where result.scheduled {
+        guard let session = sessions.first(where: { $0.id.uuidString == result.sessionId }) else { continue }
+        session.garminWorkoutId = result.garminWorkoutId ?? ""
+        session.pushedToGarminAt = date
+        applied += 1
+    }
+    return applied
+}
+
 struct CoachSessionResponse: Codable, Equatable {
     var title: String
     var dayOffset: Int
