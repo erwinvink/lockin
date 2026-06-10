@@ -633,6 +633,8 @@ Also update `AppShellView.refreshTrainingPlanState` filter: it keeps planned ses
 
 **Step 5: Commit** — `Persist AI running weeks as running sessions`
 
+AMENDED after review: deleteFuturePlannedSessions now deletes only sessions scheduled strictly after today (>= tomorrow). A planned session sitting on today survives a replan, matching the today-locked invariant and the Coach screen copy.
+
 ---
 
 ### Task 8: App — race goal setup UI (Settings + Onboarding)
@@ -672,6 +674,8 @@ Button label becomes **"Plan my week"** (`Label(isGeneratingPlan ? "Planning" : 
 **Step 2: Verify** — build; with the proxy running locally is not possible from the app (host-pinned endpoint), so verify in simulator against the hosted proxy *after* Phase 1 server deploy, or temporarily verify decode path with the unit tests from Task 6. Run full iOS test suite.
 
 **Step 3: Commit** — `Plan running and strength weeks together from the coach screen`
+
+AMENDED after review: wrap the combined persist (strength + running + single save) in one synchronous do/catch with modelContext.rollback() on throw, no await between the two persists; record the combined response.summary (running + strength) in the CoachPlan row so the running summary isn't lost.
 
 ---
 
@@ -753,6 +757,7 @@ Routes:
 - `GET /wellness?days=N` (default 7, max 30) → list of `wellness_day` for each date.
 - `GET /activities?days=N` (default 14, max 60) → `running_activity`-mapped, `None`s filtered.
 - `POST /workouts/push` body `{"workouts": [...]}` → per item: `build_workout`, create+schedule via the library, collect `{"sessionId", "garminWorkoutId", "scheduled": bool, "error": str | null}`; never abort the batch on one failure.
+- `POST /workouts/delete` body {"workoutIds": [...]} → per-id delete via the library, tolerant of already-deleted ids (report per-id status, never abort batch).
 
 Also a one-time login helper: `python main.py login` path that performs interactive login (prompts MFA code if asked) and saves tokens.
 
@@ -864,6 +869,8 @@ Confirm card in `TodayView`: when a due running session has a `RunLog` with `nee
 **Step 3: Verify** — unit tests pass; build; end-to-end manual check happens after deploy (Task 17 checklist).
 
 **Step 4: Commit** — `Push planned runs to Garmin and show watch status`
+
+AMENDED after review: replans delete planned running sessions and with them their garminWorkoutIds, which would orphan already-pushed workouts on the Garmin calendar. Task 15 must: (a) have deleteFuturePlannedSessions (or the calling flow) collect garminWorkoutIds of deleted running sessions, (b) add a sidecar endpoint DELETE /workouts (batch by id) + proxy passthrough POST /garmin/delete-workouts, and (c) call it before pushing the new week. Task 11 should include the sidecar delete capability from the start.
 
 ---
 

@@ -196,13 +196,14 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
     let start = calendar.startOfDay(for: weekStart)
     let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
     let today = calendar.startOfDay(for: Date())
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
 
     let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
     let sessionsToDelete = sessions.filter {
         $0.status == .planned &&
         $0.scheduledDate >= start &&
         $0.scheduledDate < end &&
-        $0.scheduledDate >= today &&
+        $0.scheduledDate >= tomorrow &&
         (discipline == nil || $0.discipline == discipline)
     }
 

@@ -493,6 +493,68 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertFalse(sessions.contains { $0.id == plannedStrength.id }, "Future planned strength sessions are replaced")
     }
 
+    func testPersistStrengthPlanKeepsPlannedSessionScheduledToday() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let weekStart = calendar.startOfDay(for: Date())
+
+        let plannedToday = WorkoutSession(
+            scheduledDate: weekStart,
+            title: "Today strength keeper",
+            weekIndex: 0,
+            focus: .pull,
+            summary: "AI: Today strength session"
+        )
+        modelContext.insert(plannedToday)
+        try modelContext.save()
+
+        let aiPlan = CoachPlanResponse.balancedFixture().weeklyPlan(weekStart: weekStart)
+        try persist(plan: aiPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertTrue(sessions.contains { $0.id == plannedToday.id }, "A planned session scheduled today is locked and must survive a replan")
+    }
+
+    func testPersistRunningWeekKeepsPlannedRunningSessionScheduledToday() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let weekStart = calendar.startOfDay(for: Date())
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: weekStart))
+
+        let plannedTodayRun = WorkoutSession(
+            scheduledDate: weekStart,
+            title: "Today run keeper",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Today easy run",
+            discipline: .running,
+            runKind: .easy
+        )
+        let plannedTomorrowRun = WorkoutSession(
+            scheduledDate: tomorrow,
+            title: "Stale tomorrow run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Stale tomorrow run",
+            discipline: .running,
+            runKind: .long
+        )
+        modelContext.insert(plannedTodayRun)
+        modelContext.insert(plannedTomorrowRun)
+        try modelContext.save()
+
+        let week = RunningWeekResponse.ultraFixture()
+        try persist(runningWeek: week, weekStart: weekStart, in: modelContext, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertTrue(sessions.contains { $0.id == plannedTodayRun.id }, "A planned run scheduled today is locked and must survive a replan")
+        XCTAssertFalse(sessions.contains { $0.id == plannedTomorrowRun.id }, "Planned runs scheduled after today are still replaced")
+    }
+
     func testDeleteNonAIPlannedSessionsKeepsAIRunningSessions() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
