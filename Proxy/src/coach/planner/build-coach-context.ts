@@ -58,8 +58,22 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
     readiness: {
       state,
       riskFlags
-    }
+    },
+    running: request.running
+      ? {
+          ...request.running,
+          recentRuns: [...request.running.recentRuns]
+            .sort((a, b) => a.completedAt.localeCompare(b.completedAt))
+            .slice(-20),
+          weeksToRace: weeksToRace(request.running.raceGoal.raceDate, request.weekStart)
+        }
+      : undefined
   };
+}
+
+function weeksToRace(raceDate: string, weekStart: string): number {
+  const raw = Math.ceil((Date.parse(raceDate) - Date.parse(weekStart)) / (7 * 24 * 60 * 60 * 1000));
+  return Number.isFinite(raw) ? Math.max(0, raw) : 0;
 }
 
 function collectRiskFlags(
