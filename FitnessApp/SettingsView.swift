@@ -73,8 +73,10 @@ struct SettingsView: View {
         try? modelContext.save()
     }
 
-    private func removeRaceGoal(_ goal: RaceGoal) {
-        modelContext.delete(goal)
+    private func removeRaceGoal() {
+        for goal in raceGoals {
+            modelContext.delete(goal)
+        }
         try? modelContext.save()
     }
 
@@ -213,7 +215,7 @@ private struct RunningGoalCard: View {
     var profile: UserProfile
     var raceGoal: RaceGoal?
     var onCreateGoal: () -> Void
-    var onRemoveGoal: (RaceGoal) -> Void
+    var onRemoveGoal: () -> Void
     var onRunningDaysChange: (Set<TrainingWeekday>) -> Void
     var onLongRunDayChange: (TrainingWeekday) -> Void
     var onGoalChange: () -> Void
@@ -250,7 +252,7 @@ private struct RunningGoalCard: View {
 private struct RaceGoalEditor: View {
     var profile: UserProfile
     var goal: RaceGoal
-    var onRemoveGoal: (RaceGoal) -> Void
+    var onRemoveGoal: () -> Void
     var onRunningDaysChange: (Set<TrainingWeekday>) -> Void
     var onLongRunDayChange: (TrainingWeekday) -> Void
     var onGoalChange: () -> Void
@@ -273,22 +275,24 @@ private struct RaceGoalEditor: View {
                 caption: "Pick 1 to 7 days. At least one running day is needed while a race goal is set.",
                 preventsEmptySelection: true
             )
-            HStack {
-                Text("Long run day")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(AppTheme.text)
-                Spacer()
-                Picker("Long run day", selection: longRunDayBinding) {
-                    ForEach(orderedRunningDays) { day in
-                        Text(day.title).tag(day)
+            if !orderedRunningDays.isEmpty {
+                HStack {
+                    Text("Long run day")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(AppTheme.text)
+                    Spacer()
+                    Picker("Long run day", selection: longRunDayBinding) {
+                        ForEach(orderedRunningDays) { day in
+                            Text(day.title).tag(day)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .tint(AppTheme.accent)
+                    .labelsHidden()
                 }
-                .pickerStyle(.menu)
-                .tint(AppTheme.accent)
-                .labelsHidden()
             }
             Button(role: .destructive) {
-                onRemoveGoal(goal)
+                onRemoveGoal()
             } label: {
                 Label("Remove race goal", systemImage: "trash")
                     .frame(maxWidth: .infinity)
