@@ -2,9 +2,10 @@
 
 Small internal-only FastAPI service that wraps Garmin Connect for the lockin
 coach. The Node proxy (`Proxy/`) calls it over localhost; it is never exposed
-publicly. All Garmin network/auth code lives in `main.py`; `garmin_mapping.py`
-is pure (no network, no garminconnect import) and fully covered by
-`test_garmin_mapping.py`.
+publicly. All Garmin network/auth code lives in `main.py` (degraded-mode
+branches covered by `test_main.py` with a fake client, no network);
+`garmin_mapping.py` is pure (no network, no garminconnect import) and fully
+covered by `test_garmin_mapping.py`.
 
 ## Setup
 
@@ -49,12 +50,19 @@ uvicorn main:app --port 8788
 ## API
 
 - `GET /status` → `{"ok": true, "loggedIn": bool, "lastError": str|null}`.
-  Auth problems never crash the service; they show up here.
+  Auth problems never crash the service; they show up here. After a failed
+  login the sidecar waits 60s before trying again — requests during that
+  cooldown return the logged-out degraded state immediately instead of
+  hammering Garmin SSO.
 - `GET /wellness?days=N` (default 7, max 30, clamped) → list of
   `{"date","sleepScore","sleepSeconds","hrvStatus","hrvMs","bodyBattery",
   "trainingReadiness","restingHr"}` — one per calendar day, **most recent
   first**. Missing metrics (older watch, no data) degrade to `0`/`""`.
-  Returns `[]` when not logged in.
+  Returns `[]` when not logged in. **The list may be shorter than `days`**:
+  when Garmin throttles (first 429) or fails 2 connection-class calls in a
+  row, the response is truncated to the complete rows fetched so far —
+  remaining days are omitted, never zero-filled. Consumers must treat a
+  missing day as "no data" and must not fabricate zeros for it.
 - `GET /activities?days=N` (default 14, max 60, clamped) → running activities
   only (typeKey containing `running`/`ultra`), most recent first:
   `{"garminActivityId","startTime","activityType","distanceKm",

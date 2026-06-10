@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,12 @@ from typing import Any
 from fastapi import FastAPI, Query
 from pydantic import BaseModel
 
-from garminconnect import Garmin, GarminConnectAuthenticationError
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
 from garmin_mapping import build_workout, running_activity, wellness_day
 
 logger = logging.getLogger("garmin_sidecar")
@@ -74,48 +80,76 @@ _client: Garmin | None = None
 _client_lock = threading.Lock()
 last_error: str | None = None
 
+# garminconnect serializes nothing internally: any API call may trigger a
+# token refresh that mutates client state and rewrites the token file. One
+# lock around every library call keeps concurrent requests (the proxy fires
+# /wellness and /activities in parallel) from corrupting the token dump.
+_io_lock = threading.Lock()
+
+# After a failed login, skip re-attempts for this long: requests during the
+# cooldown get the logged-out degraded state immediately (fast /status, no
+# hammering Garmin SSO). Cleared by the next successful login.
+_LOGIN_COOLDOWN_SECONDS = 60.0
+_login_failed_at: float | None = None
+
 
 def _get_client(prompt_mfa: Any = None) -> Garmin | None:
     """Login lazily: token-dir resume first, email/password fallback (which
     writes fresh tokens to the dir). Auth failures land in last_error and are
-    reported via /status instead of crashing the service."""
-    global _client, last_error
+    reported via /status instead of crashing the service. A failed login
+    starts a cooldown during which no new attempt is made."""
+    global _client, last_error, _login_failed_at
     with _client_lock:
         if _client is not None:
             return _client
+        if (
+            _login_failed_at is not None
+            and time.monotonic() - _login_failed_at < _LOGIN_COOLDOWN_SECONDS
+        ):
+            return None  # cooling down — degraded state, don't hit SSO again
         try:
             client = Garmin(
                 email=GARMIN_EMAIL or None,
                 password=GARMIN_PASSWORD or None,
                 prompt_mfa=prompt_mfa,
+                # Library default is 3 retries with 15s timeouts — enough to
+                # occupy a worker thread for minutes when Garmin is down.
+                retry_attempts=1,
             )
             client.login(tokenstore=_tokens_dir())
             _client = client
             last_error = None
+            _login_failed_at = None
             logger.info("Garmin login OK")
         except Exception as exc:  # noqa: BLE001 — sidecar must stay up
             last_error = f"{type(exc).__name__}: {exc}"
             logger.warning("Garmin login failed: %s", last_error)
             _client = None
+            _login_failed_at = time.monotonic()
         return _client
 
 
 def _drop_client_on_auth_error(exc: Exception) -> None:
     """Expired/revoked tokens: forget the client so the next request retries
-    the full login order (tokens, then credentials)."""
+    the full login order (tokens, then credentials). Undecorated library
+    paths surface raw errors formatted "API Error {status} - ...", so match
+    the anchored prefix — a stray "401" elsewhere in a message (an id, a
+    detail string) must not force a re-login."""
     global _client, last_error
     text = str(exc)
-    if isinstance(exc, GarminConnectAuthenticationError) or "401" in text:
+    if isinstance(exc, GarminConnectAuthenticationError) or text.startswith("API Error 401"):
         with _client_lock:
             _client = None
             last_error = f"{type(exc).__name__}: {exc}"
 
 
 def _safe(label: str, fn: Any, *args: Any, default: Any = None) -> Any:
-    """Run one garminconnect call; any failure (e.g. no training readiness on
-    older watches) degrades to `default` instead of a 500."""
+    """Run one garminconnect call (serialized via _io_lock); any failure
+    (e.g. no training readiness on older watches) degrades to `default`
+    instead of a 500."""
     try:
-        return fn(*args)
+        with _io_lock:
+            return fn(*args)
     except Exception as exc:  # noqa: BLE001
         logger.info("%s failed (%s): %s", label, type(exc).__name__, exc)
         _drop_client_on_auth_error(exc)
@@ -146,34 +180,76 @@ def status() -> dict[str, Any]:
 @app.get("/wellness")
 def wellness(days: int = Query(default=7)) -> list[dict[str, Any]]:
     """One wellness_day dict per date, MOST RECENT FIRST (today at index 0).
-    Returns [] when not logged in; per-metric failures degrade to defaults."""
+    Returns [] when not logged in; per-metric failures degrade to defaults.
+
+    Throttling bends the contract: on the first 429 (or after 2 consecutive
+    connection-class failures) we stop calling Garmin and return only the
+    complete rows fetched so far — remaining days are OMITTED, never filled
+    with fake zeros. Consumers must treat missing days as no-data."""
     days = max(1, min(days, 30))
     client = _get_client()
     if client is None:
         return []
+
+    stop = False  # set on first 429 or repeated connection failures
+    conn_failures = 0  # consecutive GarminConnectConnectionError count
+
+    def fetch(label: str, fn: Any, *args: Any, default: Any = None) -> Any:
+        """_safe plus batch-level circuit breaking: once stopped, no further
+        Garmin calls happen for this request."""
+        nonlocal stop, conn_failures
+        if stop:
+            return default
+        try:
+            with _io_lock:
+                result = fn(*args)
+        except GarminConnectTooManyRequestsError as exc:
+            stop = True
+            logger.warning("%s throttled — truncating wellness batch: %s", label, exc)
+            return default
+        except GarminConnectConnectionError as exc:
+            conn_failures += 1
+            logger.info("%s failed (%s): %s", label, type(exc).__name__, exc)
+            if conn_failures >= 2:
+                stop = True
+                logger.warning(
+                    "%d consecutive connection failures — truncating wellness batch",
+                    conn_failures,
+                )
+            _drop_client_on_auth_error(exc)
+            return default
+        except Exception as exc:  # noqa: BLE001
+            logger.info("%s failed (%s): %s", label, type(exc).__name__, exc)
+            _drop_client_on_auth_error(exc)
+            return default
+        conn_failures = 0
+        return result
 
     today = date.today()
     dates = [today - timedelta(days=offset) for offset in range(days)]
     start_iso, end_iso = dates[-1].isoformat(), dates[0].isoformat()
 
     # Body battery covers the whole range in one call; mapping filters by date.
-    body_battery = _safe(
+    body_battery = fetch(
         "get_body_battery", client.get_body_battery, start_iso, end_iso, default=None
     )
 
     out: list[dict[str, Any]] = []
     for d in dates:
+        if stop:
+            break
         iso = d.isoformat()
-        out.append(
-            wellness_day(
-                iso,
-                _safe("get_sleep_data", client.get_sleep_data, iso, default=None),
-                _safe("get_hrv_data", client.get_hrv_data, iso, default=None),
-                body_battery,
-                _safe("get_training_readiness", client.get_training_readiness, iso, default=None),
-                _safe("get_rhr_day", client.get_rhr_day, iso, default=None),
-            )
+        row = wellness_day(
+            iso,
+            fetch("get_sleep_data", client.get_sleep_data, iso, default=None),
+            fetch("get_hrv_data", client.get_hrv_data, iso, default=None),
+            body_battery,
+            fetch("get_training_readiness", client.get_training_readiness, iso, default=None),
+            fetch("get_rhr_day", client.get_rhr_day, iso, default=None),
         )
+        if stop:
+            break  # the row that tripped the breaker is partial — omit it
+        out.append(row)
     return out
 
 
@@ -220,7 +296,8 @@ def push_workouts(body: PushBody) -> list[dict[str, Any]]:
             continue
         try:
             workout_json = build_workout(payload)
-            created = client.upload_workout(workout_json)
+            with _io_lock:
+                created = client.upload_workout(workout_json)
             workout_id = (created or {}).get("workoutId") if isinstance(created, dict) else None
             if workout_id is None:
                 result["error"] = "Garmin did not return a workoutId"
@@ -232,7 +309,8 @@ def push_workouts(body: PushBody) -> list[dict[str, Any]]:
             if not date_str:
                 result["error"] = "missing date; workout created but not scheduled"
             else:
-                client.schedule_workout(workout_id, date_str)
+                with _io_lock:
+                    client.schedule_workout(workout_id, date_str)
                 result["scheduled"] = True
         except Exception as exc:  # noqa: BLE001
             _drop_client_on_auth_error(exc)
@@ -255,11 +333,17 @@ def delete_workouts(body: DeleteBody) -> list[dict[str, Any]]:
             results.append(result)
             continue
         try:
-            client.delete_workout(workout_id)
+            with _io_lock:
+                client.delete_workout(workout_id)
             result["deleted"] = True
         except Exception as exc:  # noqa: BLE001
-            text = str(exc).lower()
-            if "404" in text or "not found" in text:
+            # delete_workout bypasses the library's error-translation
+            # decorator, so a missing workout surfaces as the raw
+            # "API Error 404[ - detail]" message. Anchor the match: a 404
+            # mentioned elsewhere (e.g. "API Error 500 - upstream 404")
+            # must not count as already-deleted.
+            text = str(exc)
+            if text.startswith("API Error 404") or "not found" in text.lower():
                 result["deleted"] = True  # already gone — that's the goal state
             else:
                 _drop_client_on_auth_error(exc)
