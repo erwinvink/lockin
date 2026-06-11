@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCoachContext } from "./build-coach-context";
-import type { CoachRequest, TrainingLog } from "./types";
+import type { CoachRequest, RunningRequest, RunSummary, TrainingLog } from "./types";
 
 test("keeps insufficient history when both completed-month and current evidence are sparse", () => {
   const request = baseRequest({
@@ -104,6 +104,112 @@ test("flags repeated actual effort above plan as overreaching", () => {
   assert.equal(context.history.rpeCalibration.abovePlanBy2Count, 2);
 });
 
+test("carries running request through with computed weeksToRace", () => {
+  const running = runningRequest({ longRunDayOffset: 5 });
+  const request = baseRequest({ running });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  // weekStart 2026-05-25 to raceDate 2026-08-03 is exactly 70 days -> 10 weeks.
+  assert.deepEqual(context.running, { ...running, weeksToRace: 10 });
+  assert.equal(context.running?.longRunDayOffset, 5);
+});
+
+test("rounds partial weeks to race up", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Trail 50", raceDate: "2026-08-05T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  // 72 days -> 72 / 7 = 10.28... -> ceil 11.
+  assert.equal(context.running?.weeksToRace, 11);
+});
+
+test("reports zero weeksToRace when the race date equals week start", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Race day", raceDate: "2026-05-25T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 0);
+});
+
+test("reports one week to race when the race is one day after week start", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Tomorrow race", raceDate: "2026-05-26T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 1);
+});
+
+test("reports one week to race when the race is exactly seven days after week start", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Next week race", raceDate: "2026-06-01T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 1);
+});
+
+test("clamps weeksToRace to zero when the race date has passed", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Past race", raceDate: "2026-05-18T00:00:00Z", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 0);
+});
+
+test("clamps weeksToRace to zero when the race date is unparseable", () => {
+  const request = baseRequest({
+    running: runningRequest({
+      raceGoal: { name: "Broken race", raceDate: "not-a-date", distanceKm: 50, elevationGainM: 2000 }
+    })
+  });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running?.weeksToRace, 0);
+});
+
+test("caps recentRuns to the most recent 30 sorted ascending by completedAt", () => {
+  // 30 runs at 3-4 runs/week spans roughly the 90-day activity lookback.
+  const runs = Array.from({ length: 35 }, (_, index) =>
+    new Date(Date.UTC(2026, 2, 1 + index, 8)).toISOString().replace(".000Z", "Z")
+  ).map((date) => runSummary(date));
+  const request = baseRequest({ running: runningRequest({ recentRuns: [...runs].reverse() }) });
+
+  const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
+
+  const completedDates = context.running?.recentRuns.map((run) => run.completedAt) ?? [];
+  assert.equal(completedDates.length, 30);
+  assert.equal(completedDates[0], "2026-03-06T08:00:00Z");
+  assert.equal(completedDates.at(-1), "2026-04-04T08:00:00Z");
+  assert.deepEqual(completedDates, [...completedDates].sort());
+});
+
+test("leaves running context undefined when the payload has no running request", () => {
+  const context = buildCoachContext(baseRequest(), new Date("2026-05-27T12:00:00Z"));
+
+  assert.equal(context.running, undefined);
+});
+
 function baseRequest(overrides: Partial<CoachRequest> = {}): CoachRequest {
   return {
     model: "gpt-5-mini",
@@ -116,6 +222,33 @@ function baseRequest(overrides: Partial<CoachRequest> = {}): CoachRequest {
     targetDate: "2027-05-25T00:00:00Z",
     trainingLogs: [],
     plannedSessions: [],
+    ...overrides
+  };
+}
+
+function runningRequest(overrides: Partial<RunningRequest> = {}): RunningRequest {
+  return {
+    raceGoal: { name: "Mozart 100", raceDate: "2026-08-03T00:00:00Z", distanceKm: 100, elevationGainM: 5000 },
+    baselineWeeklyKm: 45,
+    longestRecentRunKm: 28,
+    runningDays: ["tuesday", "thursday", "saturday"],
+    runningDayOffsets: [1, 3, 5],
+    longRunDay: "saturday",
+    longRunDayOffset: 5,
+    recentRuns: [runSummary("2026-05-20T08:00:00Z"), runSummary("2026-05-23T08:00:00Z")],
+    ...overrides
+  };
+}
+
+function runSummary(completedAt: string, overrides: Partial<RunSummary> = {}): RunSummary {
+  return {
+    completedAt,
+    distanceKm: 12,
+    movingSeconds: 4200,
+    elevationGainM: 180,
+    averageHr: 142,
+    rpe: 5,
+    kind: "easy",
     ...overrides
   };
 }

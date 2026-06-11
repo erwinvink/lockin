@@ -14,7 +14,10 @@ struct LogWorkoutView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var previousLogs: [PerformanceLog]
-    @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
+    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
+    // Configuration, not state: fixed per build flavor (see LocalCoachClient).
+    private let endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
 
     var session: WorkoutSession
@@ -105,7 +108,6 @@ struct LogWorkoutView: View {
                 Button("Save log", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(!requiredLogFieldsAreValid)
-                    .opacity(requiredLogFieldsAreValid ? 1 : 0.45)
             }
             .navigationTitle("Log")
             .navigationBarTitleDisplayMode(.inline)
@@ -196,6 +198,8 @@ struct LogWorkoutView: View {
             logs: logsIncludingSavedLog,
             sessions: sessions,
             prescriptions: prescriptions,
+            raceGoal: raceGoals.first,
+            runLogs: runLogs,
             weekStart: rollingPlanStart()
         )
 
@@ -232,19 +236,10 @@ private struct LoggedWorkCard: View {
     @FocusState.Binding var focusedField: LogMetricField?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Logged work")
-                    .font(.headline)
-                Spacer()
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Logged work") {
                 if shouldLogPullUps || shouldLogPushUps || shouldLogPlank {
-                    Text("Required")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(AppTheme.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(AppTheme.accentSoft)
-                        .clipShape(Capsule())
+                    MicroLabel(text: "REQUIRED", color: AppTheme.accent)
                 }
             }
             if shouldLogPullUps {
@@ -277,11 +272,11 @@ private struct LoggedWorkCard: View {
             }
             if !shouldLogPullUps && !shouldLogPushUps && !shouldLogPlank {
                 Text("No goal max test is planned in this session. Log readiness and notes only.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
         }
-        .card(padding: 12)
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -304,7 +299,7 @@ private struct LogNumberField: View {
                 TextField("", text: $text)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
                     .foregroundStyle(AppTheme.text)
                     .frame(width: 70)
                     .accessibilityLabel(title)
@@ -314,7 +309,7 @@ private struct LogNumberField: View {
                     }
                 if !suffix.isEmpty {
                     Text(suffix)
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(AppTheme.muted)
                 }
             }
@@ -324,8 +319,9 @@ private struct LogNumberField: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                    .stroke(focusedField == focusID ? AppTheme.accent.opacity(0.7) : AppTheme.divider, lineWidth: 1)
+                    .strokeBorder(focusedField == focusID ? AppTheme.accent : AppTheme.divider, lineWidth: 1)
             )
+            .animation(.easeOut(duration: 0.15), value: focusedField == focusID)
         }
     }
 
@@ -344,9 +340,8 @@ private struct ReadinessInputCard: View {
     @Binding var howFelt: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Readiness")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("Readiness")
             ReadinessSlider(
                 title: "Perceived effort",
                 systemImage: "speedometer",
@@ -354,7 +349,7 @@ private struct ReadinessInputCard: View {
                 range: 1...10,
                 descriptor: ReadinessScale.perceivedEffort
             )
-            Divider()
+            Hairline()
             ReadinessSlider(
                 title: "Pain",
                 systemImage: "heart",
@@ -362,7 +357,7 @@ private struct ReadinessInputCard: View {
                 range: 0...10,
                 descriptor: ReadinessScale.pain
             )
-            Divider()
+            Hairline()
             ReadinessSlider(
                 title: "How did you feel?",
                 systemImage: "face.smiling",
@@ -371,11 +366,11 @@ private struct ReadinessInputCard: View {
                 descriptor: ReadinessScale.howIFelt
             )
         }
-        .card(padding: 10)
+        .ruled(verticalPadding: 16)
     }
 }
 
-private struct ReadinessSlider: View {
+struct ReadinessSlider: View {
     var title: String
     var systemImage: String
     @Binding var value: Int
@@ -400,35 +395,33 @@ private struct ReadinessSlider: View {
     var body: some View {
         let current = descriptor(displayedValue)
 
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
                     Label(title, systemImage: systemImage)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.text)
                         .lineLimit(2)
                         .minimumScaleFactor(0.85)
 
                     Text(current.detail)
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.faint)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("\(displayedValue)")
-                        .font(.system(.body, design: .rounded, weight: .bold))
+                        .font(.lockinNumeral(20))
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.2), value: displayedValue)
                     Text(current.label)
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
                 .foregroundStyle(current.color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(current.color.opacity(0.12))
-                .clipShape(Capsule())
             }
 
             Slider(
@@ -437,10 +430,11 @@ private struct ReadinessSlider: View {
                 step: 1,
                 onEditingChanged: handleEditingChanged
             )
-                .tint(current.color)
-                .controlSize(.small)
+            .tint(current.color)
+            .controlSize(.small)
+            .sensoryFeedback(.selection, trigger: displayedValue)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, 4)
     }
 
     private func handleEditingChanged(_ isEditing: Bool) {
@@ -453,13 +447,13 @@ private struct ReadinessSlider: View {
     }
 }
 
-private struct ReadinessDescriptor {
+struct ReadinessDescriptor {
     var label: String
     var detail: String
     var color: Color
 }
 
-private enum ReadinessScale {
+enum ReadinessScale {
     static func perceivedEffort(_ value: Int) -> ReadinessDescriptor {
         switch value {
         case 1:
@@ -548,11 +542,250 @@ private struct NotesCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Notes")
-                .font(.headline)
+            SectionHeader("Notes")
             TextField("What changed?", text: $notes, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .font(.subheadline)
+                .lockinField()
         }
-        .card(padding: 12)
+        .ruled(verticalPadding: 16)
+    }
+}
+
+struct LogRunView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query private var ranks: [RankState]
+
+    var session: WorkoutSession
+
+    /// Pending Garmin log being edited; save() updates it in place instead of
+    /// inserting a duplicate.
+    private let prefillLog: RunLog?
+
+    @FocusState private var distanceFieldIsFocused: Bool
+    @State private var distanceText: String
+    @State private var movingMinutes: Int
+    @State private var elevationGainM: Int
+    @State private var averageHr = 0
+    @State private var rpe = 6
+    @State private var howFelt = 3
+    @State private var notes = ""
+
+    init(session: WorkoutSession) {
+        self.session = session
+        self.prefillLog = nil
+        _distanceText = State(initialValue: session.plannedDistanceKm > 0
+            ? session.plannedDistanceKm.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))
+            : "")
+        _movingMinutes = State(initialValue: max(0, session.estimatedDurationMinutes))
+        _elevationGainM = State(initialValue: max(0, session.plannedElevationM))
+    }
+
+    init(session: WorkoutSession, prefilledFrom log: RunLog) {
+        self.session = session
+        self.prefillLog = log
+        _distanceText = State(initialValue: log.distanceKm > 0
+            ? log.distanceKm.formatted(.number.precision(.fractionLength(0...2)).grouping(.never))
+            : "")
+        _movingMinutes = State(initialValue: max(0, log.movingSeconds / 60))
+        _elevationGainM = State(initialValue: max(0, log.elevationGainM))
+        _averageHr = State(initialValue: max(0, log.averageHr))
+        _rpe = State(initialValue: (1...10).contains(log.rpe) ? log.rpe : 6)
+        _howFelt = State(initialValue: (1...5).contains(log.feelScore) ? log.feelScore : 3)
+        _notes = State(initialValue: log.notes)
+    }
+
+    private var parsedDistanceKm: Double? {
+        let normalized = distanceText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value > 0, value <= 500 else { return nil }
+        return value
+    }
+
+    private var canSave: Bool {
+        parsedDistanceKm != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScreenBackground {
+                RunWorkCard(
+                    distanceText: $distanceText,
+                    movingMinutes: $movingMinutes,
+                    elevationGainM: $elevationGainM,
+                    averageHr: $averageHr,
+                    distanceIsValid: parsedDistanceKm != nil,
+                    distanceFieldIsFocused: $distanceFieldIsFocused
+                )
+
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionHeader("Readiness")
+                    ReadinessSlider(
+                        title: "Perceived effort",
+                        systemImage: "speedometer",
+                        value: $rpe,
+                        range: 1...10,
+                        descriptor: ReadinessScale.perceivedEffort
+                    )
+                    Hairline()
+                    ReadinessSlider(
+                        title: "How did you feel?",
+                        systemImage: "face.smiling",
+                        value: $howFelt,
+                        range: 1...5,
+                        descriptor: ReadinessScale.howIFelt
+                    )
+                }
+                .ruled(verticalPadding: 16)
+
+                NotesCard(notes: $notes)
+
+                Button("Save run", action: save)
+                    .buttonStyle(PrimaryActionButtonStyle())
+                    .disabled(!canSave)
+                    .accessibilityIdentifier("save-run-button")
+            }
+            .navigationTitle("Log run")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        distanceFieldIsFocused = false
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+    }
+
+    private func save() {
+        // Completed through another path while the sheet was open (e.g. the
+        // confirm card): just close instead of appearing frozen.
+        guard session.status != .completed else {
+            dismiss()
+            return
+        }
+        distanceFieldIsFocused = false
+        guard let distanceKm = parsedDistanceKm else { return }
+
+        let movingSeconds = max(0, movingMinutes) * 60
+        let pace = distanceKm > 0 && movingSeconds > 0 ? Int(Double(movingSeconds) / distanceKm) : 0
+        let log: RunLog
+        if let prefillLog {
+            // Editing a synced Garmin log: update it in place (keeping its
+            // completedAt, source, and activity id) instead of duplicating it.
+            prefillLog.distanceKm = distanceKm
+            prefillLog.movingSeconds = movingSeconds
+            prefillLog.elevationGainM = max(0, elevationGainM)
+            prefillLog.averageHr = max(0, averageHr)
+            prefillLog.averagePaceSecPerKm = pace
+            prefillLog.notes = notes
+            log = prefillLog
+        } else {
+            log = RunLog(
+                sessionId: session.id,
+                completedAt: Date(),
+                distanceKm: distanceKm,
+                movingSeconds: movingSeconds,
+                elevationGainM: max(0, elevationGainM),
+                averageHr: max(0, averageHr),
+                averagePaceSecPerKm: pace,
+                rpe: rpe,
+                feelScore: howFelt,
+                notes: notes,
+                source: .manual,
+                needsConfirmation: false
+            )
+            modelContext.insert(log)
+        }
+
+        // completeRun owns rpe/feel, status, scoring, the miss refund, and the
+        // save. Keep the current UX quiet; a failed save just leaves the sheet.
+        try? completeRun(session: session, log: log, rpe: rpe, feelScore: howFelt, ranks: ranks, in: modelContext)
+        dismiss()
+    }
+}
+
+private struct RunWorkCard: View {
+    @Binding var distanceText: String
+    @Binding var movingMinutes: Int
+    @Binding var elevationGainM: Int
+    @Binding var averageHr: Int
+    var distanceIsValid: Bool
+    @FocusState.Binding var distanceFieldIsFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Run data") {
+                MicroLabel(text: "REQUIRED", color: AppTheme.accent)
+            }
+
+            RunDistanceField(
+                text: $distanceText,
+                isValid: distanceIsValid,
+                isFocused: $distanceFieldIsFocused
+            )
+            IntegerField(title: "Moving time", value: $movingMinutes, range: 0...1_440, suffix: "min")
+            IntegerField(title: "Elevation gain", value: $elevationGainM, range: 0...10_000, suffix: "m")
+            IntegerField(title: "Average heart rate", value: $averageHr, range: 0...250, suffix: "bpm")
+            Text("Leave average heart rate at 0 if you did not measure it.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.faint)
+        }
+        .ruled(verticalPadding: 16)
+    }
+}
+
+private struct RunDistanceField: View {
+    @Binding var text: String
+    var isValid: Bool
+    @FocusState.Binding var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Distance")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.text)
+                .lineLimit(2)
+            Spacer()
+            HStack(spacing: 6) {
+                TextField("", text: $text)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(AppTheme.text)
+                    .frame(width: 70)
+                    .accessibilityLabel("Distance in kilometres")
+                    .accessibilityIdentifier("run-distance-field")
+                    .focused($isFocused)
+                    .onChange(of: text) { _, newValue in
+                        text = String(newValue.filter { $0.isNumber || $0 == "." || $0 == "," }.prefix(6))
+                    }
+                Text("km")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.muted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(AppTheme.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                    .strokeBorder(strokeColor, lineWidth: 1)
+            )
+            .animation(.easeOut(duration: 0.15), value: isFocused)
+        }
+    }
+
+    private var strokeColor: Color {
+        if !isValid {
+            return AppTheme.warning
+        }
+        return isFocused ? AppTheme.accent : AppTheme.divider
     }
 }

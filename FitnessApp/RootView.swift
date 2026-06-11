@@ -18,6 +18,10 @@ struct RootView: View {
             }
         }
         .foregroundStyle(AppTheme.text)
+        // Premium Flat Gold is a dark-only visual identity: forcing the
+        // scheme keeps system chrome (alerts, sheets, keyboard, glass tab
+        // bar) on the same canvas in every light setting.
+        .preferredColorScheme(.dark)
         .task {
             #if DEBUG
             seedPreviewDataIfRequested()
@@ -66,6 +70,8 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
         painNotes: "Keep shoulders warm before pull work."
     )
     modelContext.insert(profile)
+    profile.runningDays = [.tuesday, .thursday, .saturday]
+    profile.longRunDay = .saturday
 
     let rank = RankState()
     modelContext.insert(rank)
@@ -192,6 +198,129 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
         plankTarget: 80,
         in: modelContext
     )
+
+    modelContext.insert(RaceGoal(
+        name: "Eiger Ultra 51K",
+        raceDate: calendar.date(byAdding: .weekOfYear, value: 14, to: startOfToday) ?? startOfToday,
+        distanceKm: 51,
+        elevationGainM: 3100,
+        baselineWeeklyKm: 35,
+        longestRecentRunKm: 16.4,
+        createdAt: day(-15)
+    ))
+
+    modelContext.insert(GarminDailySnapshot(
+        date: calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday,
+        sleepScore: 82,
+        sleepSeconds: 27_000,
+        hrvStatus: "BALANCED",
+        hrvMs: 52,
+        bodyBattery: 61,
+        trainingReadiness: 74,
+        restingHr: 47,
+        fetchedAt: day(0, hour: 7)
+    ))
+
+    let easyRun = WorkoutSession(
+        scheduledDate: day(-6, hour: 7),
+        title: "Easy Run",
+        weekIndex: 1,
+        focus: .mixed,
+        status: .completed,
+        summary: "AI: Easy aerobic run from the generated running week.",
+        estimatedDurationMinutes: 55,
+        discipline: .running,
+        runKind: .easy,
+        plannedDistanceKm: 8,
+        plannedElevationM: 100,
+        runTargetType: .pace,
+        runTargetLow: 360,
+        runTargetHigh: 390,
+        runZone: "Z2"
+    )
+    modelContext.insert(easyRun)
+    modelContext.insert(RunLog(
+        sessionId: easyRun.id,
+        completedAt: day(-6, hour: 8),
+        distanceKm: 8.2,
+        movingSeconds: 52 * 60,
+        elevationGainM: 120,
+        averageHr: 142,
+        averagePaceSecPerKm: 380,
+        rpe: 5,
+        feelScore: 3,
+        notes: "Legs felt easy after the rest day.",
+        needsConfirmation: false
+    ))
+
+    let longRun = WorkoutSession(
+        scheduledDate: day(-2, hour: 8),
+        title: "Long Run",
+        weekIndex: 1,
+        focus: .mixed,
+        status: .completed,
+        summary: "AI: Long endurance run with steady climbing.",
+        estimatedDurationMinutes: 110,
+        discipline: .running,
+        runKind: .long,
+        plannedDistanceKm: 16,
+        plannedElevationM: 400,
+        runTargetType: .hr,
+        runTargetLow: 130,
+        runTargetHigh: 150,
+        runZone: "Z2"
+    )
+    modelContext.insert(longRun)
+    modelContext.insert(RunLog(
+        sessionId: longRun.id,
+        completedAt: day(-2, hour: 10),
+        distanceKm: 16.4,
+        movingSeconds: 108 * 60,
+        elevationGainM: 420,
+        averageHr: 149,
+        averagePaceSecPerKm: 395,
+        rpe: 6,
+        feelScore: 4,
+        notes: "Strong long run. Fueling every 40 minutes worked.",
+        garminActivityId: "preview-long-run",
+        source: .garmin,
+        needsConfirmation: false
+    ))
+
+    let upcomingEasyRun = WorkoutSession(
+        scheduledDate: day(1, hour: 7),
+        title: "Easy Run",
+        weekIndex: 2,
+        focus: .mixed,
+        status: .planned,
+        summary: "AI: Easy aerobic volume ahead of the weekend long run.",
+        estimatedDurationMinutes: 75,
+        discipline: .running,
+        runKind: .easy,
+        plannedDistanceKm: 12,
+        plannedElevationM: 150,
+        runTargetType: .pace,
+        runTargetLow: 360,
+        runTargetHigh: 390,
+        runZone: "Z2"
+    )
+    modelContext.insert(upcomingEasyRun)
+    // Pending Garmin auto-match awaiting athlete confirmation: exercises the
+    // Today confirm card and locks in Progress excluding unconfirmed volume.
+    modelContext.insert(RunLog(
+        sessionId: upcomingEasyRun.id,
+        completedAt: day(1, hour: 8),
+        distanceKm: 5.5,
+        movingSeconds: 33 * 60,
+        elevationGainM: 60,
+        averageHr: 138,
+        averagePaceSecPerKm: 360,
+        rpe: 0,
+        feelScore: 3,
+        garminActivityId: "preview-pending-easy-run",
+        source: .garmin,
+        needsConfirmation: true
+    ))
 
     let plan = CoachPlan(
         weekStart: rollingPlanStart(date: now, calendar: calendar),

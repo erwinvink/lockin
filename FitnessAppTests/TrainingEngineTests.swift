@@ -130,11 +130,183 @@ final class TrainingEngineTests: XCTestCase {
         let dueToday = WorkoutSession(scheduledDate: today, title: "Today", weekIndex: 1, focus: .mixed, summary: "Current")
         let future = WorkoutSession(scheduledDate: tomorrow, title: "Tomorrow", weekIndex: 1, focus: .push, summary: "Future")
 
-        XCTAssertNil(duePlannedSession(from: [future], now: now, calendar: calendar))
+        XCTAssertTrue(duePlannedSessions(from: [future], now: now, calendar: calendar).isEmpty)
         XCTAssertEqual(nextFuturePlannedSession(from: [future], now: now, calendar: calendar)?.id, future.id)
-        XCTAssertNil(duePlannedSession(from: [overdue], now: now, calendar: calendar))
-        XCTAssertEqual(overduePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [overdue.id])
-        XCTAssertEqual(duePlannedSession(from: [future, dueToday, overdue], now: now, calendar: calendar)?.id, dueToday.id)
+        XCTAssertTrue(duePlannedSessions(from: [overdue], now: now, calendar: calendar).isEmpty)
+        XCTAssertEqual(overduePlannedSessions(from: [future, dueToday, overdue], runLogs: [], now: now, calendar: calendar).map(\.id), [overdue.id])
+        XCTAssertEqual(duePlannedSessions(from: [future, dueToday, overdue], now: now, calendar: calendar).map(\.id), [dueToday.id])
+    }
+
+    func testCompletedRunLogInputScoresPositiveConsistencyAndStreak() {
+        let outcome = TrainingEngine().score(
+            log: SessionLogInput(
+                completed: true,
+                pullUps: 0,
+                pushUps: 0,
+                plankSeconds: 0,
+                loggedPullUps: false,
+                loggedPushUps: false,
+                loggedPlankSeconds: false,
+                rpe: 6,
+                painLevel: 0,
+                fatigueLevel: 5
+            ),
+            plannedSession: nil
+        )
+
+        XCTAssertGreaterThan(outcome.consistencyDelta, 0)
+        XCTAssertEqual(outcome.streakDelta, 1)
+        XCTAssertEqual(outcome.penaltyDelta, 0)
+        XCTAssertFalse(outcome.didTriggerDeload)
+    }
+
+    func testVeryWeakRunFeelTriggersDeloadScoring() {
+        let outcome = TrainingEngine().score(
+            log: SessionLogInput(
+                completed: true,
+                pullUps: 0,
+                pushUps: 0,
+                plankSeconds: 0,
+                loggedPullUps: false,
+                loggedPushUps: false,
+                loggedPlankSeconds: false,
+                rpe: 6,
+                painLevel: 0,
+                fatigueLevel: 9
+            ),
+            plannedSession: nil
+        )
+
+        XCTAssertTrue(outcome.didTriggerDeload)
+        XCTAssertEqual(outcome.streakDelta, 1)
+        XCTAssertGreaterThanOrEqual(outcome.consistencyDelta, 0)
+    }
+
+    func testHowFeltMapsToExactFatigueLevels() {
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 1), 10)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 2), 8)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 3), 5)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 4), 2)
+        XCTAssertEqual(ReadinessScale.fatigueLevel(fromHowFelt: 5), 0)
+    }
+
+    func testRunDistanceTextIsLocaleAwareAndStripsTrailingZero() {
+        XCTAssertEqual(runDistanceText(km: 12.5, locale: Locale(identifier: "en_US")), "12.5 km")
+        XCTAssertEqual(runDistanceText(km: 52.5, locale: Locale(identifier: "nl_NL")), "52,5 km")
+        XCTAssertEqual(runDistanceText(km: 12.0, locale: Locale(identifier: "en_US")), "12 km")
+        XCTAssertEqual(runDistanceText(km: 28.0, locale: Locale(identifier: "nl_NL")), "28 km")
+    }
+
+    func testRunPaceTextFormatsSecondsPerKilometre() {
+        XCTAssertEqual(runPaceText(secondsPerKm: 330), "5:30 /km")
+        XCTAssertEqual(runPaceText(secondsPerKm: 605), "10:05 /km")
+    }
+
+    func testRunTargetTextCombinesZoneWithPaceOrHeartRate() {
+        let paceRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Tempo",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Tempo",
+            discipline: .running,
+            runKind: .tempo,
+            runTargetType: .pace,
+            runTargetLow: 330,
+            runTargetHigh: 360,
+            runZone: "Z3"
+        )
+        let hrRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Easy",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Easy",
+            discipline: .running,
+            runKind: .easy,
+            runTargetType: .hr,
+            runTargetLow: 140,
+            runTargetHigh: 150,
+            runZone: "Z2"
+        )
+        let zoneRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Recovery",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Recovery",
+            discipline: .running,
+            runKind: .recovery,
+            runZone: "Z1"
+        )
+        let bareRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Easy",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Easy",
+            discipline: .running,
+            runKind: .easy
+        )
+
+        // The zone is athlete-facing language, the target the watch-facing
+        // number: both show when both exist.
+        XCTAssertEqual(runTargetText(session: paceRun), "Z3 \u{B7} 5:30\u{2013}6:00 /km")
+        XCTAssertEqual(runTargetText(session: hrRun), "Z2 \u{B7} 140\u{2013}150 bpm")
+        XCTAssertEqual(runTargetText(session: zoneRun), "Z1")
+        XCTAssertEqual(runTargetText(session: bareRun), "Easy")
+    }
+
+    func testRunTargetTextIgnoresEmptyRanges() {
+        let zeroRangePaceRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Easy",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Easy",
+            discipline: .running,
+            runKind: .easy,
+            runTargetType: .pace,
+            runTargetLow: 0,
+            runTargetHigh: 0,
+            runZone: "Z2"
+        )
+
+        XCTAssertEqual(runTargetText(session: zeroRangePaceRun), "Z2")
+    }
+
+    func testDuePlannedSessionsReturnsAllOfTodaySortedRunsFirst() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let laterToday = try XCTUnwrap(calendar.date(byAdding: .hour, value: 9, to: today))
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: today))
+
+        let strengthToday = WorkoutSession(scheduledDate: today, title: "Strength", weekIndex: 0, focus: .pull, summary: "AI: Strength")
+        let runToday = WorkoutSession(
+            scheduledDate: laterToday,
+            title: "Easy run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Easy aerobic run",
+            discipline: .running,
+            runKind: .easy,
+            plannedDistanceKm: 8
+        )
+        let completedToday = WorkoutSession(scheduledDate: today, title: "Done", weekIndex: 0, focus: .push, status: .completed, summary: "AI: Done")
+        let overdue = WorkoutSession(scheduledDate: yesterday, title: "Past", weekIndex: 0, focus: .pull, summary: "AI: Past")
+        let future = WorkoutSession(scheduledDate: tomorrow, title: "Future", weekIndex: 0, focus: .push, summary: "AI: Future")
+
+        let due = duePlannedSessions(
+            from: [strengthToday, future, runToday, overdue, completedToday],
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(due.map(\.id), [runToday.id, strengthToday.id])
+        XCTAssertTrue(duePlannedSessions(from: [overdue, future], now: now, calendar: calendar).isEmpty)
     }
 
     func testWorkoutReminderDateUsesSelectedTimeOnWorkoutDay() throws {

@@ -243,6 +243,44 @@ enum ValidationStatus: String, Codable {
     case rejected
 }
 
+enum Discipline: String, Codable {
+    case strength
+    case running
+}
+
+enum RunKind: String, CaseIterable, Codable {
+    case easy, long, recovery, hills, tempo, intervals, race
+
+    var title: String {
+        switch self {
+        case .easy: "Easy Run"
+        case .long: "Long Run"
+        case .recovery: "Recovery Run"
+        case .hills: "Hill Session"
+        case .tempo: "Tempo Run"
+        case .intervals: "Intervals"
+        case .race: "Race"
+        }
+    }
+
+    var isHard: Bool {
+        switch self {
+        case .long, .tempo, .intervals, .hills, .race: true
+        case .easy, .recovery: false
+        }
+    }
+}
+
+enum RunTargetType: String, Codable {
+    case pace   // low/high in seconds per km
+    case hr     // low/high in bpm
+}
+
+enum RunLogSource: String, Codable {
+    case manual
+    case garmin
+}
+
 @Model
 final class UserProfile {
     var id: UUID = UUID()
@@ -264,6 +302,8 @@ final class UserProfile {
     var reminderHour: Int = 9
     var reminderMinute: Int = 0
     var painNotes: String = ""
+    var runningDaysRaw: String = ""
+    var longRunDayRaw: String = ""
 
     init(
         id: UUID = UUID(),
@@ -328,6 +368,23 @@ final class UserProfile {
         TrainingWeekday.normalized(trainingDays, weeklySessions: weeklySessions).map(\.shortTitle)
     }
 
+    var runningDays: Set<TrainingWeekday> {
+        get {
+            Set(runningDaysRaw.split(separator: ",").compactMap { TrainingWeekday(rawValue: String($0)) })
+        }
+        set {
+            runningDaysRaw = TrainingWeekday.allCases
+                .filter { newValue.contains($0) }
+                .map(\.rawValue)
+                .joined(separator: ",")
+        }
+    }
+
+    var longRunDay: TrainingWeekday? {
+        get { TrainingWeekday(rawValue: longRunDayRaw) }
+        set { longRunDayRaw = newValue?.rawValue ?? "" }
+    }
+
     var reminderTime: Date {
         get {
             let calendar = Calendar.current
@@ -368,6 +425,16 @@ final class WorkoutSession {
     var plannedEffortTargetRPE: Int = 0
     var plannedEffortReason: String = ""
     var estimatedDurationMinutes: Int = 0
+    var disciplineRaw: String = Discipline.strength.rawValue
+    var runKindRaw: String = ""
+    var plannedDistanceKm: Double = 0
+    var plannedElevationM: Int = 0
+    var runTargetTypeRaw: String = ""
+    var runTargetLow: Int = 0
+    var runTargetHigh: Int = 0
+    var runZone: String = ""
+    var garminWorkoutId: String = ""
+    var pushedToGarminAt: Date? = nil
     var createdAt: Date = Date()
 
     init(
@@ -381,6 +448,14 @@ final class WorkoutSession {
         summary: String,
         plannedEffort: PlannedEffort? = nil,
         estimatedDurationMinutes: Int = 0,
+        discipline: Discipline = .strength,
+        runKind: RunKind? = nil,
+        plannedDistanceKm: Double = 0,
+        plannedElevationM: Int = 0,
+        runTargetType: RunTargetType? = nil,
+        runTargetLow: Int = 0,
+        runTargetHigh: Int = 0,
+        runZone: String = "",
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -395,10 +470,22 @@ final class WorkoutSession {
         self.plannedEffortTargetRPE = plannedEffort?.targetRPE ?? 0
         self.plannedEffortReason = plannedEffort?.reason ?? ""
         self.estimatedDurationMinutes = max(0, estimatedDurationMinutes)
+        self.disciplineRaw = discipline.rawValue
+        self.runKindRaw = runKind?.rawValue ?? ""
+        self.plannedDistanceKm = plannedDistanceKm
+        self.plannedElevationM = plannedElevationM
+        self.runTargetTypeRaw = runTargetType?.rawValue ?? ""
+        self.runTargetLow = runTargetLow
+        self.runTargetHigh = runTargetHigh
+        self.runZone = runZone
         self.createdAt = createdAt
     }
 
     var focus: SessionFocus { SessionFocus(rawValue: focusRaw) ?? .mixed }
+    var discipline: Discipline { Discipline(rawValue: disciplineRaw) ?? .strength }
+    var runKind: RunKind? { RunKind(rawValue: runKindRaw) }
+    var runTargetType: RunTargetType? { RunTargetType(rawValue: runTargetTypeRaw) }
+    var isRun: Bool { discipline == .running }
     var plannedEffortLabel: PlannedEffortLabel? {
         PlannedEffortLabel(rawValue: plannedEffortLabelRaw)
     }
@@ -701,6 +788,136 @@ final class CoachVerdict {
 
     var safetyFlags: [String] {
         safetyFlagsRaw.split(separator: "|").map(String.init)
+    }
+}
+
+@Model
+final class RaceGoal {
+    var id: UUID = UUID()
+    var name: String = ""
+    var raceDate: Date = Date()
+    var distanceKm: Double = 0
+    var elevationGainM: Int = 0
+    var baselineWeeklyKm: Double = 0
+    var longestRecentRunKm: Double = 0
+    var createdAt: Date = Date()
+
+    init(
+        id: UUID = UUID(),
+        name: String = "",
+        raceDate: Date = Date(),
+        distanceKm: Double = 0,
+        elevationGainM: Int = 0,
+        baselineWeeklyKm: Double = 0,
+        longestRecentRunKm: Double = 0,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.raceDate = raceDate
+        self.distanceKm = distanceKm
+        self.elevationGainM = elevationGainM
+        self.baselineWeeklyKm = baselineWeeklyKm
+        self.longestRecentRunKm = longestRecentRunKm
+        self.createdAt = createdAt
+    }
+}
+
+@Model
+final class RunLog {
+    /// Sentinel sessionId for runs imported from Garmin that match no planned
+    /// session: real training history attached to no workout. Session joins
+    /// simply find nothing for it.
+    static let unattachedSessionId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    var id: UUID = UUID()
+    var sessionId: UUID = UUID()
+    var completedAt: Date = Date()
+    var distanceKm: Double = 0
+    var movingSeconds: Int = 0
+    var elevationGainM: Int = 0
+    var elevationLossM: Int = 0
+    var averageHr: Int = 0
+    var averagePaceSecPerKm: Int = 0
+    var rpe: Int = 0
+    var feelScore: Int = 3          // 1 very weak ... 5 very strong
+    var notes: String = ""
+    var garminActivityId: String = ""
+    var sourceRaw: String = RunLogSource.manual.rawValue
+    var needsConfirmation: Bool = false
+
+    init(
+        id: UUID = UUID(),
+        sessionId: UUID = UUID(),
+        completedAt: Date = Date(),
+        distanceKm: Double = 0,
+        movingSeconds: Int = 0,
+        elevationGainM: Int = 0,
+        elevationLossM: Int = 0,
+        averageHr: Int = 0,
+        averagePaceSecPerKm: Int = 0,
+        rpe: Int = 0,
+        feelScore: Int = 3,
+        notes: String = "",
+        garminActivityId: String = "",
+        source: RunLogSource = .manual,
+        needsConfirmation: Bool = false
+    ) {
+        self.id = id
+        self.sessionId = sessionId
+        self.completedAt = completedAt
+        self.distanceKm = distanceKm
+        self.movingSeconds = movingSeconds
+        self.elevationGainM = elevationGainM
+        self.elevationLossM = elevationLossM
+        self.averageHr = averageHr
+        self.averagePaceSecPerKm = averagePaceSecPerKm
+        self.rpe = rpe
+        self.feelScore = feelScore
+        self.notes = notes
+        self.garminActivityId = garminActivityId
+        self.sourceRaw = source.rawValue
+        self.needsConfirmation = needsConfirmation
+    }
+
+    var source: RunLogSource { RunLogSource(rawValue: sourceRaw) ?? .manual }
+}
+
+@Model
+final class GarminDailySnapshot {
+    var id: UUID = UUID()
+    var date: Date = Date()          // startOfDay
+    var sleepScore: Int = 0
+    var sleepSeconds: Int = 0
+    var hrvStatus: String = ""
+    var hrvMs: Int = 0
+    var bodyBattery: Int = 0
+    var trainingReadiness: Int = 0
+    var restingHr: Int = 0
+    var fetchedAt: Date = Date()
+
+    init(
+        id: UUID = UUID(),
+        date: Date = Date(),
+        sleepScore: Int = 0,
+        sleepSeconds: Int = 0,
+        hrvStatus: String = "",
+        hrvMs: Int = 0,
+        bodyBattery: Int = 0,
+        trainingReadiness: Int = 0,
+        restingHr: Int = 0,
+        fetchedAt: Date = Date()
+    ) {
+        self.id = id
+        self.date = date
+        self.sleepScore = sleepScore
+        self.sleepSeconds = sleepSeconds
+        self.hrvStatus = hrvStatus
+        self.hrvMs = hrvMs
+        self.bodyBattery = bodyBattery
+        self.trainingReadiness = trainingReadiness
+        self.restingHr = restingHr
+        self.fetchedAt = fetchedAt
     }
 }
 
