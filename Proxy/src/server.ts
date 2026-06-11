@@ -8,6 +8,7 @@ import {
   disciplineCoachTemperament,
   flatGoalMetricsRequiringProgression
 } from "./coach/planner/coach-temperament";
+import { coachReferencePoints, computeTrainingSignals } from "./coach/planner/compute-training-signals";
 import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
 import { validateRunningWeek } from "./coach/planner/validate-running-week";
 import { validateCombinedWeek } from "./coach/planner/validate-combined-week";
@@ -531,6 +532,10 @@ function buildRunningPromptPayload(context: CoachContext, repair?: RunningRepair
 }
 
 async function generateCoachVerdict(apiKey: string, model: string, context: CoachContext): Promise<VerdictResult> {
+  // All figures the read may cite are computed here, in code — the model
+  // writes prose around exact numbers, it never does arithmetic over logs.
+  const trainingSignals = computeTrainingSignals(context);
+  const isHybrid = Boolean(context.running);
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -545,10 +550,15 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
           content: [
             "You are a human, athlete-facing training coach inside lockin.",
             disciplineCoachSystemPrompt,
-            "Write like an experienced strength coach: direct, calm, practical, and not technical.",
+            isHybrid
+              ? "Write like an experienced ultra-endurance coach who also programs strength: direct, calm, practical, and not technical. Running volume, the long run, descent exposure, and the race countdown lead the read; strength work is framed as serving the race (running economy, durability), never as a separate hobby."
+              : "Write like an experienced strength coach: direct, calm, practical, and not technical.",
             "Return a short read on the athlete's current state. Do not create or rewrite the week plan.",
-            "If there are no completed training logs, say that you only know the starting profile and goals.",
-            "If the latest session raises pain, poor how-you-felt feedback, overreaching, or progress concerns, recommend updating the week.",
+            "Cite only numbers present in athleteSignals or coachContext, exactly as provided — never compute, estimate, or invent figures. Work at least one of the athlete's actual numbers into the summary.",
+            "Pick exactly ONE actionable change for the recommendation — the single highest-leverage lever right now. More than one ask dilutes all of them.",
+            "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work, gate today's intensity rather than rewriting the week.",
+            "If there are no completed training logs or runs, say that you only know the starting profile and goals.",
+            "If the latest session raises pain, very poor feel, overreaching, or progress concerns, recommend updating the week.",
             "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, or internal systems."
           ].join("\n")
         },
@@ -556,11 +566,15 @@ async function generateCoachVerdict(apiKey: string, model: string, context: Coac
           role: "user",
           content: JSON.stringify({
             coachContext: context,
+            athleteSignals: trainingSignals,
+            coachReferencePoints: isHybrid ? coachReferencePoints : undefined,
             verdictRules: {
               keepSummaryUnderWords: 65,
               keepLatestChangeUnderWords: 45,
               keepRecommendationUnderWords: 45,
               noPlanMutation: true,
+              oneActionableChange: true,
+              citeOnlyProvidedNumbers: true,
               shouldUpdatePlanWhenNoSessionsArePlanned: true,
               coachTemperament: disciplineCoachTemperament,
               flatGoalMetricsRequiringProgression: flatGoalMetricsRequiringProgression(context).map((metric) => metric.label)
