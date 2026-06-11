@@ -34,21 +34,83 @@ struct CalendarView: View {
         return Array(historySessions.dropFirst(start).prefix(historyPageSize))
     }
 
+    private struct HistoryWeek: Identifiable {
+        let weekStart: Date
+        let weekNumber: Int
+        let sessions: [WorkoutSession]
+        var id: Date { weekStart }
+    }
+
+    /// History grouped into calendar weeks — runners read their past in
+    /// weekly blocks, not in flat rows.
+    private var pagedHistoryWeeks: [HistoryWeek] {
+        let calendar = Calendar.current
+        var weeks: [HistoryWeek] = []
+        for session in pagedHistorySessions {
+            guard let interval = calendar.dateInterval(of: .weekOfYear, for: session.scheduledDate) else { continue }
+            if let index = weeks.firstIndex(where: { $0.weekStart == interval.start }) {
+                weeks[index] = HistoryWeek(
+                    weekStart: interval.start,
+                    weekNumber: weeks[index].weekNumber,
+                    sessions: weeks[index].sessions + [session]
+                )
+            } else {
+                weeks.append(HistoryWeek(
+                    weekStart: interval.start,
+                    weekNumber: calendar.component(.weekOfYear, from: session.scheduledDate),
+                    sessions: [session]
+                ))
+            }
+        }
+        return weeks
+    }
+
+    /// Confirmed running volume in the week — the number behind each header.
+    private func weekVolumeText(for week: HistoryWeek) -> String? {
+        let calendar = Calendar.current
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: week.weekStart) else { return nil }
+        let confirmed = runLogs.filter { !$0.needsConfirmation && interval.start <= $0.completedAt && $0.completedAt < interval.end }
+        let km = confirmed.reduce(0) { $0 + $1.distanceKm }
+        guard km > 0 else { return nil }
+        return runDistanceText(km: km)
+    }
+
     var body: some View {
         NavigationStack {
             ScreenBackground(title: "Log") {
                 WeekPlanTable(sessions: openSessions, prescriptions: prescriptions, onSelectSession: { selectedSession = $0 })
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Session history")
-                        .font(.headline)
+                    SectionHeader("Session history")
                     if historySessions.isEmpty {
                         Text("No history yet.")
                             .font(.subheadline)
                             .foregroundStyle(AppTheme.muted)
                     } else {
-                        ForEach(pagedHistorySessions) { session in
-                            CalendarSessionRow(session: session, log: logForSession(session), runLog: runLogForSession(session))
+                        VStack(alignment: .leading, spacing: 18) {
+                            ForEach(pagedHistoryWeeks) { week in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        MicroLabel(text: "WEEK \(week.weekNumber)")
+                                        Spacer()
+                                        if let volume = weekVolumeText(for: week) {
+                                            Text(volume)
+                                                .font(.footnote.weight(.semibold).monospacedDigit())
+                                                .foregroundStyle(AppTheme.muted)
+                                        }
+                                    }
+                                    VStack(spacing: 0) {
+                                        Hairline()
+                                        ForEach(Array(week.sessions.enumerated()), id: \.element.id) { index, session in
+                                            CalendarSessionRow(session: session, log: logForSession(session), runLog: runLogForSession(session))
+                                            if index < week.sessions.count - 1 {
+                                                Hairline()
+                                            }
+                                        }
+                                        Hairline()
+                                    }
+                                }
+                            }
                         }
                         if historyTotalPages > 1 {
                             HStack {
@@ -56,10 +118,11 @@ struct CalendarView: View {
                                     historyPage = max(0, historyPage - 1)
                                 }
                                 .disabled(historyPage == 0)
+                                .foregroundStyle(historyPage == 0 ? AppTheme.faint : AppTheme.accent)
 
                                 Spacer()
                                 Text("Page \(min(historyPage + 1, historyTotalPages)) of \(historyTotalPages)")
-                                    .font(.caption)
+                                    .font(.system(size: 12).monospacedDigit())
                                     .foregroundStyle(AppTheme.muted)
                                 Spacer()
 
@@ -67,12 +130,14 @@ struct CalendarView: View {
                                     historyPage = min(historyTotalPages - 1, historyPage + 1)
                                 }
                                 .disabled(historyPage >= historyTotalPages - 1)
+                                .foregroundStyle(historyPage >= historyTotalPages - 1 ? AppTheme.faint : AppTheme.accent)
                             }
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 13, weight: .medium))
+                            .buttonStyle(.plain)
+                            .padding(.top, 4)
                         }
                     }
                 }
-                .card()
             }
             .onChange(of: historySessions.count) { _, _ in
                 historyPage = min(historyPage, historyTotalPages - 1)
@@ -118,37 +183,47 @@ private struct CalendarSessionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated))
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.accent)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
                 Text(session.scheduledDate, format: .dateTime.day().month())
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.muted)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(AppTheme.faint)
             }
             .frame(width: 48, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.text)
+                    .lineLimit(1)
                 if session.isRun {
                     Text(runDistanceSummary)
-                        .font(.caption2.weight(.medium))
+                        .font(.system(size: 12).monospacedDigit())
                         .foregroundStyle(AppTheme.muted)
                 } else if let log {
                     RPEComparisonPill(plannedRPE: plannedRPEForDisplay(log: log), actualRPE: log.rpe)
                 }
             }
-            Spacer()
+            Spacer(minLength: 8)
             WorkoutStatusIcon(status: session.status)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
     }
 
     private var runDistanceSummary: String {
         let planned = "\(runDistanceText(km: session.plannedDistanceKm)) planned"
         guard let runLog else { return planned }
-        return "\(planned) \u{00B7} \(runDistanceText(km: runLog.distanceKm)) run"
+        var parts = ["\(runDistanceText(km: runLog.distanceKm)) run"]
+        if runLog.averagePaceSecPerKm > 0 {
+            parts.append(runPaceText(secondsPerKm: runLog.averagePaceSecPerKm))
+        }
+        if runLog.averageHr > 0 {
+            parts.append("\(runLog.averageHr) bpm")
+        }
+        return ([planned] + parts).joined(separator: " \u{00B7} ")
     }
 
     private func plannedRPEForDisplay(log: PerformanceLog) -> Int? {
@@ -162,7 +237,9 @@ private struct CalendarSessionRow: View {
     }
 }
 
-private struct FutureWorkoutPreviewSheet: View {
+/// Read-only workout detail used from Log's open activities and Today's
+/// this-week ledger.
+struct FutureWorkoutPreviewSheet: View {
     var session: WorkoutSession
     var blocks: [WorkoutBlock]
     var prescriptions: [SetPrescription]
@@ -184,9 +261,8 @@ private struct FutureWorkoutPreviewSheet: View {
                     } else if prescriptions.isEmpty {
                         EmptyWorkoutPreview(summary: session.summary)
                     } else {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Workout preview")
-                                .font(.headline)
+                        VStack(alignment: .leading, spacing: 16) {
+                            SectionHeader("Workout preview")
                             ForEach(blocks) { block in
                                 let blockPrescriptions = prescriptionsForBlock(block)
                                 if !blockPrescriptions.isEmpty {
@@ -202,10 +278,9 @@ private struct FutureWorkoutPreviewSheet: View {
                                 )
                             }
                         }
-                        .card(padding: 14)
                     }
                 }
-                .padding(16)
+                .padding(AppTheme.screenMargin)
             }
             .background(AppTheme.background)
             .navigationTitle("Workout details")
@@ -223,13 +298,13 @@ private struct FutureWorkoutPreviewSheet: View {
     private var previewHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(session.title)
-                        .font(.system(.title3, design: .rounded, weight: .bold))
+                        .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(AppTheme.text)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(session.scheduledDate.formatted(date: .complete, time: .omitted))
-                        .font(.subheadline.weight(.medium))
+                        .font(.subheadline)
                         .foregroundStyle(AppTheme.muted)
                 }
 
@@ -238,8 +313,10 @@ private struct FutureWorkoutPreviewSheet: View {
                 WorkoutStatusPill(status: session.status)
             }
 
-            HStack(spacing: 8) {
-                StatusPill(text: focusPillText, systemImage: focusIconName)
+            HStack(spacing: 14) {
+                Label(focusPillText, systemImage: focusIconName)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.muted)
                 DurationPill(minutes: durationMinutes)
                 if let effortLabel = session.plannedEffortLabel {
                     EffortPill(
@@ -248,7 +325,6 @@ private struct FutureWorkoutPreviewSheet: View {
                         targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
                     )
                 }
-                StatusPill(text: "Preview", systemImage: "eye")
             }
 
             if !session.summary.isEmpty {
@@ -259,10 +335,10 @@ private struct FutureWorkoutPreviewSheet: View {
             }
 
             Text(availabilityText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.muted)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AppTheme.accent)
         }
-        .card(padding: 14)
+        .ruled(verticalPadding: 16)
     }
 
     private var availabilityText: String {
@@ -304,16 +380,17 @@ private struct RunPreviewDetails: View {
     var session: WorkoutSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Run preview")
-                .font(.headline)
-            InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
-            if session.plannedElevationM > 0 {
-                InfoLine(title: "Elevation gain", value: "\(session.plannedElevationM) m+")
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Run preview")
+            VStack(spacing: 10) {
+                InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
+                if session.plannedElevationM > 0 {
+                    InfoLine(title: "Elevation gain", value: "\(session.plannedElevationM) m+")
+                }
+                InfoLine(title: "Target", value: runTargetText(session: session))
             }
-            InfoLine(title: "Target", value: runTargetText(session: session))
         }
-        .card(padding: 14)
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -321,15 +398,11 @@ private struct EmptyWorkoutPreview: View {
     var summary: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("No exercise details yet")
-                .font(.headline)
-            Text(summary.isEmpty ? "This planned session does not have saved exercise prescriptions." : summary)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.muted)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .card(padding: 14)
+        EmptyStateView(
+            systemImage: "list.bullet.rectangle",
+            title: "No exercise details yet",
+            message: summary.isEmpty ? "This planned session does not have saved exercise prescriptions." : summary
+        )
     }
 }
 
@@ -354,33 +427,30 @@ private struct WorkoutPreviewBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
+                // Block names render verbatim ("Warm-up") — tests assert them.
                 Text(title)
-                    .font(.subheadline.bold())
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(AppTheme.text)
                 if !detail.isEmpty {
                     Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.faint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             VStack(spacing: 0) {
+                Hairline()
                 ForEach(Array(prescriptions.enumerated()), id: \.element.id) { index, item in
                     WorkoutPreviewPrescriptionRow(item: item, block: block)
                     if index < prescriptions.count - 1 {
-                        Divider()
+                        Hairline()
                     }
                 }
+                Hairline()
             }
-            .background(AppTheme.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                    .stroke(AppTheme.divider, lineWidth: 1)
-            )
         }
     }
 }
@@ -394,12 +464,8 @@ private struct WorkoutPreviewPrescriptionRow: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.exercise.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.text)
-                        .lineLimit(1)
-                    Text(item.intensity)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.muted)
                         .lineLimit(1)
                     if let effortLabel = item.plannedEffortLabel {
                         EffortPill(
@@ -413,22 +479,21 @@ private struct WorkoutPreviewPrescriptionRow: View {
 
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(prescriptionText(item))
-                        .font(.system(.subheadline, design: .rounded, weight: .bold))
+                        .font(.system(size: 15, weight: .semibold).monospacedDigit())
                         .foregroundStyle(AppTheme.text)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Text("\(durationText(seconds: item.restSeconds)) rest")
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(AppTheme.faint)
                         .lineLimit(1)
                 }
 
                 Image(systemName: "info.circle")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.muted.opacity(0.8))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(AppTheme.faint)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
+            .padding(.vertical, 11)
             .contentShape(Rectangle())
         }
     }

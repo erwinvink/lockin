@@ -33,7 +33,7 @@ struct OnboardingView: View {
     var body: some View {
         NavigationStack {
             ScreenBackground {
-                BrandHeader(subtitle: "Strict calisthenics goals. Exact work. Visible standards.")
+                BrandHeader(subtitle: "Exact work. Visible standards.")
                     .padding(.top, 18)
 
                 MeasurementCard(
@@ -43,12 +43,8 @@ struct OnboardingView: View {
                     plankSeconds: $plankSeconds
                 )
 
-                GoalTargetCard(
-                    goalPullUps: $goalPullUps,
-                    goalPushUps: $goalPushUps,
-                    goalPlankSeconds: $goalPlankSeconds
-                )
-
+                // Race-first athlete: the running block comes right after the
+                // measurements, before strength goal targets.
                 RaceGoalCard(
                     isTrainingForRace: $isTrainingForRace,
                     raceName: $raceName,
@@ -57,6 +53,12 @@ struct OnboardingView: View {
                     raceElevationGainM: $raceElevationGainM,
                     runningDays: $runningDays,
                     longRunDay: $longRunDay
+                )
+
+                GoalTargetCard(
+                    goalPullUps: $goalPullUps,
+                    goalPushUps: $goalPushUps,
+                    goalPlankSeconds: $goalPlankSeconds
                 )
 
                 ScheduleCard(
@@ -76,11 +78,9 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(PrimaryActionButtonStyle())
                 .disabled(!canCreateProfile)
-                .opacity(canCreateProfile ? 1 : 0.48)
             }
             .navigationTitle("Setup")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(AppTheme.background, for: .navigationBar)
         }
     }
 
@@ -128,16 +128,16 @@ private struct MeasurementCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Start measurement")
-                .font(.headline)
+            SectionHeader("Start measurement")
             TextField("Name", text: $name)
                 .textInputAutocapitalization(.words)
-                .textFieldStyle(.roundedBorder)
+                .font(.subheadline)
+                .lockinField()
             IntegerField(title: "Current pull-up max", value: $pullUps, range: 0...100)
             IntegerField(title: "Current push-up max", value: $pushUps, range: 0...300)
             IntegerField(title: "Current plank max", value: $plankSeconds, range: 0...1_800, suffix: "sec")
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -148,13 +148,12 @@ private struct GoalTargetCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Goal targets")
-                .font(.headline)
+            SectionHeader("Goal targets")
             IntegerField(title: "Target pull-ups", value: $goalPullUps, range: 1...300)
             IntegerField(title: "Target push-ups", value: $goalPushUps, range: 1...500)
             IntegerField(title: "Target plank", value: $goalPlankSeconds, range: 10...3_600, suffix: "sec")
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -173,15 +172,18 @@ private struct RaceGoalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Running")
-                .font(.headline)
-            Toggle("I'm also training for a race", isOn: $isTrainingForRace)
+            SectionHeader("Running")
+            Toggle("I'm also training for a race", isOn: $isTrainingForRace.animation(.smooth(duration: 0.3)))
+                .font(.subheadline.weight(.medium))
                 .tint(AppTheme.accent)
             if isTrainingForRace {
                 TextField("Race name", text: $raceName)
                     .textInputAutocapitalization(.words)
-                    .textFieldStyle(.roundedBorder)
+                    .font(.subheadline)
+                    .lockinField()
                 DatePicker("Race date", selection: $raceDate, displayedComponents: .date)
+                    .font(.subheadline.weight(.medium))
+                    .tint(AppTheme.accent)
                 IntegerField(title: "Distance", value: $raceDistanceKm, range: 1...500, suffix: "km")
                 IntegerField(title: "Elevation gain", value: $raceElevationGainM, range: 0...30_000, suffix: "m+")
                 TrainingDaysPicker(
@@ -209,7 +211,7 @@ private struct RaceGoalCard: View {
                 }
             }
         }
-        .card()
+        .ruled(verticalPadding: 16)
         .onChange(of: runningDays) { _, newDays in
             guard !newDays.isEmpty, !newDays.contains(longRunDay) else { return }
             if let fallback = TrainingWeekday.allCases.last(where: { newDays.contains($0) }) {
@@ -225,15 +227,16 @@ private struct ScheduleCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Training shape")
-                .font(.headline)
+            SectionHeader("Training shape")
             DatePicker("Target date", selection: $targetDate, displayedComponents: .date)
+                .font(.subheadline.weight(.medium))
+                .tint(AppTheme.accent)
             TrainingDaysPicker(selectedDays: $selectedTrainingDays)
             Text("Session length follows the generated prescription for that week.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.faint)
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -257,29 +260,32 @@ struct TrainingDaysPicker: View {
             }
             HStack(spacing: 6) {
                 ForEach(TrainingWeekday.allCases) { day in
+                    let isSelected = selectedDays.contains(day)
                     Button {
                         toggle(day)
                     } label: {
                         Text(day.shortTitle)
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(selectedDays.contains(day) ? .white : AppTheme.text)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(isSelected ? AppTheme.accentInk : AppTheme.muted)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 34)
-                            .background(selectedDays.contains(day) ? AppTheme.accent : AppTheme.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .frame(height: 36)
+                            .background(isSelected ? AppTheme.accent : AppTheme.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(AppTheme.divider, lineWidth: 1)
+                                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                                    .strokeBorder(isSelected ? .clear : AppTheme.divider, lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)
                     .disabled(isToggleDisabled(for: day))
+                    .animation(.snappy(duration: 0.2), value: isSelected)
+                    .sensoryFeedback(.selection, trigger: isSelected)
                 }
             }
             if let caption {
                 Text(caption)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.faint)
             }
         }
     }
@@ -306,8 +312,7 @@ private struct EquipmentCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Equipment")
-                .font(.headline)
+            SectionHeader("Equipment")
             ForEach(EquipmentKind.allCases) { item in
                 Toggle(item.title, isOn: Binding(
                     get: { selectedEquipment.contains(item) },
@@ -319,10 +324,11 @@ private struct EquipmentCard: View {
                         }
                     }
                 ))
+                .font(.subheadline.weight(.medium))
                 .tint(AppTheme.accent)
             }
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -333,10 +339,12 @@ private struct GuardrailsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("Only count strict valid reps and holds", isOn: $strictForm)
+                .font(.subheadline.weight(.medium))
                 .tint(AppTheme.accent)
             TextField("Pain, injury, or limitation notes", text: $painNotes, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .font(.subheadline)
+                .lockinField()
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }

@@ -1,19 +1,25 @@
 import SwiftUI
 
+// MARK: - Brand
+
+/// Onboarding brand block. The wordmark is template-rendered so it sits on
+/// the dark canvas in warm off-white.
 struct BrandHeader: View {
     var subtitle: String?
 
     var body: some View {
-        VStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .center, spacing: 12) {
             Image("LockinWordmark")
+                .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 260, height: 50, alignment: .leading)
+                .frame(width: 188, height: 36)
+                .foregroundStyle(AppTheme.text)
                 .accessibilityLabel("lockin")
                 .accessibilityIdentifier("lockin-wordmark")
             if let subtitle {
                 Text(subtitle)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(AppTheme.muted)
             }
@@ -22,178 +28,242 @@ struct BrandHeader: View {
     }
 }
 
-struct GoalStrip: View {
-    var profile: UserProfile
+/// Today's header: lock mark, app name, date — with a caller-provided
+/// trailing element (streak chip, week ring). Replaces the old splash-style
+/// wordmark banner.
+struct LockinHeader<Trailing: View>: View {
+    @ViewBuilder var trailing: Trailing
+
+    init(@ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Lockin")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(AppTheme.text)
+                    Text(Date.now, format: .dateTime.weekday(.wide).day().month())
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.muted)
+                }
+            }
+            Spacer()
+            trailing
+        }
+    }
+}
+
+/// Hairline capsule with a flame and the current streak count.
+struct StreakChip: View {
+    var streak: Int
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "flame.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(AppTheme.accent)
+            Text("\(streak)")
+                .font(.system(size: 14, weight: .semibold).monospacedDigit())
+                .foregroundStyle(AppTheme.text)
+                .contentTransition(.numericText())
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(AppTheme.surface))
+        .overlay(Capsule().strokeBorder(AppTheme.divider, lineWidth: 1))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Streak \(streak) sessions")
+    }
+}
+
+// MARK: - Metric strip
+
+/// Open metric strip: hairlines top and bottom, columns separated by short
+/// vertical rules. The replacement for the old white metric-card grids.
+struct MetricStrip: View {
+    var cells: [MetricCellModel]
 
     var body: some View {
         HStack(spacing: 0) {
-            GoalStripItem(value: "\(profile.goalPullUps)", label: "Pull-ups")
-            Divider().frame(height: 34)
-            GoalStripItem(value: "\(profile.goalPushUps)", label: "Push-ups")
-            Divider().frame(height: 34)
-            GoalStripItem(value: format(seconds: profile.goalPlankSeconds), label: "Plank")
-        }
-        .padding(.vertical, 16)
-        .card(padding: 0)
-    }
-}
-
-struct GoalStripItem: View {
-    var value: String
-    var label: String
-
-    var body: some View {
-        VStack(spacing: 3) {
-            Text(value)
-                .font(.system(.title2, design: .rounded, weight: .bold))
-                .foregroundStyle(AppTheme.text)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(label.uppercased())
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(AppTheme.muted)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-struct MetricCard: View {
-    var title: String
-    var value: String
-    var subtitle: String
-    var color: Color = AppTheme.accent
-    var systemImage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(color)
+            ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
+                MetricCell(model: cell)
+                    .padding(.leading, index == 0 ? 0 : 14)
+                if index < cells.count - 1 {
+                    Rectangle()
+                        .fill(AppTheme.divider)
+                        .frame(width: 1, height: 34)
                 }
-                Text(title.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.muted)
             }
-            Text(value)
-                .font(.system(.title2, design: .rounded, weight: .bold))
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(subtitle)
-                .font(.caption2)
-                .foregroundStyle(AppTheme.muted)
-                .lineLimit(2)
+        }
+        .ruled()
+    }
+}
+
+struct MetricCellModel {
+    var label: String
+    var value: String
+    var detail: String?
+    var valueColor: Color = AppTheme.text
+}
+
+struct MetricCell: View {
+    var model: MetricCellModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            MicroLabel(text: model.label)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(model.value)
+                    .font(.lockinNumeral(22))
+                    .foregroundStyle(model.valueColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .contentTransition(.numericText())
+                if let detail = model.detail {
+                    Text(detail)
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(AppTheme.faint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 14)
+        .accessibilityElement(children: .combine)
     }
 }
 
-struct ProgressRing: View {
+// MARK: - Progress
+
+/// Slim goal-progress row: label, value over goal, 4pt gold bar. Replaces
+/// the stacked ring cards.
+struct GoalProgressRow: View {
     var title: String
     var current: Int
     var goal: Int
     var seconds: Bool = false
     var benchmark: String?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drawn = false
+
     private var progress: Double {
         min(1, max(0, Double(current) / Double(max(goal, 1))))
     }
 
     var body: some View {
-        HStack(spacing: 18) {
-            ZStack {
-                Circle()
-                    .stroke(AppTheme.accentSoft, lineWidth: 9)
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(AppTheme.accent, style: StrokeStyle(lineWidth: 9, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Text("\(Int(progress * 100))%")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.accent)
-            }
-            .frame(width: 76, height: 76)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title.uppercased())
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.text)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                MicroLabel(text: title.uppercased(), color: AppTheme.text)
+                Spacer()
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(seconds ? format(seconds: current) : "\(current)")
-                        .font(.system(.title2, design: .rounded, weight: .bold))
+                        .font(.lockinNumeral(17))
+                        .foregroundStyle(AppTheme.text)
+                        .contentTransition(.numericText())
                     Text("/ \(seconds ? format(seconds: goal) : "\(goal)")")
-                        .font(.subheadline.weight(.medium))
+                        .font(.footnote.monospacedDigit())
                         .foregroundStyle(AppTheme.muted)
                 }
-                if let benchmark {
-                    Label(benchmark, systemImage: "shield.checkered")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(AppTheme.gold)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(AppTheme.divider)
+                    Capsule()
+                        .fill(AppTheme.accent)
+                        .frame(width: max(4, proxy.size.width * (drawn ? progress : 0)))
                 }
             }
-            Spacer()
-        }
-        .card()
-    }
-}
+            .frame(height: 4)
 
-struct ReadinessTile: View {
-    var title: String
-    var value: String
-    var status: String
-    var color: Color = AppTheme.accent
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.muted)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
-            Text(value)
-                .font(.system(.title, design: .rounded, weight: .bold))
-                .foregroundStyle(AppTheme.text)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 6, height: 6)
-                Text(status)
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.muted)
+            if let benchmark {
+                Text(benchmark)
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.faint)
             }
         }
-        .frame(maxWidth: .infinity)
-        .card(padding: 12)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue("\(Int(progress * 100)) percent of goal")
+        .onAppear {
+            if reduceMotion {
+                drawn = true
+            } else {
+                withAnimation(.smooth(duration: 0.7).delay(0.1)) { drawn = true }
+            }
+        }
     }
 }
 
+/// Compact gold ring for week completion — draws in on appear.
+struct WeekRing: View {
+    var progress: Double
+    var label: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drawn = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(AppTheme.divider, lineWidth: 4)
+            Circle()
+                .trim(from: 0, to: drawn ? max(0.001, progress) : 0.001)
+                .stroke(AppTheme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text(label)
+                .font(.lockinNumeral(13))
+                .foregroundStyle(AppTheme.text)
+                .contentTransition(.numericText())
+        }
+        .frame(width: 54, height: 54)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Week \(Int(progress * 100)) percent complete")
+        .onAppear {
+            if reduceMotion {
+                drawn = true
+            } else {
+                withAnimation(.smooth(duration: 0.8).delay(0.15)) { drawn = true }
+            }
+        }
+    }
+}
+
+// MARK: - Chips and metadata
+
+/// Quiet status chip: hairline capsule, no fill, color carried by the text
+/// and icon. The single chip shape in the app.
 struct StatusPill: View {
     var text: String
     var color: Color = AppTheme.accent
     var systemImage: String? = "checkmark.circle.fill"
 
     var body: some View {
-        HStack(spacing: 5) {
-            Text(text)
+        HStack(spacing: 4) {
             if let systemImage {
                 Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .semibold))
             }
+            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
         }
-        .font(.caption.weight(.bold))
         .foregroundStyle(color)
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
-        .background(color.opacity(0.12))
-        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(AppTheme.divider, lineWidth: 1))
     }
 }
 
+/// Bare metadata label: icon + text, no container. Effort keeps the only
+/// three-hue mapping in the design.
 struct EffortPill: View {
     var label: PlannedEffortLabel
     var prefix: String?
@@ -206,44 +276,22 @@ struct EffortPill: View {
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: iconName)
+        HStack(spacing: 4) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 10, weight: .semibold))
             Text(displayText)
+                .font(.system(size: 12, weight: .medium).monospacedDigit())
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.8)
         }
-        .font(.caption2.weight(.bold))
-        .foregroundStyle(color)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.12))
-        .clipShape(Capsule())
+        .foregroundStyle(AppTheme.effortColor(label))
         .accessibilityLabel(displayText)
     }
 
     private var displayText: String {
         let base = prefix.map { "\($0): \(label.title)" } ?? label.title
         guard let targetRPE, targetRPE > 0 else { return base }
-        return "\(base) RPE \(targetRPE)"
-    }
-
-    private var color: Color {
-        switch label {
-        case .light: AppTheme.accent
-        case .medium: AppTheme.gold
-        case .hard, .veryHard: AppTheme.warning
-        case .maxOutput: AppTheme.warning
-        }
-    }
-
-    private var iconName: String {
-        switch label {
-        case .light: "leaf"
-        case .medium: "speedometer"
-        case .hard: "flame"
-        case .veryHard: "flame.fill"
-        case .maxOutput: "bolt.fill"
-        }
+        return "\(base) · RPE \(targetRPE)"
     }
 }
 
@@ -252,40 +300,27 @@ struct DurationPill: View {
 
     var body: some View {
         if minutes > 0 {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Image(systemName: "clock")
+                    .font(.system(size: 10, weight: .semibold))
                 Text(displayText)
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
             }
-            .font(.caption2.weight(.bold))
             .foregroundStyle(AppTheme.muted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(AppTheme.surfaceRaised)
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(AppTheme.divider, lineWidth: 1)
-            )
             .accessibilityLabel("Estimated duration \(displayText)")
         }
     }
 
     private var displayText: String {
-        if minutes < 60 {
-            return "\(minutes) min"
-        }
-
+        if minutes < 60 { return "\(minutes) min" }
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
-        if remainingMinutes == 0 {
-            return "\(hours) hr"
-        }
-        return "\(hours) hr \(remainingMinutes) min"
+        return remainingMinutes == 0 ? "\(hours) hr" : "\(hours) hr \(remainingMinutes) min"
     }
 }
 
+/// Planned vs actual RPE as quiet text: "RPE 6 → 8", the actual colored.
 struct RPEComparisonPill: View {
     var plannedRPE: Int?
     var actualRPE: Int
@@ -299,26 +334,25 @@ struct RPEComparisonPill: View {
         min(10, max(1, actualRPE))
     }
 
+    private var actualColor: Color {
+        AppTheme.effortColor(PlannedEffortLabel.fromRPE(normalizedActualRPE))
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
-            Text("RPE -")
-                .foregroundStyle(AppTheme.muted)
+        HStack(spacing: 4) {
+            Text("RPE")
+                .foregroundStyle(AppTheme.faint)
             if let normalizedPlannedRPE {
-                RPEValueBadge(label: "Planned", value: normalizedPlannedRPE)
-                Text("|")
-                    .foregroundStyle(AppTheme.muted.opacity(0.7))
+                Text("\(normalizedPlannedRPE)")
+                    .foregroundStyle(AppTheme.muted)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(AppTheme.faint)
             }
-            RPEValueBadge(label: "Actual", value: normalizedActualRPE)
+            Text("\(normalizedActualRPE)")
+                .foregroundStyle(actualColor)
         }
-        .font(.caption2.weight(.bold))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(AppTheme.surfaceRaised)
-        .clipShape(Capsule())
-        .overlay(
-            Capsule()
-                .stroke(AppTheme.divider, lineWidth: 1)
-        )
+        .font(.system(size: 12, weight: .medium).monospacedDigit())
         .accessibilityLabel(accessibilityText)
     }
 
@@ -330,55 +364,7 @@ struct RPEComparisonPill: View {
     }
 }
 
-private struct RPEValueBadge: View {
-    var label: String
-    var value: Int
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .foregroundStyle(AppTheme.text)
-            Text("\(value)")
-                .foregroundStyle(.white)
-                .frame(minWidth: 18, minHeight: 18)
-                .background(rpeColor(value))
-                .clipShape(Circle())
-        }
-    }
-}
-
-private func rpeColor(_ value: Int) -> Color {
-    switch PlannedEffortLabel.fromRPE(value) {
-    case .light:
-        return AppTheme.accent
-    case .medium:
-        return AppTheme.gold
-    case .hard, .veryHard, .maxOutput:
-        return AppTheme.warning
-    }
-}
-
-struct ValidationStatusCard: View {
-    var title: String = "Plan validation"
-    var status: String
-    var contextState: String
-    var detail: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(title.uppercased())
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.text)
-                Spacer()
-                StatusPill(text: status.capitalized, color: AppTheme.muted, systemImage: "checklist")
-            }
-            InfoLine(title: "Context state", value: contextState)
-            InfoLine(title: "Validated", value: detail)
-        }
-        .card()
-    }
-}
+// MARK: - Session rows
 
 struct WeekPlanTable: View {
     var sessions: [WorkoutSession]
@@ -387,20 +373,17 @@ struct WeekPlanTable: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Open activities".uppercased())
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.text)
-            }
+            MicroLabel(text: "Open activities".uppercased())
 
             if sessions.isEmpty {
                 Text("No open activities.")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
             } else {
                 VStack(spacing: 0) {
+                    Hairline()
                     ForEach(Array(sessions.prefix(7).enumerated()), id: \.element.id) { index, session in
                         WeekPlanRow(
                             session: session,
@@ -412,19 +395,13 @@ struct WeekPlanTable: View {
                             onSelectSession(session)
                         }
                         if index < min(sessions.count, 7) - 1 {
-                            Divider()
+                            Hairline()
                         }
                     }
+                    Hairline()
                 }
-                .background(AppTheme.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                        .stroke(AppTheme.divider, lineWidth: 1)
-                )
             }
         }
-        .card()
     }
 
     private func prescriptionsForSession(_ session: WorkoutSession) -> [SetPrescription] {
@@ -445,9 +422,9 @@ struct WeekPlanRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated))
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(AppTheme.muted)
                     .frame(width: 34, alignment: .leading)
                 VStack(alignment: .leading, spacing: 4) {
@@ -456,13 +433,11 @@ struct WeekPlanRow: View {
                         .foregroundStyle(AppTheme.text)
                         .lineLimit(1)
                     if durationMinutes > 0 || session.plannedEffortLabel != nil || showsRunDistance {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 10) {
                             if showsRunDistance {
-                                StatusPill(
-                                    text: runDistanceText(km: session.plannedDistanceKm),
-                                    color: AppTheme.muted,
-                                    systemImage: "figure.run"
-                                )
+                                Text(runDistanceText(km: session.plannedDistanceKm))
+                                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(AppTheme.muted)
                             }
                             DurationPill(minutes: durationMinutes)
                             if let effortLabel = session.plannedEffortLabel {
@@ -474,14 +449,13 @@ struct WeekPlanRow: View {
                         }
                     }
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 WorkoutStatusIcon(status: session.status)
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(AppTheme.muted.opacity(0.7))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppTheme.faint)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
+            .padding(.vertical, 11)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -501,14 +475,6 @@ struct WorkoutStatusIcon: View {
         }
     }
 
-    private var statusColor: Color {
-        switch status {
-        case .planned: AppTheme.muted
-        case .completed, .deload: AppTheme.accent
-        case .missed: AppTheme.warning
-        }
-    }
-
     private var accessibilityLabel: String {
         switch status {
         case .planned: "Open"
@@ -520,8 +486,8 @@ struct WorkoutStatusIcon: View {
 
     var body: some View {
         Image(systemName: iconName)
-            .font(.body.weight(.bold))
-            .foregroundStyle(statusColor)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(status == .planned ? AppTheme.faint : AppTheme.statusColor(status))
             .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -530,7 +496,7 @@ struct WorkoutStatusPill: View {
     var status: SessionStatus
 
     var body: some View {
-        StatusPill(text: title, color: color, systemImage: iconName)
+        StatusPill(text: title, color: AppTheme.statusColor(status), systemImage: iconName)
     }
 
     private var title: String {
@@ -549,15 +515,32 @@ struct WorkoutStatusPill: View {
         case .missed: "xmark.circle.fill"
         }
     }
+}
 
-    private var color: Color {
-        switch status {
-        case .planned: AppTheme.muted
-        case .completed, .deload: AppTheme.accent
-        case .missed: AppTheme.warning
+/// Animated check circle for prescription rows: gold fill on completion with
+/// a symbol bounce and light haptic.
+struct CheckCircle: View {
+    var isComplete: Bool
+    var accessibilityName: String
+    var onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            Image(systemName: isComplete ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(isComplete ? AppTheme.accent : AppTheme.faint)
+                .symbolEffect(.bounce, options: .speed(1.4), value: isComplete)
+                .frame(width: 34, height: 34)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .sensoryFeedback(.impact(weight: .light), trigger: isComplete) { _, newValue in newValue }
+        .accessibilityLabel(isComplete ? "\(accessibilityName) done" : "Mark \(accessibilityName) done")
+        .accessibilityIdentifier(isComplete ? "exercise-checkbox-checked" : "exercise-checkbox-unchecked")
     }
 }
+
+// MARK: - Rows and fields
 
 struct InfoLine: View {
     var title: String
@@ -567,11 +550,11 @@ struct InfoLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(AppTheme.muted)
             Spacer()
             Text(value)
-                .font(.caption.weight(.semibold))
+                .font(.footnote.weight(.semibold).monospacedDigit())
                 .foregroundStyle(valueColor)
                 .multilineTextAlignment(.trailing)
         }
@@ -583,6 +566,8 @@ struct IntegerField: View {
     @Binding var value: Int
     var range: ClosedRange<Int>
     var suffix: String = ""
+
+    @FocusState private var isFocused: Bool
 
     private var clampedValue: Binding<Int> {
         Binding(
@@ -603,8 +588,9 @@ struct IntegerField: View {
             TextField(title, value: clampedValue, format: .number)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
-                .font(.system(.body, design: .rounded, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold).monospacedDigit())
                 .foregroundStyle(AppTheme.text)
+                .focused($isFocused)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .frame(width: 92)
@@ -612,36 +598,40 @@ struct IntegerField: View {
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                        .stroke(AppTheme.divider, lineWidth: 1)
+                        .strokeBorder(isFocused ? AppTheme.accent : AppTheme.divider, lineWidth: 1)
                 )
+                .animation(.easeOut(duration: 0.15), value: isFocused)
             if !suffix.isEmpty {
                 Text(suffix)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
         }
     }
 }
 
-struct Hexagon: Shape {
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let radius = min(rect.width, rect.height) / 2
-        var path = Path()
+// MARK: - Empty states
 
-        for index in 0..<6 {
-            let angle = CGFloat(index) * .pi / 3 - .pi / 2
-            let point = CGPoint(
-                x: center.x + radius * cos(angle),
-                y: center.y + radius * sin(angle)
-            )
-            if index == 0 {
-                path.move(to: point)
-            } else {
-                path.addLine(to: point)
-            }
+/// Quiet empty state: small gold glyph, plain words, no card frame.
+struct EmptyStateView: View {
+    var systemImage: String
+    var title: String
+    var message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(AppTheme.accent)
+            Text(title)
+                .font(.lockinSection)
+                .foregroundStyle(AppTheme.text)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        path.closeSubpath()
-        return path
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .ruled(verticalPadding: 20)
     }
 }

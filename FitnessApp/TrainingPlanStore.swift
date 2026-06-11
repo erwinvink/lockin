@@ -166,6 +166,8 @@ func completeRun(
     session.scoreImpact = outcome.consistencyDelta
 
     try modelContext.save()
+    // A confirmed run is new training data — the coach read must catch up.
+    UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
 }
 
 /// Parses the date strings the Garmin proxy passes through: bare ISO dates

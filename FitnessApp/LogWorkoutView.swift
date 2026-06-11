@@ -14,6 +14,8 @@ struct LogWorkoutView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var previousLogs: [PerformanceLog]
+    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     // Configuration, not state: fixed per build flavor (see LocalCoachClient).
     private let endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
@@ -106,7 +108,6 @@ struct LogWorkoutView: View {
                 Button("Save log", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(!requiredLogFieldsAreValid)
-                    .opacity(requiredLogFieldsAreValid ? 1 : 0.45)
             }
             .navigationTitle("Log")
             .navigationBarTitleDisplayMode(.inline)
@@ -197,6 +198,8 @@ struct LogWorkoutView: View {
             logs: logsIncludingSavedLog,
             sessions: sessions,
             prescriptions: prescriptions,
+            raceGoal: raceGoals.first,
+            runLogs: runLogs,
             weekStart: rollingPlanStart()
         )
 
@@ -233,19 +236,10 @@ private struct LoggedWorkCard: View {
     @FocusState.Binding var focusedField: LogMetricField?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Logged work")
-                    .font(.headline)
-                Spacer()
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Logged work") {
                 if shouldLogPullUps || shouldLogPushUps || shouldLogPlank {
-                    Text("Required")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(AppTheme.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(AppTheme.accentSoft)
-                        .clipShape(Capsule())
+                    MicroLabel(text: "REQUIRED", color: AppTheme.accent)
                 }
             }
             if shouldLogPullUps {
@@ -278,11 +272,11 @@ private struct LoggedWorkCard: View {
             }
             if !shouldLogPullUps && !shouldLogPushUps && !shouldLogPlank {
                 Text("No goal max test is planned in this session. Log readiness and notes only.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
         }
-        .card(padding: 12)
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -305,7 +299,7 @@ private struct LogNumberField: View {
                 TextField("", text: $text)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
                     .foregroundStyle(AppTheme.text)
                     .frame(width: 70)
                     .accessibilityLabel(title)
@@ -315,7 +309,7 @@ private struct LogNumberField: View {
                     }
                 if !suffix.isEmpty {
                     Text(suffix)
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(AppTheme.muted)
                 }
             }
@@ -325,8 +319,9 @@ private struct LogNumberField: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                    .stroke(focusedField == focusID ? AppTheme.accent.opacity(0.7) : AppTheme.divider, lineWidth: 1)
+                    .strokeBorder(focusedField == focusID ? AppTheme.accent : AppTheme.divider, lineWidth: 1)
             )
+            .animation(.easeOut(duration: 0.15), value: focusedField == focusID)
         }
     }
 
@@ -345,9 +340,8 @@ private struct ReadinessInputCard: View {
     @Binding var howFelt: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Readiness")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("Readiness")
             ReadinessSlider(
                 title: "Perceived effort",
                 systemImage: "speedometer",
@@ -355,7 +349,7 @@ private struct ReadinessInputCard: View {
                 range: 1...10,
                 descriptor: ReadinessScale.perceivedEffort
             )
-            Divider()
+            Hairline()
             ReadinessSlider(
                 title: "Pain",
                 systemImage: "heart",
@@ -363,7 +357,7 @@ private struct ReadinessInputCard: View {
                 range: 0...10,
                 descriptor: ReadinessScale.pain
             )
-            Divider()
+            Hairline()
             ReadinessSlider(
                 title: "How did you feel?",
                 systemImage: "face.smiling",
@@ -372,7 +366,7 @@ private struct ReadinessInputCard: View {
                 descriptor: ReadinessScale.howIFelt
             )
         }
-        .card(padding: 10)
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -401,35 +395,33 @@ struct ReadinessSlider: View {
     var body: some View {
         let current = descriptor(displayedValue)
 
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
                     Label(title, systemImage: systemImage)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(AppTheme.text)
                         .lineLimit(2)
                         .minimumScaleFactor(0.85)
 
                     Text(current.detail)
-                        .font(.caption2)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.faint)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("\(displayedValue)")
-                        .font(.system(.body, design: .rounded, weight: .bold))
+                        .font(.lockinNumeral(20))
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.2), value: displayedValue)
                     Text(current.label)
-                        .font(.caption.weight(.semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
                 .foregroundStyle(current.color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(current.color.opacity(0.12))
-                .clipShape(Capsule())
             }
 
             Slider(
@@ -438,10 +430,11 @@ struct ReadinessSlider: View {
                 step: 1,
                 onEditingChanged: handleEditingChanged
             )
-                .tint(current.color)
-                .controlSize(.small)
+            .tint(current.color)
+            .controlSize(.small)
+            .sensoryFeedback(.selection, trigger: displayedValue)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, 4)
     }
 
     private func handleEditingChanged(_ isEditing: Bool) {
@@ -549,12 +542,12 @@ private struct NotesCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Notes")
-                .font(.headline)
+            SectionHeader("Notes")
             TextField("What changed?", text: $notes, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .font(.subheadline)
+                .lockinField()
         }
-        .card(padding: 12)
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -626,9 +619,8 @@ struct LogRunView: View {
                     distanceFieldIsFocused: $distanceFieldIsFocused
                 )
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Readiness")
-                        .font(.headline)
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionHeader("Readiness")
                     ReadinessSlider(
                         title: "Perceived effort",
                         systemImage: "speedometer",
@@ -636,7 +628,7 @@ struct LogRunView: View {
                         range: 1...10,
                         descriptor: ReadinessScale.perceivedEffort
                     )
-                    Divider()
+                    Hairline()
                     ReadinessSlider(
                         title: "How did you feel?",
                         systemImage: "face.smiling",
@@ -645,14 +637,13 @@ struct LogRunView: View {
                         descriptor: ReadinessScale.howIFelt
                     )
                 }
-                .card(padding: 10)
+                .ruled(verticalPadding: 16)
 
                 NotesCard(notes: $notes)
 
                 Button("Save run", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(!canSave)
-                    .opacity(canSave ? 1 : 0.45)
                     .accessibilityIdentifier("save-run-button")
             }
             .navigationTitle("Log run")
@@ -729,18 +720,9 @@ private struct RunWorkCard: View {
     @FocusState.Binding var distanceFieldIsFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Run data")
-                    .font(.headline)
-                Spacer()
-                Text("Required")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(AppTheme.accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(AppTheme.accentSoft)
-                    .clipShape(Capsule())
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Run data") {
+                MicroLabel(text: "REQUIRED", color: AppTheme.accent)
             }
 
             RunDistanceField(
@@ -752,10 +734,10 @@ private struct RunWorkCard: View {
             IntegerField(title: "Elevation gain", value: $elevationGainM, range: 0...10_000, suffix: "m")
             IntegerField(title: "Average heart rate", value: $averageHr, range: 0...250, suffix: "bpm")
             Text("Leave average heart rate at 0 if you did not measure it.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.faint)
         }
-        .card(padding: 12)
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -775,7 +757,7 @@ private struct RunDistanceField: View {
                 TextField("", text: $text)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
                     .foregroundStyle(AppTheme.text)
                     .frame(width: 70)
                     .accessibilityLabel("Distance in kilometres")
@@ -785,7 +767,7 @@ private struct RunDistanceField: View {
                         text = String(newValue.filter { $0.isNumber || $0 == "." || $0 == "," }.prefix(6))
                     }
                 Text("km")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
             .padding(.horizontal, 10)
@@ -794,15 +776,16 @@ private struct RunDistanceField: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                    .stroke(strokeColor, lineWidth: 1)
+                    .strokeBorder(strokeColor, lineWidth: 1)
             )
+            .animation(.easeOut(duration: 0.15), value: isFocused)
         }
     }
 
     private var strokeColor: Color {
         if !isValid {
-            return AppTheme.warning.opacity(0.7)
+            return AppTheme.warning
         }
-        return isFocused ? AppTheme.accent.opacity(0.7) : AppTheme.divider
+        return isFocused ? AppTheme.accent : AppTheme.divider
     }
 }

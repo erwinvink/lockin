@@ -10,6 +10,7 @@ struct CoachView: View {
     @Query(sort: \CoachVerdict.createdAt, order: .reverse) private var verdicts: [CoachVerdict]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
+    @Query(sort: \GarminDailySnapshot.date, order: .reverse) private var snapshots: [GarminDailySnapshot]
     // Configuration, not state: fixed per build flavor (see LocalCoachClient).
     private let endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
@@ -19,12 +20,6 @@ struct CoachView: View {
     @State private var isGeneratingPlan = false
     @State private var isRefreshingVerdict = false
     @State private var isAdvancedExpanded = false
-    @State private var isPushingRunsToWatch = false
-    @State private var garminPushStatus: String?
-    /// JSON-encoded [String] of Garmin workout ids whose delete failed; the
-    /// next push attempt retries them (the sidecar tolerates 404s, so retried
-    /// deletes are idempotent).
-    @AppStorage("garminPendingDeleteIds") private var garminPendingDeleteIdsJSON = ""
 
     var profile: UserProfile
 
@@ -52,17 +47,32 @@ struct CoachView: View {
         coachPlannedSessions(from: sessions)
     }
 
+    private var latestConfirmedRun: RunLog? {
+        runLogs.first { !$0.needsConfirmation }
+    }
+
+    private var latestConfirmedRunID: UUID? {
+        latestConfirmedRun?.id
+    }
+
     private var latestVerdictIsStale: Bool {
-        coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: latestVerdict)
+        coachVerdictNeedsRefresh(
+            latestLog: latestLog,
+            latestConfirmedRun: latestConfirmedRun,
+            latestSnapshot: snapshots.first,
+            latestVerdict: latestVerdict
+        )
     }
 
     var body: some View {
         NavigationStack {
-            ScreenBackground(title: "AI Coach") {
+            // The inline navigation bar already says "Coach" — no second title.
+            ScreenBackground {
                 CoachVerdictCard(
                     verdict: latestVerdict,
                     latestPlan: latestPlan,
                     profile: profile,
+                    raceGoal: raceGoals.first,
                     historyCount: historyLogs.count,
                     isRefreshing: isRefreshingVerdict,
                     needsRefresh: needsVerdictRefresh || latestVerdictIsStale,
@@ -70,47 +80,39 @@ struct CoachView: View {
                     onRefresh: refreshCoachVerdict
                 )
 
-                Button(action: generateAIWeek) {
-                    Label(isGeneratingPlan ? "Planning" : "Plan my week", systemImage: "sparkles")
-                }
-                .buttonStyle(PrimaryActionButtonStyle())
-                .accessibilityIdentifier("plan-week-button")
-                .disabled(isGeneratingPlan || isPushingRunsToWatch)
-                .opacity(isGeneratingPlan || isPushingRunsToWatch ? 0.55 : 1)
-
-                if isGeneratingPlan {
-                    HStack(spacing: 10) {
-                        SwiftUI.ProgressView()
-                        Text("Planning your week — the running coach goes first, then strength. This takes a minute or two.")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.muted)
+                VStack(alignment: .leading, spacing: 10) {
+                    Button(action: generateAIWeek) {
+                        Label(isGeneratingPlan ? "Planning" : "Plan my week", systemImage: "sparkles")
                     }
-                    .card()
-                } else if let generationStatus {
-                    Text(generationStatus)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.muted)
-                        .card()
+                    .buttonStyle(PrimaryActionButtonStyle())
+                    .accessibilityIdentifier("plan-week-button")
+                    .disabled(isGeneratingPlan)
+
+                    if isGeneratingPlan {
+                        HStack(spacing: 10) {
+                            SwiftUI.ProgressView()
+                                .tint(AppTheme.muted)
+                            Text("Planning your week — the running coach goes first, then strength. This takes a minute or two.")
+                                .font(.footnote)
+                                .foregroundStyle(AppTheme.muted)
+                        }
+                        .padding(.top, 2)
+                    } else if let generationStatus {
+                        Text(generationStatus)
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.muted)
+                            .padding(.top, 2)
+                    }
                 }
-
-                GarminSyncRow(
-                    endpoint: endpoint,
-                    isPushing: isPushingRunsToWatch || isGeneratingPlan,
-                    pushStatus: garminPushStatus,
-                    onPush: pushRunsToWatchManually
-                )
-
-                CoachInputsCard(
-                    profile: profile,
-                    historyCount: historyLogs.count,
-                    plannedCount: plannedContextSessions.count,
-                    raceGoal: raceGoals.first
-                )
 
                 AdvancedCoachControls(
                     endpoint: endpoint,
                     selectedModelID: $selectedModelID,
-                    isExpanded: $isAdvancedExpanded
+                    isExpanded: $isAdvancedExpanded,
+                    profile: profile,
+                    historyCount: historyLogs.count,
+                    plannedCount: plannedContextSessions.count,
+                    raceGoal: raceGoals.first
                 )
             }
             .navigationTitle("Coach")
@@ -125,12 +127,15 @@ struct CoachView: View {
         .onChange(of: latestLogID) { _, _ in
             refreshCoachVerdictIfNeeded()
         }
+        .onChange(of: latestConfirmedRunID) { _, _ in
+            refreshCoachVerdictIfNeeded()
+        }
     }
 
     private func generateAIWeek() {
         // A replan while a push is in flight would delete sessions whose
         // garminWorkoutId has not landed yet, orphaning workouts on the watch.
-        guard !isPushingRunsToWatch else { return }
+        guard !GarminPushCoordinator.isPushing else { return }
         Task { await requestPlan() }
     }
 
@@ -139,7 +144,7 @@ struct CoachView: View {
     }
 
     private func refreshCoachVerdictIfNeeded() {
-        guard !isRefreshingVerdict, latestLog != nil else { return }
+        guard !isRefreshingVerdict, latestLog != nil || latestConfirmedRun != nil else { return }
         guard needsVerdictRefresh || latestVerdictIsStale else { return }
         refreshCoachVerdict()
     }
@@ -192,7 +197,11 @@ struct CoachView: View {
                     ? "Saved \(countText(strengthCount, "strength session")). The running week is already underway; no new runs were planned."
                     : "Saved \(countText(strengthCount, "strength session")) and \(countText(runCount, "run")). Today was left untouched."
                 await rescheduleRemindersReportingFailure()
-                if let watchNote = await pushPlannedRunsToWatch(stalePushedIds: stalePushedIds) {
+                if let watchNote = await GarminPushCoordinator.pushPlannedRuns(
+                    endpoint: endpoint,
+                    stalePushedIds: stalePushedIds,
+                    in: modelContext
+                ) {
                     generationStatus = [generationStatus, watchNote].compactMap { $0 }.joined(separator: " ")
                 }
             } else {
@@ -225,126 +234,6 @@ struct CoachView: View {
         }
     }
 
-    private static let watchRetryNote = "Runs are planned but not all on your watch yet — retry from the Garmin row."
-
-    /// Deletes stale Garmin workouts first (including ids stashed from earlier
-    /// failed deletes), then pushes every future planned run that is not on
-    /// the watch yet, and records the returned workout ids. All failures are
-    /// non-fatal — the plan is already saved and the Garmin row offers a
-    /// retry. Returns a short status note, or nil when there was nothing to do.
-    private func pushPlannedRunsToWatch(stalePushedIds: [String]) async -> String? {
-        guard let client = try? LocalCoachClient(endpointString: endpoint) else { return Self.watchRetryNote }
-
-        isPushingRunsToWatch = true
-        defer { isPushingRunsToWatch = false }
-
-        var notes: [String] = []
-        // Stash before deleting so the ids survive a failed call or an app
-        // exit; the drain retries the whole stash and keeps only what failed.
-        stashPendingDeletes(stalePushedIds)
-        let staleCleared = await drainPendingDeletes(client: client)
-        if !staleCleared {
-            notes.append("Some replaced workouts may still sit on your watch.")
-        }
-
-        do {
-            let workouts = garminPushWorkouts(from: try futurePlannedRunsAwaitingPush())
-            guard !workouts.isEmpty else {
-                return notes.isEmpty ? nil : notes.joined(separator: " ")
-            }
-
-            let response = try await client.pushWorkoutsToGarmin(workouts)
-            // A workout that uploaded but failed to schedule sits invisibly in
-            // the Garmin library; stash it for the best-effort delete below.
-            let unscheduledIds = response.results
-                .filter { !$0.scheduled }
-                .compactMap(\.garminWorkoutId)
-                .filter { !$0.isEmpty }
-            stashPendingDeletes(unscheduledIds)
-
-            // Re-fetch after the await: the pre-push session references may be
-            // stale by the time the response lands (same rule as AppShellView).
-            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
-            let scheduledCount = applyGarminPushResults(response.results, to: sessions)
-            try modelContext.save()
-
-            if !unscheduledIds.isEmpty {
-                _ = await drainPendingDeletes(client: client)
-            }
-
-            if scheduledCount == workouts.count, response.error == nil {
-                notes.append("\(countText(scheduledCount, "run")) on your watch.")
-            } else {
-                notes.append(Self.watchRetryNote)
-            }
-        } catch {
-            notes.append(Self.watchRetryNote)
-        }
-        return notes.joined(separator: " ")
-    }
-
-    // MARK: Pending Garmin deletes
-
-    private func loadPendingDeleteIds() -> [String] {
-        (try? JSONDecoder().decode([String].self, from: Data(garminPendingDeleteIdsJSON.utf8))) ?? []
-    }
-
-    private func savePendingDeleteIds(_ ids: [String]) {
-        garminPendingDeleteIdsJSON = (try? JSONEncoder().encode(ids))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-    }
-
-    /// Merges the ids into the retention stash, preserving order and dropping
-    /// duplicates.
-    private func stashPendingDeletes(_ ids: [String]) {
-        guard !ids.isEmpty else { return }
-        var merged = loadPendingDeleteIds()
-        var seen = Set(merged)
-        for id in ids where seen.insert(id).inserted {
-            merged.append(id)
-        }
-        savePendingDeleteIds(merged)
-    }
-
-    /// Tries to delete every stashed workout id and keeps only the failures
-    /// for the next push attempt. Returns true when the stash is empty
-    /// afterwards.
-    private func drainPendingDeletes(client: LocalCoachClient) async -> Bool {
-        let ids = loadPendingDeleteIds()
-        guard !ids.isEmpty else { return true }
-
-        var remaining = ids
-        if let response = try? await client.deleteGarminWorkouts(ids) {
-            let deletedIds = Set(response.results.filter(\.deleted).map(\.workoutId))
-            remaining = ids.filter { !deletedIds.contains($0) }
-        }
-        savePendingDeleteIds(remaining)
-        return remaining.isEmpty
-    }
-
-    /// Future planned runs that never made it onto the watch. Today's run is
-    /// excluded: it is locked during replans, so an existing watch workout
-    /// stays valid, and pushing a new one mid-day would land too late anyway.
-    private func futurePlannedRunsAwaitingPush() throws -> [WorkoutSession] {
-        let endOfToday = Calendar.current.dateInterval(of: .day, for: Date())?.end ?? Date()
-        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
-        return sessions.filter {
-            $0.discipline == .running &&
-            $0.status == .planned &&
-            $0.garminWorkoutId.isEmpty &&
-            $0.scheduledDate >= endOfToday
-        }
-    }
-
-    private func pushRunsToWatchManually() {
-        guard !isPushingRunsToWatch, !isGeneratingPlan else { return }
-        garminPushStatus = nil
-        Task {
-            let note = await pushPlannedRunsToWatch(stalePushedIds: [])
-            garminPushStatus = note ?? "All planned runs are already on your watch."
-        }
-    }
-
     private func rescheduleRemindersIfEnabled() async throws {
         guard profile.remindersEnabled else { return }
         let reminderSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
@@ -368,7 +257,7 @@ struct CoachView: View {
     }
 
     private func requestVerdict(sourceLogID: UUID?, showSuccess: Bool) async {
-        guard latestLog != nil else {
+        guard latestLog != nil || latestConfirmedRun != nil else {
             verdictStatus = "Log a session first, then I can refresh the coach read."
             return
         }
@@ -378,12 +267,16 @@ struct CoachView: View {
         defer { isRefreshingVerdict = false }
 
         do {
+            // The read sees the same world as the planner: race goal, runs,
+            // strength logs, and the wellness the proxy joins in.
             let request = makeCoachRequest(
                 profile: profile,
                 modelID: selectedModelID,
                 logs: logs,
                 sessions: sessions,
                 prescriptions: prescriptions,
+                raceGoal: raceGoals.first,
+                runLogs: runLogs,
                 weekStart: rollingPlanStart()
             )
             let response = try await LocalCoachClient(endpointString: endpoint).generateVerdict(request: request)
@@ -413,19 +306,38 @@ private struct CoachVerdictCard: View {
     var verdict: CoachVerdict?
     var latestPlan: CoachPlan?
     var profile: UserProfile
+    var raceGoal: RaceGoal?
     var historyCount: Int
     var isRefreshing: Bool
     var needsRefresh: Bool
     var status: String?
     var onRefresh: () -> Void
 
+    /// "14 WEEKS TO EIGER ULTRA 51K" — the lens every read is written through.
+    private var raceLensText: String? {
+        guard let raceGoal else { return nil }
+        let calendar = Calendar.current
+        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: raceGoal.raceDate).day ?? 0)
+        let weeks = (days + 6) / 7
+        let trimmedName = raceGoal.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = (trimmedName.isEmpty ? "Race" : trimmedName).uppercased()
+        if weeks == 0 { return "RACE WEEK — \(name)" }
+        return "\(weeks) \(weeks == 1 ? "WEEK" : "WEEKS") TO \(name)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Coach read", systemImage: "brain.head.profile")
-                    .font(.headline)
-                Spacer()
-                StatusPill(text: pillText, color: pillColor, systemImage: pillIcon)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Coach read")
+                        .font(.lockinSection)
+                        .foregroundStyle(AppTheme.text)
+                    Spacer()
+                    StatusPill(text: pillText, color: pillColor, systemImage: pillIcon)
+                }
+                if let raceLensText {
+                    MicroLabel(text: raceLensText, color: AppTheme.accent)
+                }
             }
 
             if let verdict {
@@ -440,7 +352,8 @@ private struct CoachVerdictCard: View {
 
             if isRefreshing {
                 SwiftUI.ProgressView("Reading latest session")
-                    .font(.caption)
+                    .font(.footnote)
+                    .tint(AppTheme.muted)
                     .foregroundStyle(AppTheme.muted)
             } else if needsRefresh {
                 Button(action: onRefresh) {
@@ -452,7 +365,7 @@ private struct CoachVerdictCard: View {
 
             if let status {
                 Text(status)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
         }
@@ -460,30 +373,36 @@ private struct CoachVerdictCard: View {
     }
 
     private func verdictContent(_ verdict: CoachVerdict) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(verdict.headline)
-                .font(.system(.title3, design: .rounded, weight: .bold))
-            Text(verdict.summary)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.text)
-            CoachReadSection(title: "Latest change", bodyText: verdict.latestChange)
-            CoachReadSection(title: "Recommendation", bodyText: verdict.recommendation)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verdict.headline)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
+                Text(verdict.summary)
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.muted)
+            }
+            CoachReadSection(title: "This week", bodyText: verdict.latestChange)
+            CoachReadSection(title: "One change", bodyText: verdict.recommendation)
             if verdict.shouldUpdatePlan {
                 CoachReadSection(title: "Plan signal", bodyText: "Current read recommends adapting the plan. Generate an AI week when you want the next sessions updated.")
             }
             if !verdict.safetyFlags.isEmpty {
-                CoachReadSection(title: "Watch", bodyText: verdict.safetyFlags.joined(separator: " "))
+                CoachReadSection(title: "Watch", bodyText: verdict.safetyFlags.joined(separator: " "), accent: true)
             }
         }
     }
 
     private var starterContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Ready for the first week")
-                .font(.system(.title3, design: .rounded, weight: .bold))
-            Text("I only know your starting numbers and goal for now: \(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, and a \(format(seconds: profile.goalPlankSeconds)) plank. Generate your first AI week, then I can react to real sessions.")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.text)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ready for the first week")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
+                Text("I only know your starting numbers and goal for now: \(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, and a \(format(seconds: profile.goalPlankSeconds)) plank. Generate your first AI week, then I can react to real sessions.")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.muted)
+            }
             CoachReadSection(
                 title: "Starting point",
                 bodyText: "I will keep the first week conservative and use your baseline, selected training days, equipment, target date, and any pain notes."
@@ -492,7 +411,7 @@ private struct CoachVerdictCard: View {
     }
 
     private func planSummaryContent(_ plan: CoachPlan) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Text(plan.summary)
                 .font(.subheadline)
                 .foregroundStyle(AppTheme.text)
@@ -501,12 +420,13 @@ private struct CoachVerdictCard: View {
     }
 
     private var waitingContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("Coach read needed")
-                .font(.system(.title3, design: .rounded, weight: .bold))
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(AppTheme.text)
             Text("You have logged training data, but I have not refreshed the coach read yet.")
                 .font(.subheadline)
-                .foregroundStyle(AppTheme.text)
+                .foregroundStyle(AppTheme.muted)
         }
     }
 
@@ -539,18 +459,46 @@ func coachVerdictNeedsRefresh(latestLog: PerformanceLog?, latestVerdict: CoachVe
     return latestLog.completedAt > latestVerdict.createdAt
 }
 
+/// Hybrid staleness: a newer strength log, a newer confirmed run, or a fresh
+/// morning snapshot the current read predates all mark the verdict stale.
+/// Without any training history the starter read stays — wellness alone is
+/// nothing to coach on.
+func coachVerdictNeedsRefresh(
+    latestLog: PerformanceLog?,
+    latestConfirmedRun: RunLog?,
+    latestSnapshot: GarminDailySnapshot?,
+    latestVerdict: CoachVerdict?
+) -> Bool {
+    guard latestLog != nil || latestConfirmedRun != nil else { return false }
+    guard let latestVerdict else { return true }
+    if latestLog != nil, coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: latestVerdict) {
+        return true
+    }
+    if let latestConfirmedRun, latestConfirmedRun.completedAt > latestVerdict.createdAt {
+        return true
+    }
+    if let latestSnapshot {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(latestSnapshot.date),
+           latestVerdict.createdAt < calendar.startOfDay(for: Date()) {
+            return true
+        }
+    }
+    return false
+}
+
 private struct CoachReadSection: View {
     var title: String
     var bodyText: String
+    var accent: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased())
-                .font(.caption.weight(.bold))
-                .foregroundStyle(AppTheme.muted)
+        VStack(alignment: .leading, spacing: 5) {
+            MicroLabel(text: title.uppercased(), color: accent ? AppTheme.accent : AppTheme.faint)
             Text(bodyText)
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.text.opacity(0.88))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -563,25 +511,26 @@ private struct CoachInputsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("What I'll use", systemImage: "list.clipboard")
-                .font(.headline)
-            InfoLine(title: "Starting point", value: "\(profile.baselinePullUps) pull-ups, \(profile.baselinePushUps) push-ups, \(format(seconds: profile.baselinePlankSeconds)) plank")
-            InfoLine(title: "Goal", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
-            InfoLine(title: "Week shape", value: "\(profile.trainingDayLabels.joined(separator: ", ")) until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("coach-week-shape")
-            if let raceGoal {
-                InfoLine(title: "Race goal", value: raceGoalSummary(raceGoal))
-                InfoLine(title: "Weeks to race", value: weeksToRaceText(raceGoal))
-                InfoLine(title: "Running days", value: runningDaysText)
+            SectionHeader("What I'll use")
+            VStack(spacing: 10) {
+                InfoLine(title: "Starting point", value: "\(profile.baselinePullUps) pull-ups, \(profile.baselinePushUps) push-ups, \(format(seconds: profile.baselinePlankSeconds)) plank")
+                InfoLine(title: "Goal", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
+                InfoLine(title: "Week shape", value: "\(profile.trainingDayLabels.joined(separator: ", ")) until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("coach-week-shape")
+                if let raceGoal {
+                    InfoLine(title: "Race goal", value: raceGoalSummary(raceGoal))
+                    InfoLine(title: "Weeks to race", value: weeksToRaceText(raceGoal))
+                    InfoLine(title: "Running days", value: runningDaysText)
+                }
+                InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
+                InfoLine(title: "Log context", value: plannedCount == 0 ? "No sessions in Log yet" : "\(plannedCount) recent or upcoming sessions from Log")
             }
-            InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
-            InfoLine(title: "Log context", value: plannedCount == 0 ? "No sessions in Log yet" : "\(plannedCount) recent or upcoming sessions from Log")
             if !profile.painNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 CoachReadSection(title: "Notes", bodyText: profile.painNotes)
             }
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 
     private func raceGoalSummary(_ goal: RaceGoal) -> String {
@@ -606,100 +555,33 @@ private struct CoachInputsCard: View {
     }
 }
 
-private struct GarminSyncRow: View {
-    var endpoint: String
-    var isPushing: Bool
-    var pushStatus: String?
-    var onPush: () -> Void
-
-    @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
-    @State private var status: GarminStatusResponse?
-    @State private var statusFailed = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Garmin", systemImage: "applewatch")
-                    .font(.headline)
-                Spacer()
-                StatusPill(text: pillText, color: pillColor, systemImage: pillIcon)
-            }
-
-            InfoLine(title: "Last sync", value: lastSyncText)
-
-            if let lastError = status?.lastError, !lastError.isEmpty {
-                Text(lastError)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
-            }
-
-            Button(action: onPush) {
-                Label(isPushing ? "Pushing runs" : "Push runs to watch", systemImage: "arrow.up.circle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .accessibilityIdentifier("garmin-push-retry")
-            .disabled(isPushing)
-            .opacity(isPushing ? 0.55 : 1)
-
-            if let pushStatus {
-                Text(pushStatus)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
-            }
-        }
-        .card()
-        .task { await loadStatus() }
-    }
-
-    private var lastSyncText: String {
-        relativeSyncText(epochSeconds: garminLastSyncAt)
-    }
-
-    private var pillText: String {
-        guard let status else { return statusFailed ? "Unreachable" : "Checking" }
-        return status.displayState.text
-    }
-
-    private var pillColor: Color {
-        guard let status else { return statusFailed ? AppTheme.warning : AppTheme.muted }
-        return status.displayState.isHealthy ? AppTheme.accent : AppTheme.warning
-    }
-
-    private var pillIcon: String {
-        guard let status else { return statusFailed ? "exclamationmark.triangle.fill" : "hourglass" }
-        return status.displayState.isHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-    }
-
-    private func loadStatus() async {
-        do {
-            status = try await LocalCoachClient(endpointString: endpoint).fetchGarminStatus()
-            statusFailed = false
-        } catch {
-            status = nil
-            statusFailed = true
-        }
-    }
-}
-
 private struct AdvancedCoachControls: View {
     var endpoint: String
     @Binding var selectedModelID: String
     @Binding var isExpanded: Bool
+    var profile: UserProfile
+    var historyCount: Int
+    var plannedCount: Int
+    var raceGoal: RaceGoal?
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 14) {
-                Divider()
+        DisclosureGroup(isExpanded: $isExpanded.animation(.smooth(duration: 0.3))) {
+            VStack(alignment: .leading, spacing: 18) {
+                CoachInputsCard(
+                    profile: profile,
+                    historyCount: historyCount,
+                    plannedCount: plannedCount,
+                    raceGoal: raceGoal
+                )
                 CoachModelControls(endpoint: endpoint, selectedModelID: $selectedModelID)
             }
-            .padding(.top, 8)
+            .padding(.top, 12)
         } label: {
-            Label("Advanced", systemImage: "slider.horizontal.3")
-                .font(.headline)
-                .foregroundStyle(AppTheme.text)
+            Text("Advanced")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(AppTheme.muted)
         }
-        .card()
+        .tint(AppTheme.faint)
     }
 }
 
@@ -722,24 +604,30 @@ private struct CoachModelControls: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Model", systemImage: "cpu")
-                .font(.subheadline.weight(.semibold))
-
-            Picker("Model", selection: normalizedSelection) {
-                ForEach(modelOptions, id: \.self) { modelID in
-                    Text(modelID).tag(modelID)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Model")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(AppTheme.text)
+                Spacer()
+                Picker("Model", selection: normalizedSelection) {
+                    ForEach(modelOptions, id: \.self) { modelID in
+                        Text(modelID).tag(modelID)
+                    }
                 }
+                .pickerStyle(.menu)
+                .tint(AppTheme.accent)
             }
-            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if isRefreshing {
                 SwiftUI.ProgressView("Loading OpenAI models")
-                    .font(.caption)
+                    .font(.footnote)
+                    .tint(AppTheme.muted)
                     .foregroundStyle(AppTheme.muted)
             } else if let status {
                 Text(status)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
         }

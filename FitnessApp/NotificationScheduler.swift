@@ -41,8 +41,8 @@ struct WorkoutNotificationScheduler: NotificationScheduling {
             ) else { continue }
 
             let content = UNMutableNotificationContent()
-            content.title = "Training due"
-            content.body = "\(session.title): skip it and the score pays."
+            content.title = "\(session.title) today"
+            content.body = reminderBody(for: session)
             content.sound = .default
 
             let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: reminderDate)
@@ -54,6 +54,27 @@ struct WorkoutNotificationScheduler: NotificationScheduling {
 
     func clearWorkoutReminders() {
         center.removeAllPendingNotificationRequests()
+    }
+
+    /// The reminder names the actual work — "12 km · ~75 min" beats a
+    /// generic nag — and keeps the accountability line.
+    private func reminderBody(for session: WorkoutSession) -> String {
+        var parts: [String] = []
+        if session.isRun {
+            if session.plannedDistanceKm > 0 {
+                parts.append(runDistanceText(km: session.plannedDistanceKm))
+            }
+            if session.plannedElevationM > 0 {
+                parts.append("\(session.plannedElevationM) m+")
+            }
+        }
+        if session.estimatedDurationMinutes > 0 {
+            parts.append("~\(session.estimatedDurationMinutes) min")
+        }
+        let detail = parts.joined(separator: " · ")
+        return detail.isEmpty
+            ? "Skip it and the score pays."
+            : "\(detail) — skip it and the score pays."
     }
 }
 

@@ -59,8 +59,10 @@ struct AppShellView: View {
 
     /// Pulls the Garmin snapshot at most every 30 minutes. All failures stay
     /// silent here; Settings surfaces the Garmin status and sync errors
-    /// separately.
+    /// separately. UI tests run against the in-memory store and must stay
+    /// hermetic: a live sync would pour real account data into seeded state.
     private func syncGarminIfDue() {
+        guard !ProcessInfo.processInfo.arguments.contains("UITesting") else { return }
         guard !isSyncingGarmin else { return }
         guard Date().timeIntervalSince1970 - garminLastSyncAt > Self.garminSyncInterval else { return }
 
@@ -68,8 +70,13 @@ struct AppShellView: View {
         Task {
             defer { isSyncingGarmin = false }
             do {
-                _ = try await performGarminSync(endpoint: coachEndpoint, in: modelContext)
+                let ingested = try await performGarminSync(endpoint: coachEndpoint, in: modelContext)
                 garminLastSyncAt = Date().timeIntervalSince1970
+                if ingested.importedRuns > 0 {
+                    // Auto-imported confirmed runs are new training data for
+                    // the coach read; pending ones wait for confirmation.
+                    UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+                }
             } catch {
                 // Swallowed by design: performGarminSync already rolled back
                 // any partial ingest, and the next foreground retries.

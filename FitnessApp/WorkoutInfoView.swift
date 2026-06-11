@@ -46,9 +46,10 @@ struct WorkoutInfoContent: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 20) {
                 Text(prescription.exercise.title)
-                    .font(.headline)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
 
                 WorkoutTimerCard(prescription: prescription, onDone: onDone)
 
@@ -59,8 +60,8 @@ struct WorkoutInfoContent: View {
                     bodyText: exerciseMovementDescription(prescription.exercise)
                 )
             }
-            .padding(16)
-            .frame(maxWidth: 360, alignment: .leading)
+            .padding(AppTheme.screenMargin)
+            .frame(maxWidth: 380, alignment: .leading)
         }
         .background(AppTheme.background)
         .onAppear(perform: disableIdleTimer)
@@ -84,26 +85,24 @@ private struct WorkoutSummaryCard: View {
     var prescription: SetPrescription
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             InfoLine(title: "Target", value: workoutTargetText(prescription))
             InfoLine(title: "Rest", value: durationText(seconds: prescription.restSeconds))
             if let effortLabel = prescription.plannedEffortLabel {
                 InfoLine(
                     title: "Planned effort",
                     value: plannedEffortText(effortLabel),
-                    valueColor: effortValueColor(effortLabel)
+                    valueColor: AppTheme.effortColor(effortLabel)
                 )
             }
             if !prescription.plannedEffortReason.isEmpty {
                 Text(prescription.plannedEffortReason)
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.muted)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.faint)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(10)
-        .background(AppTheme.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+        .ruled(verticalPadding: 14)
     }
 
     private func plannedEffortText(_ label: PlannedEffortLabel) -> String {
@@ -112,14 +111,6 @@ private struct WorkoutSummaryCard: View {
         }
         return label.title
     }
-
-    private func effortValueColor(_ label: PlannedEffortLabel) -> Color {
-        switch label {
-        case .light: AppTheme.accent
-        case .medium: AppTheme.gold
-        case .hard, .veryHard, .maxOutput: AppTheme.warning
-        }
-    }
 }
 
 private struct WorkoutInfoSection: View {
@@ -127,12 +118,10 @@ private struct WorkoutInfoSection: View {
     var bodyText: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.subheadline.bold())
-                .foregroundStyle(AppTheme.text)
+        VStack(alignment: .leading, spacing: 6) {
+            MicroLabel(text: title.uppercased())
             Text(bodyText)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(AppTheme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -161,7 +150,7 @@ private struct WorkoutTimerCard: View {
             if phases.isEmpty {
                 InfoLine(title: "Target", value: "None")
             } else {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 14) {
                     phaseControls
 
                     TimerPhaseStrip(
@@ -172,15 +161,16 @@ private struct WorkoutTimerCard: View {
                     )
 
                     Text(nextPhaseText)
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.muted)
+                        .font(.system(size: 12))
+                        .foregroundStyle(AppTheme.faint)
                         .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
         }
-        .padding(10)
-        .background(AppTheme.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+        .padding(.vertical, 6)
+        .sensoryFeedback(.impact(weight: .light), trigger: phaseIndex)
+        .sensoryFeedback(.success, trigger: isFinished) { _, newValue in newValue }
         .onAppear(perform: resetTimer)
         .onReceive(ticker) { _ in
             tickTimer()
@@ -220,17 +210,21 @@ private struct WorkoutTimerCard: View {
     }
 
     private var phaseValueLabel: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 8) {
+        VStack(spacing: 0) {
             Text(displayValueText)
-                .font(.system(size: 52, weight: .bold, design: .rounded))
+                .font(.system(size: 56, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(AppTheme.text)
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.6)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(.snappy(duration: 0.25), value: displayValueText)
             Text(displayUnitText)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.muted)
-                .lineLimit(2)
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.4)
+                .textCase(.uppercase)
+                .foregroundStyle(currentPhase?.kind == .rest && !isFinished ? AppTheme.accent : AppTheme.muted)
+                .lineLimit(1)
         }
         .contentShape(Rectangle())
     }
@@ -383,15 +377,27 @@ private struct TimerPlaybackButton: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(AppTheme.text)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(AppTheme.surface))
-                .overlay(Capsule().stroke(AppTheme.divider, lineWidth: 1))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(AppTheme.accentInk)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(Capsule().fill(AppTheme.accent))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCircleStyle())
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityLabel(title)
+    }
+}
+
+/// Shared press physics for the timer's compact controls.
+private struct PressableCircleStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .brightness(configuration.isPressed ? -0.07 : 0)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .animation(.snappy(duration: 0.2), value: configuration.isPressed)
     }
 }
 
@@ -404,13 +410,13 @@ private struct PhaseControlButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(isEnabled ? AppTheme.text : AppTheme.muted.opacity(0.45))
-                .frame(width: 38, height: 38)
-                .background(Circle().fill(AppTheme.surface))
-                .overlay(Circle().stroke(AppTheme.divider, lineWidth: 1))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(isEnabled ? AppTheme.text : AppTheme.faint.opacity(0.6))
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(AppTheme.surfaceRaised))
+                .overlay(Circle().strokeBorder(AppTheme.divider, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableCircleStyle())
         .disabled(!isEnabled)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -430,14 +436,17 @@ private struct TimerPhaseStrip: View {
                 } label: {
                     Capsule()
                         .fill(color(for: phase, at: index))
-                        .frame(height: 7)
+                        .frame(height: index == phaseIndex && !isFinished ? 7 : 4)
                         .frame(maxWidth: .infinity)
+                        .frame(height: 16)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(phase.stripAccessibilityLabel)
             }
         }
+        .animation(.snappy(duration: 0.25), value: phaseIndex)
+        .animation(.snappy(duration: 0.25), value: isFinished)
     }
 
     private func color(for phase: WorkoutTimerPhase, at index: Int) -> Color {
@@ -445,7 +454,7 @@ private struct TimerPhaseStrip: View {
             return AppTheme.accent
         }
         if index == phaseIndex {
-            return phase.kind == .work ? AppTheme.accent : AppTheme.gold
+            return phase.kind == .work ? AppTheme.accent : AppTheme.accent.opacity(0.55)
         }
         return AppTheme.divider
     }

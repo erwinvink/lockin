@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
+    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     // Configuration, not state: fixed per build flavor (see LocalCoachClient).
     private let coachEndpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
@@ -27,6 +28,7 @@ struct SettingsView: View {
                 RunningGoalCard(
                     profile: profile,
                     raceGoal: raceGoals.first,
+                    hasConfirmedRuns: runLogs.contains { !$0.needsConfirmation },
                     onCreateGoal: createRaceGoal,
                     onRemoveGoal: removeRaceGoal,
                     onRunningDaysChange: saveRunningDays,
@@ -43,6 +45,10 @@ struct SettingsView: View {
                     resetError: resetError,
                     onResetTap: { isShowingResetConfirmation = true }
                 )
+                Text("iCloud · \(ModelContainerFactory.cloudKitContainerIdentifier)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.faint)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
             .alert("Wipe all app data?", isPresented: $isShowingResetConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -175,26 +181,21 @@ private struct ProfileSummaryCard: View {
     var profile: UserProfile
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(profile.name)
-                        .font(.system(.title2, design: .rounded, weight: .bold))
-                    Text("Target: \(profile.targetDate, format: .dateTime.day().month().year())")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.muted)
-                }
-                Spacer()
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 42))
-                    .foregroundStyle(AppTheme.accent)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(profile.name)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(AppTheme.text)
+                Text("Target: \(profile.targetDate, format: .dateTime.day().month().year())")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(AppTheme.muted)
             }
-            Divider()
-            InfoLine(title: "Goals", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
-            InfoLine(title: "Training days", value: profile.trainingDayLabels.joined(separator: ", "))
-            InfoLine(title: "iCloud container", value: ModelContainerFactory.cloudKitContainerIdentifier)
+            VStack(spacing: 10) {
+                InfoLine(title: "Goals", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
+                InfoLine(title: "Training days", value: profile.trainingDayLabels.joined(separator: ", "))
+            }
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -211,18 +212,18 @@ private struct WeekScheduleCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Week schedule")
-                .font(.headline)
+            SectionHeader("Week schedule")
             TrainingDaysPicker(selectedDays: selectedDays)
             InfoLine(title: "AI week shape", value: profile.trainingDayLabels.joined(separator: ", "))
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
 private struct RunningGoalCard: View {
     var profile: UserProfile
     var raceGoal: RaceGoal?
+    var hasConfirmedRuns: Bool = false
     var onCreateGoal: () -> Void
     var onRemoveGoal: () -> Void
     var onRunningDaysChange: (Set<TrainingWeekday>) -> Void
@@ -231,12 +232,12 @@ private struct RunningGoalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Running")
-                .font(.headline)
+            SectionHeader("Running")
             if let raceGoal {
                 RaceGoalEditor(
                     profile: profile,
                     goal: raceGoal,
+                    hasConfirmedRuns: hasConfirmedRuns,
                     onRemoveGoal: onRemoveGoal,
                     onRunningDaysChange: onRunningDaysChange,
                     onLongRunDayChange: onLongRunDayChange,
@@ -244,7 +245,7 @@ private struct RunningGoalCard: View {
                 )
             } else {
                 Text("Set a race goal to unlock the ultra coach.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
                 Button(action: onCreateGoal) {
                     Label("Set up running", systemImage: "figure.run")
@@ -254,13 +255,14 @@ private struct RunningGoalCard: View {
                 .accessibilityIdentifier("running-setup-button")
             }
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
 private struct RaceGoalEditor: View {
     var profile: UserProfile
     var goal: RaceGoal
+    var hasConfirmedRuns: Bool = false
     var onRemoveGoal: () -> Void
     var onRunningDaysChange: (Set<TrainingWeekday>) -> Void
     var onLongRunDayChange: (TrainingWeekday) -> Void
@@ -270,15 +272,28 @@ private struct RaceGoalEditor: View {
         VStack(alignment: .leading, spacing: 14) {
             TextField("Race name", text: nameBinding)
                 .textInputAutocapitalization(.words)
-                .textFieldStyle(.roundedBorder)
+                .font(.subheadline)
+                .lockinField()
             DatePicker("Race date", selection: raceDateBinding, displayedComponents: .date)
+                .font(.subheadline.weight(.medium))
+                .tint(AppTheme.accent)
             IntegerField(title: "Distance", value: distanceBinding, range: 1...500, suffix: "km")
             IntegerField(title: "Elevation gain", value: elevationBinding, range: 0...30_000, suffix: "m+")
-            IntegerField(title: "Baseline weekly volume", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
-            IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
-            Text("Both are kept up to date automatically from your Garmin runs; manual values only matter until real runs sync.")
-                .font(.caption2)
-                .foregroundStyle(AppTheme.muted)
+            if hasConfirmedRuns {
+                // Real run history owns these numbers; editable fields here
+                // would be silently overwritten on the next sync.
+                InfoLine(title: "Baseline weekly volume", value: "\(Int(goal.baselineWeeklyKm.rounded())) km")
+                InfoLine(title: "Longest recent run", value: "\(Int(goal.longestRecentRunKm.rounded())) km")
+                Text("Updated automatically from your confirmed Garmin runs.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.faint)
+            } else {
+                IntegerField(title: "Baseline weekly volume", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
+                IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
+                Text("Starting estimates — once real runs sync from Garmin these update themselves.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.faint)
+            }
             TrainingDaysPicker(
                 selectedDays: runningDaysBinding,
                 title: "Running days",
@@ -386,15 +401,14 @@ private struct GarminCard: View {
     @State private var status: GarminStatusResponse?
     @State private var statusFailed = false
     @State private var isSyncing = false
+    @State private var isPushing = false
     @State private var syncResult: String?
     @State private var syncError: String?
+    @State private var pushStatus: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Garmin")
-                    .font(.headline)
-                Spacer()
+            SectionHeader("Garmin") {
                 StatusPill(text: statusText, color: statusColor, systemImage: statusIcon)
             }
 
@@ -402,7 +416,7 @@ private struct GarminCard: View {
 
             if let lastError = status?.lastError, !lastError.isEmpty {
                 Text(lastError)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
 
@@ -417,25 +431,52 @@ private struct GarminCard: View {
 
             if let syncResult {
                 Text(syncResult)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
 
             if let syncError {
                 Text(syncError)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.warning)
             }
 
-            Text("Garmin login lives on the lockin server. If this shows Not logged in, run the login step on the server.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
-            Text("When Garmin is unreachable, coaching continues from your logged training.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+            Button(action: pushRunsToWatch) {
+                Label(isPushing ? "Pushing runs" : "Push runs to watch", systemImage: "arrow.up.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .accessibilityIdentifier("garmin-push-retry")
+            .disabled(isPushing)
+            .opacity(isPushing ? 0.55 : 1)
+
+            if let pushStatus {
+                Text(pushStatus)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.muted)
+            }
+
+            Text("Garmin login lives on the lockin server. If this shows Not logged in, run the login step on the server. When Garmin is unreachable, coaching continues from your logged training.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.faint)
         }
-        .card()
+        .ruled(verticalPadding: 16)
         .task { await loadStatus() }
+    }
+
+    private func pushRunsToWatch() {
+        guard !isPushing, !GarminPushCoordinator.isPushing else { return }
+        isPushing = true
+        pushStatus = nil
+        Task {
+            defer { isPushing = false }
+            let note = await GarminPushCoordinator.pushPlannedRuns(
+                endpoint: endpoint,
+                stalePushedIds: [],
+                in: modelContext
+            )
+            pushStatus = note ?? "All planned runs are already on your watch."
+        }
     }
 
     private var statusText: String {
@@ -473,6 +514,9 @@ private struct GarminCard: View {
             do {
                 let ingested = try await performGarminSync(endpoint: endpoint, in: modelContext)
                 garminLastSyncAt = Date().timeIntervalSince1970
+                if ingested.importedRuns > 0 {
+                    UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+                }
                 var parts: [String] = []
                 if ingested.importedRuns > 0 {
                     parts.append("\(ingested.importedRuns) \(ingested.importedRuns == 1 ? "run" : "runs") imported")
@@ -496,8 +540,7 @@ private struct ReminderSettingsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Reminder")
-                .font(.headline)
+            SectionHeader("Reminder")
 
             Toggle("Enabled", isOn: Binding(
                 get: { profile.remindersEnabled },
@@ -505,6 +548,7 @@ private struct ReminderSettingsCard: View {
                     onReminderToggle(newValue)
                 }
             ))
+            .font(.subheadline.weight(.medium))
             .tint(AppTheme.accent)
 
             DatePicker(
@@ -515,9 +559,11 @@ private struct ReminderSettingsCard: View {
                 ),
                 displayedComponents: .hourAndMinute
             )
+            .font(.subheadline.weight(.medium))
+            .tint(AppTheme.accent)
             .accessibilityIdentifier("reminder-time-picker")
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
 
@@ -527,11 +573,10 @@ private struct ResetCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Reset")
-                .font(.headline)
+            SectionHeader("Reset")
             Text("Deletes profile, measurements, goals, race goal, sessions, logs, runs, streak data, coach plans, coach decisions, and pending workout reminders.")
-                .font(.caption)
-                .foregroundStyle(AppTheme.muted)
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.faint)
             Button(role: .destructive, action: onResetTap) {
                 Label("Wipe all app data", systemImage: "trash")
                     .frame(maxWidth: .infinity)
@@ -539,10 +584,10 @@ private struct ResetCard: View {
             .buttonStyle(SecondaryActionButtonStyle())
             if let resetError {
                 Text(resetError)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(AppTheme.warning)
             }
         }
-        .card()
+        .ruled(verticalPadding: 16)
     }
 }
