@@ -45,7 +45,7 @@ export type GarminDeleteResponse = { results: GarminDeleteResult[]; error?: stri
 export type GarminRequestOptions = { timeoutMs?: number };
 export type GarminSnapshotOptions = GarminRequestOptions & {
   includeActivities?: boolean;
-  /** Activity lookback in days (default 60, capped 1..60). */
+  /** Activity lookback in days (default 90, capped 1..90 — two CTL time constants of history). */
   activityDays?: number;
 };
 
@@ -77,7 +77,7 @@ export async function garminSnapshot(
   // Activities are ONE upstream Garmin call regardless of range (unlike
   // wellness at ~4 calls per day), so a deep window is cheap and gives the
   // coaches real training history instead of a one-week peephole.
-  const activityDays = Number.isFinite(options.activityDays ?? NaN) ? (options.activityDays as number) : 60;
+  const activityDays = Number.isFinite(options.activityDays ?? NaN) ? (options.activityDays as number) : 90;
   // A cold sidecar cache can serialize ~29 upstream Garmin calls, so the
   // default budget is generous; latency-sensitive callers pass a smaller one.
   const timeoutMs = options.timeoutMs ?? 120_000;
@@ -89,7 +89,7 @@ export async function garminSnapshot(
     requestJSON(`/wellness?days=${clamp(days, 1, 30)}`, fetchImpl, timeoutMs),
     options.includeActivities === false
       ? Promise.resolve<SidecarResult>({ ok: true, data: [] })
-      : requestJSON(`/activities?days=${clamp(activityDays, 1, 60)}`, fetchImpl, timeoutMs)
+      : requestJSON(`/activities?days=${clamp(activityDays, 1, 90)}`, fetchImpl, timeoutMs)
   ]);
 
   const failures = [...new Set([wellness, activities].flatMap((result) => (result.ok ? [] : [result.error])))];

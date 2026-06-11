@@ -5,7 +5,7 @@ garmin_mapping.py stays pure. The Node proxy calls this over localhost:
 
     GET  /status
     GET  /wellness?days=N      (default 7, max 30, most recent first)
-    GET  /activities?days=N    (default 14, max 60, most recent first)
+    GET  /activities?days=N    (default 14, max 90, most recent first)
     POST /workouts/push        {"workouts": [...]}
     POST /workouts/delete      {"workoutIds": [...]}
 
@@ -257,7 +257,7 @@ def wellness(days: int = Query(default=7)) -> list[dict[str, Any]]:
 def activities(days: int = Query(default=14)) -> list[dict[str, Any]]:
     """Running activities (running/trail_running/ultra/... only), most recent
     first (Garmin's default sort). Returns [] when not logged in."""
-    days = max(1, min(days, 60))
+    days = max(1, min(days, 90))
     client = _get_client()
     if client is None:
         return []

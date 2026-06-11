@@ -188,18 +188,19 @@ test("clamps weeksToRace to zero when the race date is unparseable", () => {
   assert.equal(context.running?.weeksToRace, 0);
 });
 
-test("caps recentRuns to the most recent 20 sorted ascending by completedAt", () => {
-  const runs = Array.from({ length: 25 }, (_, index) =>
-    runSummary(`2026-03-${String(index + 1).padStart(2, "0")}T08:00:00Z`)
-  );
+test("caps recentRuns to the most recent 30 sorted ascending by completedAt", () => {
+  // 30 runs at 3-4 runs/week spans roughly the 90-day activity lookback.
+  const runs = Array.from({ length: 35 }, (_, index) =>
+    new Date(Date.UTC(2026, 2, 1 + index, 8)).toISOString().replace(".000Z", "Z")
+  ).map((date) => runSummary(date));
   const request = baseRequest({ running: runningRequest({ recentRuns: [...runs].reverse() }) });
 
   const context = buildCoachContext(request, new Date("2026-05-27T12:00:00Z"));
 
   const completedDates = context.running?.recentRuns.map((run) => run.completedAt) ?? [];
-  assert.equal(completedDates.length, 20);
+  assert.equal(completedDates.length, 30);
   assert.equal(completedDates[0], "2026-03-06T08:00:00Z");
-  assert.equal(completedDates.at(-1), "2026-03-25T08:00:00Z");
+  assert.equal(completedDates.at(-1), "2026-04-04T08:00:00Z");
   assert.deepEqual(completedDates, [...completedDates].sort());
 });
 

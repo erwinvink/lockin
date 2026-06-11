@@ -65,7 +65,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
           runningDayOffsets: normalizeFutureDayOffsets(request.running.runningDayOffsets),
           recentRuns: [...request.running.recentRuns]
             .sort((a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime())
-            .slice(-20),
+            .slice(-30),
           weeksToRace: weeksToRace(request.running.raceGoal.raceDate, request.weekStart)
         }
       : undefined
