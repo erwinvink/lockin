@@ -29,11 +29,22 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(message.contains("Coolify environment variables"))
     }
 
-    func testCoachClientDefaultsToLocalProxyInDebugBuilds() throws {
-        // Tests always compile in Debug, where the default endpoint is the local dev proxy.
-        let client = try LocalCoachClient()
+    func testDevelopmentEndpointFallsBackToLoopbackProxy() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: [:]),
+            "http://127.0.0.1:8787/generate-week-plan"
+        )
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "   "]),
+            "http://127.0.0.1:8787/generate-week-plan"
+        )
+    }
 
-        XCTAssertEqual(client.endpoint.absoluteString, "http://127.0.0.1:8787/generate-week-plan")
+    func testDevelopmentEndpointHonorsSchemeEnvironmentOverride() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "http://192.168.1.20:8787"]),
+            "http://192.168.1.20:8787"
+        )
     }
 
     func testHostedEndpointStringPointsAtProductionProxy() {

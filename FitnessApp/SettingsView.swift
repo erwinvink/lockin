@@ -7,7 +7,8 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
-    @AppStorage("coachProxyEndpoint") private var coachEndpoint = LocalCoachClient.defaultEndpointString
+    // Configuration, not state: fixed per build flavor (see LocalCoachClient).
+    private let coachEndpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false

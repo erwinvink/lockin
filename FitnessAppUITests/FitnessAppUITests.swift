@@ -67,7 +67,11 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Rules"].exists)
         tapWhenReady(app.buttons["Advanced"], in: app)
         XCTAssertTrue(app.staticTexts["Model"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Proxy status"].exists)
+        // The proxy endpoint is configuration, not app state: no proxy status,
+        // endpoint display, or endpoint editing may exist anywhere in the app.
+        XCTAssertFalse(app.staticTexts["Proxy status"].exists)
+        XCTAssertFalse(app.buttons["Check proxy"].exists)
+        XCTAssertFalse(app.textFields["Proxy endpoint"].exists)
         XCTAssertFalse(app.textFields["Custom model ID"].exists)
         XCTAssertFalse(app.staticTexts["Technical checks"].exists)
     }

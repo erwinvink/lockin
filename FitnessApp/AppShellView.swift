@@ -7,7 +7,8 @@ struct AppShellView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @Query private var ranks: [RankState]
-    @AppStorage("coachProxyEndpoint") private var coachEndpoint = LocalCoachClient.defaultEndpointString
+    // Configuration, not state: fixed per build flavor (see LocalCoachClient).
+    private let coachEndpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
     @State private var isSyncingGarmin = false
 

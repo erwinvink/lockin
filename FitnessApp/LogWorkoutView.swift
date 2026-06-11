@@ -14,7 +14,8 @@ struct LogWorkoutView: View {
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var previousLogs: [PerformanceLog]
-    @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
+    // Configuration, not state: fixed per build flavor (see LocalCoachClient).
+    private let endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
 
     var session: WorkoutSession

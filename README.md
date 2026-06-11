@@ -167,16 +167,17 @@ xcodebuild test \
   -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
-## Run the proxy locally
+## Run the backend locally
+
+One command starts the full local backend — the coach proxy and the Garmin sidecar, always together:
 
 ```bash
-cd Proxy
-npm install
-cp .env.example .env
-npm run dev
+./scripts/dev.sh
 ```
 
-Debug builds of the iOS app (anything run from Xcode) default to this local proxy at `http://127.0.0.1:8787` instead of the hosted one, so development never depends on production. Release/TestFlight builds compile the local path out and stay pinned to `https://lockin.elevenfactor.com`. In a debug build, Coach → Advanced shows the active endpoint with Local/Hosted switch buttons; on a physical iPhone use the Mac's LAN IP (for example `http://192.168.1.20:8787`) instead of `127.0.0.1`.
+It installs missing dependencies on first run, reports whether the local Garmin login is connected (one-time fix: `cd GarminService && .venv/bin/python main.py login`), and stops both servers on Ctrl-C.
+
+The proxy endpoint is configuration, not app state: it is never stored on the device and never shown or editable in the app. Debug builds (anything run from Xcode) talk to `http://127.0.0.1:8787`; Release/TestFlight builds compile the local path out and stay pinned to `https://lockin.elevenfactor.com`. The only override is the `COACH_PROXY_ENDPOINT` environment variable in the Xcode scheme (Product → Scheme → Edit Scheme → Run → Arguments → Environment Variables) — set it to the Mac's LAN IP (for example `http://192.168.1.20:8787`) when running on a physical iPhone.
 
 Put the real key in `Proxy/.env`:
 

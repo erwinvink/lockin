@@ -10,7 +10,8 @@ struct CoachView: View {
     @Query(sort: \CoachVerdict.createdAt, order: .reverse) private var verdicts: [CoachVerdict]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
-    @AppStorage("coachProxyEndpoint") private var endpoint = LocalCoachClient.defaultEndpointString
+    // Configuration, not state: fixed per build flavor (see LocalCoachClient).
+    private let endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @AppStorage(CoachVerdictRefreshFlag.needsRefreshKey) private var needsVerdictRefresh = false
     @State private var generationStatus: String?
@@ -99,7 +100,7 @@ struct CoachView: View {
                 )
 
                 AdvancedCoachControls(
-                    endpoint: $endpoint,
+                    endpoint: endpoint,
                     selectedModelID: $selectedModelID,
                     isExpanded: $isAdvancedExpanded
                 )
@@ -108,7 +109,6 @@ struct CoachView: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
-            enforceValidEndpoint()
             refreshCoachVerdictIfNeeded()
         }
         .onChange(of: needsVerdictRefresh) { _, _ in
@@ -123,12 +123,10 @@ struct CoachView: View {
         // A replan while a push is in flight would delete sessions whose
         // garminWorkoutId has not landed yet, orphaning workouts on the watch.
         guard !isPushingRunsToWatch else { return }
-        enforceValidEndpoint()
         Task { await requestPlan() }
     }
 
     private func refreshCoachVerdict() {
-        enforceValidEndpoint()
         Task { await requestVerdict(sourceLogID: latestLog?.id, showSuccess: true) }
     }
 
@@ -136,14 +134,6 @@ struct CoachView: View {
         guard !isRefreshingVerdict, latestLog != nil else { return }
         guard needsVerdictRefresh || latestVerdictIsStale else { return }
         refreshCoachVerdict()
-    }
-
-    // Debug builds accept local/LAN endpoints; Release accepts only the hosted proxy.
-    // Anything else (including a leftover local URL after a TestFlight install) resets.
-    private func enforceValidEndpoint() {
-        if (try? LocalCoachClient(endpointString: endpoint)) == nil {
-            endpoint = LocalCoachClient.defaultEndpointString
-        }
     }
 
     private func requestPlan() async {
@@ -340,7 +330,6 @@ struct CoachView: View {
 
     private func pushRunsToWatchManually() {
         guard !isPushingRunsToWatch, !isGeneratingPlan else { return }
-        enforceValidEndpoint()
         garminPushStatus = nil
         Task {
             let note = await pushPlannedRunsToWatch(stalePushedIds: [])
@@ -686,7 +675,7 @@ private struct GarminSyncRow: View {
 }
 
 private struct AdvancedCoachControls: View {
-    @Binding var endpoint: String
+    var endpoint: String
     @Binding var selectedModelID: String
     @Binding var isExpanded: Bool
 
@@ -695,8 +684,6 @@ private struct AdvancedCoachControls: View {
             VStack(alignment: .leading, spacing: 14) {
                 Divider()
                 CoachModelControls(endpoint: endpoint, selectedModelID: $selectedModelID)
-                Divider()
-                ProxyStatusControls(endpoint: $endpoint)
             }
             .padding(.top, 8)
         } label: {
@@ -774,100 +761,3 @@ private struct CoachModelControls: View {
     }
 }
 
-private struct ProxyStatusControls: View {
-    @Binding var endpoint: String
-    @State private var status = "Not checked"
-    @State private var detail: String?
-    @State private var isChecking = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Proxy status", systemImage: "network")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if isChecking {
-                    SwiftUI.ProgressView()
-                }
-            }
-            InfoLine(title: "Endpoint", value: endpoint)
-            InfoLine(title: "Status", value: status, valueColor: statusColor)
-            if let detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.muted)
-            }
-            Button(action: checkProxy) {
-                Label("Check proxy", systemImage: "arrow.clockwise")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .disabled(isChecking)
-            #if DEBUG
-            developmentEndpointControls
-            #endif
-        }
-        .task(id: endpoint) {
-            await loadHealth()
-        }
-    }
-
-    #if DEBUG
-    // Debug builds only: switch between the proxy on this Mac and the hosted one.
-    // Release builds compile this out and stay pinned to the hosted proxy.
-    private var developmentEndpointControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            Text("DEVELOPMENT")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(AppTheme.muted)
-            TextField("Proxy endpoint", text: $endpoint)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            HStack(spacing: 8) {
-                Button("Local proxy") { endpoint = "http://127.0.0.1:8787/generate-week-plan" }
-                    .buttonStyle(SecondaryActionButtonStyle())
-                Button("Hosted proxy") { endpoint = LocalCoachClient.hostedEndpointString }
-                    .buttonStyle(SecondaryActionButtonStyle())
-            }
-            Text("Simulator: 127.0.0.1 reaches the Mac. Physical iPhone: use the Mac's LAN IP, for example http://192.168.1.20:8787.")
-                .font(.caption2)
-                .foregroundStyle(AppTheme.muted)
-        }
-    }
-    #endif
-
-    private var statusColor: Color {
-        status == "Connected" ? AppTheme.accent : AppTheme.warning
-    }
-
-    private func checkProxy() {
-        Task { await loadHealth() }
-    }
-
-    private func loadHealth() async {
-        isChecking = true
-        detail = nil
-        defer { isChecking = false }
-
-        do {
-            let response = try await LocalCoachClient(endpointString: endpoint).fetchProxyHealth()
-            if response.ok, response.hasApiKey {
-                status = "Connected"
-                detail = "Default model: \(response.defaultModel)"
-            } else if response.ok {
-                status = "Missing API key"
-                detail = "The proxy is online, but the server is missing OPENAI_API_KEY."
-            } else {
-                status = "Unavailable"
-                detail = "The proxy answered, but did not report a healthy state."
-            }
-        } catch {
-            status = "Unavailable"
-            detail = error.localizedDescription
-        }
-    }
-}

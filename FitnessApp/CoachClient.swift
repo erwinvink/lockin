@@ -1054,12 +1054,24 @@ func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -
 
 struct LocalCoachClient {
     static let hostedEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
-    // Debug builds (Xcode runs) default to a proxy on the developer's own machine so
-    // development never depends on — or pollutes — production. Release builds (TestFlight,
-    // App Store) compile the local path out entirely and stay pinned to the hosted proxy.
+    // The endpoint is configuration, not app state: it is never stored on the
+    // device and never shown or editable in the app. Debug builds (Xcode runs)
+    // talk to the proxy on the developer's machine — override the address only
+    // via the COACH_PROXY_ENDPOINT environment variable in the Xcode scheme
+    // (e.g. a Mac LAN IP for physical-device runs). Release builds (TestFlight,
+    // App Store) compile the local path out entirely and stay pinned to the
+    // hosted proxy.
     #if DEBUG
-    static let defaultEndpointString = "http://127.0.0.1:8787/generate-week-plan"
+    static let defaultEndpointString = resolvedDevelopmentEndpoint()
     static let allowsLocalEndpointsByDefault = true
+
+    static func resolvedDevelopmentEndpoint(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        let override = environment["COACH_PROXY_ENDPOINT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let override, !override.isEmpty {
+            return override
+        }
+        return "http://127.0.0.1:8787/generate-week-plan"
+    }
     #else
     static let defaultEndpointString = hostedEndpointString
     static let allowsLocalEndpointsByDefault = false
