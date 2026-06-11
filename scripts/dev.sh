@@ -24,6 +24,14 @@ fi
 # The proxy reaches the sidecar on this URL (its default, set explicitly here).
 export GARMIN_SERVICE_URL="http://127.0.0.1:8788"
 
+# Already running (e.g. in another terminal)? Say so instead of crashing.
+if curl -s -m 2 http://127.0.0.1:8787/health > /dev/null 2>&1; then
+  echo "The local backend is already running — nothing to do."
+  echo "Proxy:  $(curl -s -m 2 http://127.0.0.1:8787/health)"
+  echo "Garmin: $(curl -s -m 2 http://127.0.0.1:8787/garmin/status)"
+  exit 0
+fi
+
 echo "Starting Garmin sidecar on :8788..."
 (cd "$GARMIN_DIR" && exec .venv/bin/python -m uvicorn main:app --port 8788) &
 GARMIN_PID=$!
