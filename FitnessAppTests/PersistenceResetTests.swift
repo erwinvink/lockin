@@ -1299,8 +1299,10 @@ final class PersistenceResetTests: XCTestCase {
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
         updateRaceGoalBaselines(goal: goal, logs: logs, now: now, calendar: calendar)
 
-        // 28-day window holds 10 + 20 km -> 30 / 4 weeks = 7.5 km/week.
-        XCTAssertEqual(goal.baselineWeeklyKm, 7.5, accuracy: 0.01)
+        // 28-day window holds 10 + 20 km over a 10-day data span:
+        // 30 km / (10/7 weeks) = 21 km/week. The divisor follows the span the
+        // data covers, so shallow history is not diluted by empty weeks.
+        XCTAssertEqual(goal.baselineWeeklyKm, 21.0, accuracy: 0.01)
         // 42-day window's longest confirmed run is 20 km.
         XCTAssertEqual(goal.longestRecentRunKm, 20, accuracy: 0.01)
     }

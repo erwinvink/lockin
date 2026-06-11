@@ -317,11 +317,14 @@ func updateRaceGoalBaselines(
     let fourWeeksAgo = calendar.date(byAdding: .day, value: -28, to: now) ?? now
     let sixWeeksAgo = calendar.date(byAdding: .day, value: -42, to: now) ?? now
 
-    let recentVolume = confirmed
-        .filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
-        .reduce(0.0) { $0 + $1.distanceKm }
-    if recentVolume > 0 {
-        goal.baselineWeeklyKm = (recentVolume / 4 * 10).rounded() / 10
+    let inWindow = confirmed.filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
+    let recentVolume = inWindow.reduce(0.0) { $0 + $1.distanceKm }
+    if recentVolume > 0, let oldest = inWindow.map(\.completedAt).min() {
+        // Divide by the span the data actually covers (a first sync only sees
+        // ~7 days), converging to a true 4-week average as history grows.
+        let daysCovered = min(28.0, max(1.0, now.timeIntervalSince(oldest) / 86_400))
+        let weeksCovered = max(1.0, daysCovered / 7.0)
+        goal.baselineWeeklyKm = (recentVolume / weeksCovered * 10).rounded() / 10
     }
 
     let longestRecent = confirmed
