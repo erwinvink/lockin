@@ -3,13 +3,22 @@ import XCTest
 
 final class CoachValidationTests: XCTestCase {
     func testProxyUnavailableErrorExplainsHostedProxyChecks() throws {
-        let endpoint = try XCTUnwrap(URL(string: LocalCoachClient.defaultEndpointString))
+        let endpoint = try XCTUnwrap(URL(string: LocalCoachClient.hostedEndpointString))
         let error = CoachClientError.proxyUnavailable(endpoint, URLError(.cannotConnectToHost))
         let message = try XCTUnwrap(error.errorDescription)
 
         XCTAssertTrue(message.contains("hosted coach proxy is not reachable"))
         XCTAssertTrue(message.contains("Coolify deployment"))
         XCTAssertTrue(message.contains("https://lockin.elevenfactor.com"))
+    }
+
+    func testProxyUnavailableErrorExplainsLocalProxyStart() throws {
+        let endpoint = try XCTUnwrap(URL(string: "http://127.0.0.1:8787/generate-week-plan"))
+        let error = CoachClientError.proxyUnavailable(endpoint, URLError(.cannotConnectToHost))
+        let message = try XCTUnwrap(error.errorDescription)
+
+        XCTAssertTrue(message.contains("local coach proxy"))
+        XCTAssertTrue(message.contains("npm run dev"))
     }
 
     func testMissingAPIKeyErrorExplainsProxyEnvironment() {
@@ -20,10 +29,15 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(message.contains("Coolify environment variables"))
     }
 
-    func testCoachClientDefaultsToHostedProxy() throws {
+    func testCoachClientDefaultsToLocalProxyInDebugBuilds() throws {
+        // Tests always compile in Debug, where the default endpoint is the local dev proxy.
         let client = try LocalCoachClient()
 
-        XCTAssertEqual(client.endpoint.absoluteString, "https://lockin.elevenfactor.com/generate-week-plan")
+        XCTAssertEqual(client.endpoint.absoluteString, "http://127.0.0.1:8787/generate-week-plan")
+    }
+
+    func testHostedEndpointStringPointsAtProductionProxy() {
+        XCTAssertEqual(LocalCoachClient.hostedEndpointString, "https://lockin.elevenfactor.com/generate-week-plan")
     }
 
     func testCoachClientNormalizesBareHostedProxyHost() throws {
@@ -32,11 +46,38 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(client.endpoint.absoluteString, "https://lockin.elevenfactor.com/generate-week-plan")
     }
 
-    func testCoachClientRejectsNonHostedProxyHosts() {
-        XCTAssertThrowsError(try LocalCoachClient(endpointString: "127.0.0.1:8787"))
-        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://localhost:8787/generate-week-plan"))
-        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://172.20.10.3:8790/generate-week-plan"))
-        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://lockin.elevenfactor.com/generate-week-plan"))
+    func testCoachClientRejectsNonHostedProxyHostsWhenLocalEndpointsDisallowed() {
+        // Release behavior: only the hosted proxy over https is accepted.
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "127.0.0.1:8787", allowsLocalEndpoints: false))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://localhost:8787/generate-week-plan", allowsLocalEndpoints: false))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://172.20.10.3:8790/generate-week-plan", allowsLocalEndpoints: false))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://lockin.elevenfactor.com/generate-week-plan", allowsLocalEndpoints: false))
+    }
+
+    func testCoachClientAcceptsLoopbackAndPrivateHostsForLocalDevelopment() throws {
+        XCTAssertEqual(
+            try LocalCoachClient(endpointString: "http://127.0.0.1:8787", allowsLocalEndpoints: true).endpoint.absoluteString,
+            "http://127.0.0.1:8787/generate-week-plan"
+        )
+        XCTAssertNoThrow(try LocalCoachClient(endpointString: "http://localhost:8787/generate-week-plan", allowsLocalEndpoints: true))
+        XCTAssertNoThrow(try LocalCoachClient(endpointString: "http://192.168.1.20:8787/generate-week-plan", allowsLocalEndpoints: true))
+        XCTAssertNoThrow(try LocalCoachClient(endpointString: "http://172.20.10.3:8790/generate-week-plan", allowsLocalEndpoints: true))
+        XCTAssertNoThrow(try LocalCoachClient(endpointString: "http://10.0.0.5:8787", allowsLocalEndpoints: true))
+    }
+
+    func testCoachClientDefaultsBarePrivateHostsToHTTPForLocalDevelopment() throws {
+        let client = try LocalCoachClient(endpointString: "192.168.1.20:8787", allowsLocalEndpoints: true)
+
+        XCTAssertEqual(client.endpoint.absoluteString, "http://192.168.1.20:8787/generate-week-plan")
+    }
+
+    func testCoachClientRejectsPublicHTTPHostsEvenWithLocalEndpointsAllowed() {
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://example.com/generate-week-plan", allowsLocalEndpoints: true))
+        XCTAssertThrowsError(try LocalCoachClient(endpointString: "http://8.8.8.8:8787", allowsLocalEndpoints: true))
+    }
+
+    func testCoachClientStillAcceptsHostedProxyWithLocalEndpointsAllowed() {
+        XCTAssertNoThrow(try LocalCoachClient(endpointString: LocalCoachClient.hostedEndpointString, allowsLocalEndpoints: true))
     }
 
     func testLegacyIntensityMapsCommonHostedTerms() {

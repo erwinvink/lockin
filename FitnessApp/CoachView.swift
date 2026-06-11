@@ -99,7 +99,7 @@ struct CoachView: View {
                 )
 
                 AdvancedCoachControls(
-                    endpoint: endpoint,
+                    endpoint: $endpoint,
                     selectedModelID: $selectedModelID,
                     isExpanded: $isAdvancedExpanded
                 )
@@ -108,7 +108,7 @@ struct CoachView: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
-            enforceHostedEndpoint()
+            enforceValidEndpoint()
             refreshCoachVerdictIfNeeded()
         }
         .onChange(of: needsVerdictRefresh) { _, _ in
@@ -123,12 +123,12 @@ struct CoachView: View {
         // A replan while a push is in flight would delete sessions whose
         // garminWorkoutId has not landed yet, orphaning workouts on the watch.
         guard !isPushingRunsToWatch else { return }
-        enforceHostedEndpoint()
+        enforceValidEndpoint()
         Task { await requestPlan() }
     }
 
     private func refreshCoachVerdict() {
-        enforceHostedEndpoint()
+        enforceValidEndpoint()
         Task { await requestVerdict(sourceLogID: latestLog?.id, showSuccess: true) }
     }
 
@@ -138,7 +138,9 @@ struct CoachView: View {
         refreshCoachVerdict()
     }
 
-    private func enforceHostedEndpoint() {
+    // Debug builds accept local/LAN endpoints; Release accepts only the hosted proxy.
+    // Anything else (including a leftover local URL after a TestFlight install) resets.
+    private func enforceValidEndpoint() {
         if (try? LocalCoachClient(endpointString: endpoint)) == nil {
             endpoint = LocalCoachClient.defaultEndpointString
         }
@@ -338,7 +340,7 @@ struct CoachView: View {
 
     private func pushRunsToWatchManually() {
         guard !isPushingRunsToWatch, !isGeneratingPlan else { return }
-        enforceHostedEndpoint()
+        enforceValidEndpoint()
         garminPushStatus = nil
         Task {
             let note = await pushPlannedRunsToWatch(stalePushedIds: [])
@@ -684,7 +686,7 @@ private struct GarminSyncRow: View {
 }
 
 private struct AdvancedCoachControls: View {
-    var endpoint: String
+    @Binding var endpoint: String
     @Binding var selectedModelID: String
     @Binding var isExpanded: Bool
 
@@ -694,7 +696,7 @@ private struct AdvancedCoachControls: View {
                 Divider()
                 CoachModelControls(endpoint: endpoint, selectedModelID: $selectedModelID)
                 Divider()
-                ProxyStatusControls(endpoint: endpoint)
+                ProxyStatusControls(endpoint: $endpoint)
             }
             .padding(.top, 8)
         } label: {
@@ -773,7 +775,7 @@ private struct CoachModelControls: View {
 }
 
 private struct ProxyStatusControls: View {
-    var endpoint: String
+    @Binding var endpoint: String
     @State private var status = "Not checked"
     @State private var detail: String?
     @State private var isChecking = false
@@ -788,6 +790,7 @@ private struct ProxyStatusControls: View {
                     SwiftUI.ProgressView()
                 }
             }
+            InfoLine(title: "Endpoint", value: endpoint)
             InfoLine(title: "Status", value: status, valueColor: statusColor)
             if let detail {
                 Text(detail)
@@ -800,11 +803,42 @@ private struct ProxyStatusControls: View {
             }
             .buttonStyle(SecondaryActionButtonStyle())
             .disabled(isChecking)
+            #if DEBUG
+            developmentEndpointControls
+            #endif
         }
         .task(id: endpoint) {
             await loadHealth()
         }
     }
+
+    #if DEBUG
+    // Debug builds only: switch between the proxy on this Mac and the hosted one.
+    // Release builds compile this out and stay pinned to the hosted proxy.
+    private var developmentEndpointControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("DEVELOPMENT")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(AppTheme.muted)
+            TextField("Proxy endpoint", text: $endpoint)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            HStack(spacing: 8) {
+                Button("Local proxy") { endpoint = "http://127.0.0.1:8787/generate-week-plan" }
+                    .buttonStyle(SecondaryActionButtonStyle())
+                Button("Hosted proxy") { endpoint = LocalCoachClient.hostedEndpointString }
+                    .buttonStyle(SecondaryActionButtonStyle())
+            }
+            Text("Simulator: 127.0.0.1 reaches the Mac. Physical iPhone: use the Mac's LAN IP, for example http://192.168.1.20:8787.")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.muted)
+        }
+    }
+    #endif
 
     private var statusColor: Color {
         status == "Connected" ? AppTheme.accent : AppTheme.warning

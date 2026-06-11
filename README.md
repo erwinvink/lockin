@@ -176,6 +176,8 @@ cp .env.example .env
 npm run dev
 ```
 
+Debug builds of the iOS app (anything run from Xcode) default to this local proxy at `http://127.0.0.1:8787` instead of the hosted one, so development never depends on production. Release/TestFlight builds compile the local path out and stay pinned to `https://lockin.elevenfactor.com`. In a debug build, Coach → Advanced shows the active endpoint with Local/Hosted switch buttons; on a physical iPhone use the Mac's LAN IP (for example `http://192.168.1.20:8787`) instead of `127.0.0.1`.
+
 Put the real key in `Proxy/.env`:
 
 ```text

@@ -450,11 +450,19 @@ enum CoachClientError: Error, LocalizedError {
         case .invalidURL:
             "The hosted coach proxy URL is invalid. Use https://lockin.elevenfactor.com/generate-week-plan."
         case .proxyUnavailable(let endpoint, _):
-            """
-            The hosted coach proxy is not reachable at \(endpoint.absoluteString).
+            if LocalCoachClient.isPrivateDevelopmentHost(endpoint.host()?.lowercased() ?? "") {
+                """
+                The local coach proxy is not reachable at \(endpoint.absoluteString).
 
-            Check that the Coolify deployment is healthy, DNS has propagated, and the app domain is set to https://lockin.elevenfactor.com.
-            """
+                Start it on your Mac with: cd Proxy && npm run dev. On a physical iPhone, use your Mac's LAN IP instead of 127.0.0.1.
+                """
+            } else {
+                """
+                The hosted coach proxy is not reachable at \(endpoint.absoluteString).
+
+                Check that the Coolify deployment is healthy, DNS has propagated, and the app domain is set to https://lockin.elevenfactor.com.
+                """
+            }
         case .transportFailed(let endpoint, let error):
             "The app could not reach the hosted coach proxy at \(endpoint.absoluteString): \(error.localizedDescription)"
         case .invalidResponse:
@@ -1045,7 +1053,17 @@ func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -
 }
 
 struct LocalCoachClient {
-    static let defaultEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
+    static let hostedEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
+    // Debug builds (Xcode runs) default to a proxy on the developer's own machine so
+    // development never depends on — or pollutes — production. Release builds (TestFlight,
+    // App Store) compile the local path out entirely and stay pinned to the hosted proxy.
+    #if DEBUG
+    static let defaultEndpointString = "http://127.0.0.1:8787/generate-week-plan"
+    static let allowsLocalEndpointsByDefault = true
+    #else
+    static let defaultEndpointString = hostedEndpointString
+    static let allowsLocalEndpointsByDefault = false
+    #endif
     private static let hostedProxyHost = "lockin.elevenfactor.com"
 
     var endpoint: URL
@@ -1053,8 +1071,8 @@ struct LocalCoachClient {
     var validator = CoachPlanValidator()
     var runningValidator = RunningWeekValidator()
 
-    init(endpointString: String = defaultEndpointString) throws {
-        guard let endpoint = Self.normalizedEndpoint(from: endpointString) else { throw CoachClientError.invalidURL }
+    init(endpointString: String = defaultEndpointString, allowsLocalEndpoints: Bool = allowsLocalEndpointsByDefault) throws {
+        guard let endpoint = Self.normalizedEndpoint(from: endpointString, allowsLocalEndpoints: allowsLocalEndpoints) else { throw CoachClientError.invalidURL }
         self.endpoint = endpoint
     }
 
@@ -1318,21 +1336,45 @@ struct LocalCoachClient {
         return try JSONDecoder.coachDecoder.decode(GarminDeleteResponse.self, from: data)
     }
 
-    private static func normalizedEndpoint(from value: String) -> URL? {
+    private static func normalizedEndpoint(from value: String, allowsLocalEndpoints: Bool) -> URL? {
         var rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawValue.isEmpty else { return nil }
-        if !rawValue.contains("://") {
+        let hadScheme = rawValue.contains("://")
+        if !hadScheme {
             rawValue = "https://\(rawValue)"
         }
         guard var components = URLComponents(string: rawValue) else { return nil }
-        guard components.scheme?.lowercased() == "https" else { return nil }
-        guard components.host?.lowercased() == hostedProxyHost else { return nil }
-        components.scheme = "https"
-        components.host = hostedProxyHost
+        let scheme = components.scheme?.lowercased()
+        let host = components.host?.lowercased() ?? ""
+
+        if host == hostedProxyHost {
+            guard scheme == "https" else { return nil }
+            components.scheme = "https"
+            components.host = hostedProxyHost
+        } else if allowsLocalEndpoints, scheme == "http" || scheme == "https", isPrivateDevelopmentHost(host) {
+            // Debug-only: a proxy on the developer's own machine (simulator) or LAN (device).
+            // A bare "192.168.x.x:8787" gets http, since local dev servers don't serve TLS.
+            if !hadScheme {
+                components.scheme = "http"
+            }
+        } else {
+            return nil
+        }
+
         if components.path.isEmpty || components.path == "/" {
             components.path = "/generate-week-plan"
         }
         return components.url
+    }
+
+    static func isPrivateDevelopmentHost(_ host: String) -> Bool {
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" { return true }
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return false }
+        if octets[0] == 10 { return true }
+        if octets[0] == 192, octets[1] == 168 { return true }
+        if octets[0] == 172, (16...31).contains(octets[1]) { return true }
+        return false
     }
 
     private static func generateWeekEndpoint(from endpoint: URL) -> URL? {
