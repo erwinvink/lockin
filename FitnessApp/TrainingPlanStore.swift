@@ -678,16 +678,25 @@ func runPaceText(secondsPerKm: Int) -> String {
 func runTargetText(session: WorkoutSession) -> String {
     let low = session.runTargetLow
     let high = session.runTargetHigh
+    let zone = session.runZone.trimmingCharacters(in: .whitespacesAndNewlines)
+    let target: String?
     switch session.runTargetType {
     case .pace where low > 0 && high > 0:
-        return low == high
+        target = low == high
             ? runPaceText(secondsPerKm: low)
             : "\(format(seconds: low))\u{2013}\(format(seconds: high)) /km"
     case .hr where low > 0 && high > 0:
-        return low == high ? "\(low) bpm" : "\(low)\u{2013}\(high) bpm"
+        target = low == high ? "\(low) bpm" : "\(low)\u{2013}\(high) bpm"
     default:
-        let zone = session.runZone.trimmingCharacters(in: .whitespacesAndNewlines)
-        return zone.isEmpty ? "Easy" : zone
+        target = nil
+    }
+    // The zone is the athlete-facing language; the target is the watch-facing
+    // number. Show both when both exist.
+    switch (zone.isEmpty, target) {
+    case (false, let target?): return "\(zone) \u{B7} \(target)"
+    case (false, nil): return zone
+    case (true, let target?): return target
+    case (true, nil): return "Easy"
     }
 }
 

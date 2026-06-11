@@ -528,3 +528,46 @@ function emptyMonth(month: string, isPartial: boolean): CoachContext["history"][
     maxFatigue: 0
   };
 }
+
+test("rejects an all-easy build week far from the race without safety flags", () => {
+  const context: CoachContext = {
+    ...baseContext,
+    running: { ...baseRunning, weeksToRace: 10 }
+  };
+  const week = raceExemptionWeek();
+  week.sessions = week.sessions.map((session, index) => ({
+    ...session,
+    kind: index === 0 ? "easy" : "recovery",
+    distanceKm: 6
+  }));
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((m) => m.includes("at least one quality session")));
+});
+
+test("accepts an all-easy week with safety flags, in taper, or with few runs", () => {
+  const flagged = raceExemptionWeek();
+  flagged.sessions = flagged.sessions.map((s) => ({ ...s, kind: "easy", distanceKm: 6 }));
+  flagged.safetyFlags = ["Recovery week after a 15% volume block."];
+  assert.equal(
+    validateRunningWeek(flagged, { ...baseContext, running: { ...baseRunning, weeksToRace: 10 } }).accepted,
+    true
+  );
+
+  const taper = raceExemptionWeek();
+  taper.sessions = taper.sessions.map((s) => ({ ...s, kind: "easy", distanceKm: 6 }));
+  assert.equal(
+    validateRunningWeek(taper, { ...baseContext, running: { ...baseRunning, weeksToRace: 2 } }).accepted,
+    true
+  );
+
+  const sparse = raceExemptionWeek();
+  sparse.sessions = sparse.sessions.slice(0, 2).map((s, i) => ({ ...s, kind: "easy", distanceKm: 6, dayOffset: i === 0 ? 1 : 3 }));
+  const sparseContext: CoachContext = {
+    ...baseContext,
+    running: { ...baseRunning, weeksToRace: 10, runningDayOffsets: [1, 3], runningDays: ["tuesday", "thursday"], longRunDay: undefined, longRunDayOffset: undefined }
+  };
+  assert.equal(validateRunningWeek(sparse, sparseContext).accepted, true);
+});

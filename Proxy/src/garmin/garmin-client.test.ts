@@ -158,7 +158,7 @@ test("garminSnapshot combines status, wellness, and activities", async (t) => {
   assert.deepEqual(
     calls.map((call) => call.url).sort(),
     [
-      "http://127.0.0.1:8788/activities?days=7",
+      "http://127.0.0.1:8788/activities?days=60",
       "http://127.0.0.1:8788/status",
       "http://127.0.0.1:8788/wellness?days=7"
     ]
@@ -192,14 +192,19 @@ test("garminSnapshot clamps sinceDays per endpoint", async (t) => {
   const calls: RecordedCall[] = [];
   const fetchImpl = stubFetch((url) => (url.endsWith("/status") ? jsonResponse(onlineStatus) : jsonResponse([])), calls);
 
-  await garminSnapshot(90, fetchImpl);
-  await garminSnapshot(0, fetchImpl);
+  await garminSnapshot(90, fetchImpl, { activityDays: 90 });
+  await garminSnapshot(0, fetchImpl, { activityDays: 0 });
+  await garminSnapshot(7, fetchImpl);
 
   const urls = calls.map((call) => call.url);
   assert.ok(urls.includes("http://127.0.0.1:8788/wellness?days=30"));
   assert.ok(urls.includes("http://127.0.0.1:8788/activities?days=60"));
   assert.ok(urls.includes("http://127.0.0.1:8788/wellness?days=1"));
   assert.ok(urls.includes("http://127.0.0.1:8788/activities?days=1"));
+  // Activities default to a 60-day lookback regardless of the wellness window:
+  // they cost one upstream call, and the coaches need real history depth.
+  assert.ok(urls.includes("http://127.0.0.1:8788/wellness?days=7"));
+  assert.equal(urls.filter((u) => u.includes("/activities?days=60")).length, 2);
 });
 
 test("garminSnapshot keeps the successful half when one endpoint fails", async (t) => {

@@ -21,6 +21,10 @@ Use `weeksToRace` to pick the phase. Boundaries are guides, not hard cutoffs.
 - Aim weekly elevation gain toward (race elevation/distance ratio) × weekly km across build and peak; concentrate gain in long runs and hill sessions.
 - A large elevation jump counts as an intensity increase under the one-variable rule.
 
+## Build-Week Shape
+
+A standard build week for an athlete with an established base: the long run, one or two quality sessions (tempo, intervals, or hills), and easy or recovery runs on the remaining days. Weekly volume follows the athlete's demonstrated baseline and builds toward race demand — an experienced athlete's plan should look like experienced training. Safety comes from the progression caps and readiness gates, not from a beginner template.
+
 ## Intensity Split
 
 - Keep roughly 80% of weekly running time easy (Zone 2, conversational) and at most 20% hard (tempo, intervals, hard hills).

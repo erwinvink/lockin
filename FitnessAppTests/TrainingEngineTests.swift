@@ -202,7 +202,7 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(runPaceText(secondsPerKm: 605), "10:05 /km")
     }
 
-    func testRunTargetTextPrefersPaceThenHeartRateThenZone() {
+    func testRunTargetTextCombinesZoneWithPaceOrHeartRate() {
         let paceRun = WorkoutSession(
             scheduledDate: Date(),
             title: "Tempo",
@@ -249,8 +249,10 @@ final class TrainingEngineTests: XCTestCase {
             runKind: .easy
         )
 
-        XCTAssertEqual(runTargetText(session: paceRun), "5:30\u{2013}6:00 /km")
-        XCTAssertEqual(runTargetText(session: hrRun), "140\u{2013}150 bpm")
+        // The zone is athlete-facing language, the target the watch-facing
+        // number: both show when both exist.
+        XCTAssertEqual(runTargetText(session: paceRun), "Z3 \u{B7} 5:30\u{2013}6:00 /km")
+        XCTAssertEqual(runTargetText(session: hrRun), "Z2 \u{B7} 140\u{2013}150 bpm")
         XCTAssertEqual(runTargetText(session: zoneRun), "Z1")
         XCTAssertEqual(runTargetText(session: bareRun), "Easy")
     }

@@ -47,6 +47,15 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
     messages.push("More than half the week is hard running without safety flags.");
   }
 
+  // Mirror of the strength coach's no-all-light rule: far from the race with
+  // no flagged reason, a week of only easy/recovery runs is not a build week.
+  const weeksToRace = running?.weeksToRace ?? 0;
+  if (week.sessions.length >= 3 && hardCount === 0 && weeksToRace > 3 && !hasSafetyFlags) {
+    messages.push(
+      "A normal build week needs at least one quality session (long, tempo, intervals, or hills) unless safety flags explain the easy week."
+    );
+  }
+
   // Long-run placement: the maximal-distance session(s) must include the selected
   // long-run day. The app sends running.longRunDayOffset computed with the same
   // machinery as runningDayOffsets (omitted when the long-run day is today or past),
