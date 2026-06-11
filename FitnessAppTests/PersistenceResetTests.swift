@@ -433,7 +433,7 @@ final class PersistenceResetTests: XCTestCase {
         )
         try modelContext.save()
 
-        XCTAssertEqual(matched, 1, "A late sync still matches a session the missed sweep already processed")
+        XCTAssertEqual(matched.pendingRuns, 1, "A late sync still matches a session the missed sweep already processed")
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
         XCTAssertEqual(logs.count, 1)
         let log = try XCTUnwrap(logs.first)
@@ -489,7 +489,7 @@ final class PersistenceResetTests: XCTestCase {
             in: modelContext,
             calendar: calendar
         )
-        XCTAssertEqual(matched, 1)
+        XCTAssertEqual(matched.pendingRuns, 1)
         let log = try XCTUnwrap(modelContext.fetch(FetchDescriptor<RunLog>()).first)
 
         try completeRun(session: mondayRun, log: log, rpe: 6, feelScore: 3, ranks: [rank], in: modelContext)
@@ -1126,7 +1126,7 @@ final class PersistenceResetTests: XCTestCase {
         )
         try modelContext.save()
 
-        XCTAssertEqual(matched, 1)
+        XCTAssertEqual(matched.pendingRuns, 1)
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
         XCTAssertEqual(logs.count, 1)
         let log = try XCTUnwrap(logs.first)
@@ -1178,7 +1178,7 @@ final class PersistenceResetTests: XCTestCase {
         )
         try modelContext.save()
 
-        XCTAssertEqual(matched, 0)
+        XCTAssertEqual(matched.pendingRuns, 0)
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 1)
         XCTAssertEqual(plannedRun.status, .planned)
     }
@@ -1204,7 +1204,7 @@ final class PersistenceResetTests: XCTestCase {
         )
         try modelContext.save()
 
-        XCTAssertEqual(matched, 1)
+        XCTAssertEqual(matched.pendingRuns, 1)
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
         XCTAssertEqual(logs.count, 1)
         XCTAssertEqual(logs.first?.sessionId, longRun.id, "The closest planned distance wins")
@@ -1212,7 +1212,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(longRun.status, .planned)
     }
 
-    func testMatchGarminActivitiesIgnoresActivityWithoutSameDayPlannedRun() throws {
+    func testUnmatchedGarminActivityImportsAsStandaloneConfirmedRun() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
         var calendar = Calendar(identifier: .gregorian)
@@ -1227,24 +1227,95 @@ final class PersistenceResetTests: XCTestCase {
             summary: "AI: Strength session"
         )
         let runTomorrow = plannedRunFixture(scheduledDate: dayAfter, distanceKm: 12)
-        let completedRunToday = plannedRunFixture(scheduledDate: activityDay, distanceKm: 12, title: "Already logged run")
-        completedRunToday.status = .completed
         modelContext.insert(strengthToday)
         modelContext.insert(runTomorrow)
-        modelContext.insert(completedRunToday)
         try modelContext.save()
 
         let matched = try matchGarminActivities(
-            [garminActivityFixture(startTime: "2026-06-08 07:01:33")],
-            sessions: [strengthToday, runTomorrow, completedRunToday],
+            [garminActivityFixture(startTime: "2026-06-08 07:01:33", distanceKm: 9.36)],
+            sessions: [strengthToday, runTomorrow],
             existingRunLogs: [],
             in: modelContext,
             calendar: calendar
         )
         try modelContext.save()
 
-        XCTAssertEqual(matched, 0, "Unplanned runs are ignored; only planned running sessions on the same day match")
-        XCTAssertTrue(try modelContext.fetch(FetchDescriptor<RunLog>()).isEmpty)
+        // A run with no plannable session that day is real training history:
+        // imported as a standalone, already-confirmed log.
+        XCTAssertEqual(matched.pendingRuns, 0)
+        XCTAssertEqual(matched.importedRuns, 1)
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        XCTAssertEqual(logs.count, 1)
+        let log = try XCTUnwrap(logs.first)
+        XCTAssertEqual(log.sessionId, RunLog.unattachedSessionId)
+        XCTAssertFalse(log.needsConfirmation)
+        XCTAssertEqual(log.source, .garmin)
+        XCTAssertEqual(log.distanceKm, 9.36, accuracy: 0.001)
+        XCTAssertEqual(runTomorrow.status, .planned)
+    }
+
+    func testStandaloneImportIsNotDuplicatedOnNextSync() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let activity = garminActivityFixture(startTime: "2026-06-08 07:01:33")
+
+        _ = try matchGarminActivities([activity], sessions: [], existingRunLogs: [], in: modelContext, calendar: calendar)
+        try modelContext.save()
+        let existing = try modelContext.fetch(FetchDescriptor<RunLog>())
+        let second = try matchGarminActivities([activity], sessions: [], existingRunLogs: existing, in: modelContext, calendar: calendar)
+        try modelContext.save()
+
+        XCTAssertEqual(second.importedRuns, 0)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 1)
+    }
+
+    func testUpdateRaceGoalBaselinesFromConfirmedRunHistory() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let now = Date()
+        let goal = RaceGoal(name: "Test Ultra", raceDate: now.addingTimeInterval(86_400 * 70), distanceKm: 50, elevationGainM: 2_000, baselineWeeklyKm: 35, longestRecentRunKm: 16.4)
+        modelContext.insert(goal)
+        func log(_ km: Double, daysAgo: Int, pending: Bool = false) -> RunLog {
+            let entry = RunLog(
+                sessionId: RunLog.unattachedSessionId,
+                completedAt: calendar.date(byAdding: .day, value: -daysAgo, to: now) ?? now,
+                distanceKm: km,
+                movingSeconds: Int(km * 360),
+                source: .garmin,
+                needsConfirmation: pending
+            )
+            modelContext.insert(entry)
+            return entry
+        }
+        _ = log(10, daysAgo: 2)
+        _ = log(20, daysAgo: 10)
+        _ = log(30, daysAgo: 50)            // outside both windows
+        _ = log(25, daysAgo: 1, pending: true) // pending: excluded
+        try modelContext.save()
+
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        updateRaceGoalBaselines(goal: goal, logs: logs, now: now, calendar: calendar)
+
+        // 28-day window holds 10 + 20 km -> 30 / 4 weeks = 7.5 km/week.
+        XCTAssertEqual(goal.baselineWeeklyKm, 7.5, accuracy: 0.01)
+        // 42-day window's longest confirmed run is 20 km.
+        XCTAssertEqual(goal.longestRecentRunKm, 20, accuracy: 0.01)
+    }
+
+    func testUpdateRaceGoalBaselinesLeavesGoalUntouchedWithoutConfirmedRuns() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let goal = RaceGoal(name: "Test Ultra", raceDate: Date(), distanceKm: 50, elevationGainM: 2_000, baselineWeeklyKm: 35, longestRecentRunKm: 16.4)
+        modelContext.insert(goal)
+        try modelContext.save()
+
+        updateRaceGoalBaselines(goal: goal, logs: [], now: Date(), calendar: .current)
+
+        XCTAssertEqual(goal.baselineWeeklyKm, 35, accuracy: 0.01)
+        XCTAssertEqual(goal.longestRecentRunKm, 16.4, accuracy: 0.01)
     }
 
     func testMatchGarminActivitiesClaimsEachSessionOnceAndSkipsNonRunningTypes() throws {
@@ -1270,12 +1341,20 @@ final class PersistenceResetTests: XCTestCase {
         )
         try modelContext.save()
 
-        XCTAssertEqual(matched, 1, "One activity per session per batch; non-running types never match")
+        XCTAssertEqual(matched.pendingRuns, 1, "One activity per session per batch; non-running types never match")
+        // The second same-day run cannot claim the session again, but it is
+        // still real history: imported standalone (double-run days happen).
+        XCTAssertEqual(matched.importedRuns, 1)
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
-        XCTAssertEqual(logs.count, 1)
-        XCTAssertEqual(logs.first?.garminActivityId, "222")
+        XCTAssertEqual(logs.count, 2)
+        let pending = try XCTUnwrap(logs.first(where: { $0.needsConfirmation }))
+        XCTAssertEqual(pending.garminActivityId, "222")
+        let imported = try XCTUnwrap(logs.first(where: { !$0.needsConfirmation }))
+        XCTAssertEqual(imported.garminActivityId, "333")
+        XCTAssertEqual(imported.sessionId, RunLog.unattachedSessionId)
 
-        // A session already holding a pending log is not a candidate on later syncs either.
+        // A session already holding a pending log is not a candidate on later
+        // syncs either; the new activity imports standalone instead.
         let rematch = try matchGarminActivities(
             [garminActivityFixture(id: "444", startTime: "2026-06-08 19:00:00")],
             sessions: [plannedRun],
@@ -1284,8 +1363,9 @@ final class PersistenceResetTests: XCTestCase {
             calendar: calendar
         )
 
-        XCTAssertEqual(rematch, 0)
-        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 1)
+        XCTAssertEqual(rematch.pendingRuns, 0)
+        XCTAssertEqual(rematch.importedRuns, 1)
+        XCTAssertEqual(try modelContext.fetch(FetchDescriptor<RunLog>()).count, 3)
     }
 
     func testZeroBaselineThreeWeekJourneyWithMissesAndCompletedDaysUpdatesRewards() throws {

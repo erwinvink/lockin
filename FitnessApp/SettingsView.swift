@@ -276,6 +276,9 @@ private struct RaceGoalEditor: View {
             IntegerField(title: "Elevation gain", value: elevationBinding, range: 0...30_000, suffix: "m+")
             IntegerField(title: "Baseline weekly volume", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
             IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
+            Text("Both are kept up to date automatically from your Garmin runs; manual values only matter until real runs sync.")
+                .font(.caption2)
+                .foregroundStyle(AppTheme.muted)
             TrainingDaysPicker(
                 selectedDays: runningDaysBinding,
                 title: "Running days",
@@ -468,11 +471,16 @@ private struct GarminCard: View {
         Task {
             defer { isSyncing = false }
             do {
-                let newRuns = try await performGarminSync(endpoint: endpoint, in: modelContext)
+                let ingested = try await performGarminSync(endpoint: endpoint, in: modelContext)
                 garminLastSyncAt = Date().timeIntervalSince1970
-                syncResult = newRuns > 0
-                    ? "Synced — \(newRuns) new \(newRuns == 1 ? "run" : "runs") to confirm"
-                    : "Synced"
+                var parts: [String] = []
+                if ingested.importedRuns > 0 {
+                    parts.append("\(ingested.importedRuns) \(ingested.importedRuns == 1 ? "run" : "runs") imported")
+                }
+                if ingested.pendingRuns > 0 {
+                    parts.append("\(ingested.pendingRuns) to confirm")
+                }
+                syncResult = parts.isEmpty ? "Synced" : "Synced — " + parts.joined(separator: ", ")
             } catch {
                 syncError = error.localizedDescription
             }

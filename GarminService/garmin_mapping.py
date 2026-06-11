@@ -84,10 +84,14 @@ def _str(value: Any, default: str = "") -> str:
 
 
 def _body_battery_for_date(body_battery_json: Any, date_iso: str) -> int:
-    """Peak body battery level for the given day (0 when unknown).
+    """Latest body battery level for the given day (0 when unknown).
 
-    get_body_battery returns a list of per-day dicts each carrying a
-    bodyBatteryValuesArray of [timestamp, status, level, version] readings.
+    The production API (verified live) returns per-day dicts whose
+    bodyBatteryValuesArray holds [timestamp, level] pairs, self-described by
+    bodyBatteryValueDescriptorDTOList. Older library docs showed
+    [timestamp, status, level, version] readings without descriptors; both
+    shapes are understood. The latest sample is what the Garmin app shows as
+    the current level, so that is what we report.
     """
     if isinstance(body_battery_json, dict):
         entries: list[Any] = [body_battery_json]
@@ -96,22 +100,47 @@ def _body_battery_for_date(body_battery_json: Any, date_iso: str) -> int:
     else:
         return 0
 
-    levels: list[int] = []
+    latest: tuple[float, int] | None = None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         entry_date = entry.get("date")
         if isinstance(entry_date, str) and entry_date != date_iso:
             continue
+
+        ts_idx, level_idx = 0, None
+        descriptors = entry.get("bodyBatteryValueDescriptorDTOList")
+        if isinstance(descriptors, list):
+            for descriptor in descriptors:
+                if not isinstance(descriptor, dict):
+                    continue
+                key = descriptor.get("bodyBatteryValueDescriptorKey")
+                idx = descriptor.get("bodyBatteryValueDescriptorIndex")
+                if not isinstance(idx, int):
+                    continue
+                if key == "timestamp":
+                    ts_idx = idx
+                elif key == "bodyBatteryLevel":
+                    level_idx = idx
+
         readings = entry.get("bodyBatteryValuesArray")
         if not isinstance(readings, list):
             continue
         for reading in readings:
-            if isinstance(reading, (list, tuple)) and len(reading) >= 3:
-                level = _num(reading[2])
-                if level is not None:
-                    levels.append(int(round(level)))
-    return max(levels) if levels else 0
+            if not isinstance(reading, (list, tuple)) or len(reading) < 2:
+                continue
+            # Undescribed fallback: legacy 4-element readings carry the level
+            # at index 2, plain pairs at index 1.
+            idx = level_idx if level_idx is not None else (2 if len(reading) >= 3 else 1)
+            if idx >= len(reading) or ts_idx >= len(reading):
+                continue
+            level = _num(reading[idx])
+            timestamp = _num(reading[ts_idx])
+            if level is None or timestamp is None:
+                continue
+            if latest is None or timestamp >= latest[0]:
+                latest = (timestamp, int(round(level)))
+    return latest[1] if latest else 0
 
 
 def _readiness_score(readiness_json: Any) -> int:

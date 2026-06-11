@@ -49,14 +49,20 @@ HRV_JSON = {
     "hrvReadings": [],
 }
 
+# Real production shape (verified live 2026-06-11): readings are
+# [timestamp, level] PAIRS, self-described by bodyBatteryValueDescriptorDTOList.
 BODY_BATTERY_JSON = [
     {
         "date": "2026-06-08",
         "charged": 41,
         "drained": 70,
         "bodyBatteryValuesArray": [
-            [1765157100000, "MEASURED", 55, 1.0],
-            [1765178700000, "MEASURED", 30, 1.0],
+            [1765157100000, 55],
+            [1765178700000, 30],
+        ],
+        "bodyBatteryValueDescriptorDTOList": [
+            {"bodyBatteryValueDescriptorIndex": 0, "bodyBatteryValueDescriptorKey": "timestamp"},
+            {"bodyBatteryValueDescriptorIndex": 1, "bodyBatteryValueDescriptorKey": "bodyBatteryLevel"},
         ],
     },
     {
@@ -64,9 +70,25 @@ BODY_BATTERY_JSON = [
         "charged": 55,
         "drained": 12,
         "bodyBatteryValuesArray": [
+            [1765243500000, 64],
+            [1765250700000, 71],
+            [1765247100000, 75],
+        ],
+        "bodyBatteryValueDescriptorDTOList": [
+            {"bodyBatteryValueDescriptorIndex": 0, "bodyBatteryValueDescriptorKey": "timestamp"},
+            {"bodyBatteryValueDescriptorIndex": 1, "bodyBatteryValueDescriptorKey": "bodyBatteryLevel"},
+        ],
+    },
+]
+
+# Older library docs showed 4-element readings with the level at index 2 and
+# no descriptor list; the mapping must still understand that legacy shape.
+BODY_BATTERY_LEGACY_JSON = [
+    {
+        "date": "2026-06-09",
+        "bodyBatteryValuesArray": [
             [1765243500000, "MEASURED", 64, 1.0],
-            [1765247100000, "MEASURED", 75, 1.0],
-            [1765250700000, "MEASURED", 71, 1.0],
+            [1765250700000, "MEASURED", 42, 1.0],
         ],
     },
 ]
@@ -126,10 +148,18 @@ class TestWellnessDay:
         assert out["sleepSeconds"] == 27360
         assert out["hrvStatus"] == "BALANCED"
         assert out["hrvMs"] == 62
-        # max level for the matching date only (not the 2026-06-08 entry)
-        assert out["bodyBattery"] == 75
+        # latest sample by timestamp for the matching date only (matches the
+        # current level the Garmin app shows; not the 2026-06-08 entry, and not
+        # the day's peak of 75)
+        assert out["bodyBattery"] == 71
         assert out["trainingReadiness"] == 78
         assert out["restingHr"] == 47
+
+    def test_body_battery_understands_legacy_four_element_readings(self):
+        out = wellness_day("2026-06-09", None, None, BODY_BATTERY_LEGACY_JSON, None, None)
+        # No descriptor list: 4-element readings carry the level at index 2,
+        # and the latest timestamp wins (42, not 64).
+        assert out["bodyBattery"] == 42
 
     def test_all_none_inputs_never_raise(self):
         out = wellness_day("2026-06-09", None, None, None, None, None)

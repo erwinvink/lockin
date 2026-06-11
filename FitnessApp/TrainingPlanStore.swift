@@ -230,12 +230,22 @@ func ingest(
     }
 }
 
-/// Creates pending RunLogs (source garmin, needsConfirmation true) for synced
-/// activities that land on the same calendar day as a planned — or already
-/// auto-missed — running session. A missed session matching here means the run
-/// happened but synced after the missed sweep; confirming it refunds the miss
-/// (see completeRun). Matching never changes session status. Returns the
-/// number of new pending logs.
+struct GarminActivityIngest: Equatable {
+    /// New logs awaiting RPE/feel confirmation (matched to a planned/missed session).
+    var pendingRuns = 0
+    /// New standalone confirmed logs (real runs that matched no session).
+    var importedRuns = 0
+}
+
+/// Ingests synced Garmin running activities. An activity landing on the same
+/// calendar day as a planned — or already auto-missed — running session
+/// becomes a pending RunLog (needsConfirmation true); a missed session
+/// matching here means the run happened but synced after the missed sweep,
+/// and confirming it refunds the miss (see completeRun). An activity matching
+/// no session is still real training history: imported as a standalone
+/// confirmed RunLog (sessionId = RunLog.unattachedSessionId) so volume,
+/// baselines, and the coaches see it without touching sessions or scores.
+/// Matching never changes session status.
 @discardableResult
 func matchGarminActivities(
     _ activities: [GarminActivityResponse],
@@ -243,12 +253,12 @@ func matchGarminActivities(
     existingRunLogs: [RunLog],
     in modelContext: ModelContext,
     calendar: Calendar = .current
-) throws -> Int {
+) throws -> GarminActivityIngest {
     var knownActivityIds = Set(existingRunLogs.map(\.garminActivityId).filter { !$0.isEmpty })
     // A session already holding a pending/confirmed log is never a candidate,
     // and each session takes at most one activity per batch.
     var claimedSessionIds = Set(existingRunLogs.map(\.sessionId))
-    var created = 0
+    var ingest = GarminActivityIngest()
 
     for activity in activities {
         // The proxy only forwards running activities; this is a defensive check.
@@ -262,12 +272,12 @@ func matchGarminActivities(
             !claimedSessionIds.contains($0.id) &&
             calendar.isDate($0.scheduledDate, inSameDayAs: startTime)
         }
-        guard let session = candidates.min(by: {
+        let session = candidates.min(by: {
             abs($0.plannedDistanceKm - activity.distanceKm) < abs($1.plannedDistanceKm - activity.distanceKm)
-        }) else { continue }
+        })
 
         modelContext.insert(RunLog(
-            sessionId: session.id,
+            sessionId: session?.id ?? RunLog.unattachedSessionId,
             completedAt: startTime,
             distanceKm: activity.distanceKm,
             movingSeconds: activity.movingSeconds,
@@ -278,13 +288,49 @@ func matchGarminActivities(
             feelScore: 3,
             garminActivityId: activity.garminActivityId,
             source: .garmin,
-            needsConfirmation: true
+            needsConfirmation: session != nil
         ))
         knownActivityIds.insert(activity.garminActivityId)
-        claimedSessionIds.insert(session.id)
-        created += 1
+        if let session {
+            claimedSessionIds.insert(session.id)
+            ingest.pendingRuns += 1
+        } else {
+            ingest.importedRuns += 1
+        }
     }
-    return created
+    return ingest
+}
+
+/// Keeps the race goal's training baselines aligned with actual (confirmed)
+/// run history: baseline weekly volume = the last 28 days of running divided
+/// by four weeks; longest recent run = the longest run in the last 42 days.
+/// Manually entered values act only as a fallback until real runs exist.
+func updateRaceGoalBaselines(
+    goal: RaceGoal,
+    logs: [RunLog],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) {
+    let confirmed = logs.filter { !$0.needsConfirmation }
+    guard !confirmed.isEmpty else { return }
+
+    let fourWeeksAgo = calendar.date(byAdding: .day, value: -28, to: now) ?? now
+    let sixWeeksAgo = calendar.date(byAdding: .day, value: -42, to: now) ?? now
+
+    let recentVolume = confirmed
+        .filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
+        .reduce(0.0) { $0 + $1.distanceKm }
+    if recentVolume > 0 {
+        goal.baselineWeeklyKm = (recentVolume / 4 * 10).rounded() / 10
+    }
+
+    let longestRecent = confirmed
+        .filter { $0.completedAt >= sixWeeksAgo && $0.completedAt <= now }
+        .map(\.distanceKm)
+        .max() ?? 0
+    if longestRecent > 0 {
+        goal.longestRecentRunKm = (longestRecent * 10).rounded() / 10
+    }
 }
 
 /// Mirrors the sidecar's running filter (any typeKey containing "running" or
@@ -321,7 +367,7 @@ enum GarminSyncError: LocalizedError {
 /// mainContext changes, not just this sync's — safe under the app's
 /// save-immediately-after-every-mutation convention.
 @MainActor
-func performGarminSync(endpoint: String, in modelContext: ModelContext) async throws -> Int {
+func performGarminSync(endpoint: String, in modelContext: ModelContext) async throws -> GarminActivityIngest {
     do {
         let client = try LocalCoachClient(endpointString: endpoint)
         let snapshot = try await client.fetchGarminSnapshot(sinceDays: 7)
@@ -334,14 +380,21 @@ func performGarminSync(endpoint: String, in modelContext: ModelContext) async th
         // meanwhile).
         let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
         let existingRunLogs = try modelContext.fetch(FetchDescriptor<RunLog>())
-        let created = try matchGarminActivities(
+        let ingested = try matchGarminActivities(
             snapshot.activities,
             sessions: sessions,
             existingRunLogs: existingRunLogs,
             in: modelContext
         )
+        // Keep the race goal's baselines aligned with real run history.
+        if let goal = try modelContext.fetch(
+            FetchDescriptor<RaceGoal>(sortBy: [SortDescriptor(\.createdAt)])
+        ).first {
+            let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+            updateRaceGoalBaselines(goal: goal, logs: logs)
+        }
         try modelContext.save()
-        return created
+        return ingested
     } catch {
         modelContext.rollback()
         throw error

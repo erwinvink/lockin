@@ -825,6 +825,11 @@ final class RaceGoal {
 
 @Model
 final class RunLog {
+    /// Sentinel sessionId for runs imported from Garmin that match no planned
+    /// session: real training history attached to no workout. Session joins
+    /// simply find nothing for it.
+    static let unattachedSessionId = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
     var id: UUID = UUID()
     var sessionId: UUID = UUID()
     var completedAt: Date = Date()
