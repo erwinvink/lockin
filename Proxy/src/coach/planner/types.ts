@@ -232,6 +232,8 @@ export type RunSummary = {
   distanceKm: number;
   movingSeconds: number;
   elevationGainM: number;
+  // Descent in meters; drives downhill-conditioning planning (repeated-bout effect).
+  elevationLossM?: number;
   averageHr?: number;
   rpe?: number;
   // 1 very weak ... 5 very strong; omitted when the athlete never set it.

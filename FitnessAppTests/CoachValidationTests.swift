@@ -622,11 +622,12 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertNil(running.recentRuns[1].kind)
     }
 
-    func testMakeCoachRequestCapsRecentRunsToMostRecentTwenty() throws {
+    func testMakeCoachRequestCapsRecentRunsToMostRecentThirty() throws {
+        // 30 runs spans roughly the 90-day activity lookback at 3-4 runs/week.
         let calendar = Calendar.current
         let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
         let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
-        let runLogs = (1...25).map {
+        let runLogs = (1...35).map {
             RunLog(completedAt: weekStart.addingTimeInterval(-Double($0) * 86_400), distanceKm: Double($0), movingSeconds: 3_600)
         }
 
@@ -641,9 +642,33 @@ final class CoachValidationTests: XCTestCase {
         )
 
         let running = try XCTUnwrap(request.running)
-        XCTAssertEqual(running.recentRuns.count, 20)
-        XCTAssertEqual(running.recentRuns.first?.distanceKm, 20)
+        XCTAssertEqual(running.recentRuns.count, 30)
+        XCTAssertEqual(running.recentRuns.first?.distanceKm, 30)
         XCTAssertEqual(running.recentRuns.last?.distanceKm, 1)
+    }
+
+    func testMakeCoachRequestCarriesElevationLossNilWhenZero() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
+        let runLogs = [
+            RunLog(completedAt: weekStart.addingTimeInterval(-86_400), distanceKm: 14, movingSeconds: 5_400, elevationGainM: 420, elevationLossM: 410),
+            RunLog(completedAt: weekStart.addingTimeInterval(-2 * 86_400), distanceKm: 6, movingSeconds: 2_100)
+        ]
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [],
+            raceGoal: raceGoalFixture(),
+            runLogs: runLogs,
+            weekStart: weekStart
+        )
+
+        let runs = try XCTUnwrap(request.running).recentRuns
+        XCTAssertEqual(runs.last?.elevationLossM, 410)
+        XCTAssertNil(runs.first?.elevationLossM)
     }
 
     func testMakeCoachRequestOmitsLongRunDayOffsetOutsidePlannableRange() throws {
@@ -908,6 +933,7 @@ final class CoachValidationTests: XCTestCase {
               "distanceKm": 12.03,
               "movingSeconds": 4480,
               "elevationGainM": 156,
+              "elevationLossM": 142,
               "averageHr": 148,
               "averagePaceSecPerKm": 374,
               "name": "Utrecht Hardlopen"
@@ -939,6 +965,7 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(activity.distanceKm, 12.03)
         XCTAssertEqual(activity.movingSeconds, 4_480)
         XCTAssertEqual(activity.elevationGainM, 156)
+        XCTAssertEqual(activity.elevationLossM, 142)
         XCTAssertEqual(activity.averageHr, 148)
         XCTAssertEqual(activity.averagePaceSecPerKm, 374)
         XCTAssertEqual(activity.name, "Utrecht Hardlopen")

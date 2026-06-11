@@ -836,6 +836,7 @@ final class RunLog {
     var distanceKm: Double = 0
     var movingSeconds: Int = 0
     var elevationGainM: Int = 0
+    var elevationLossM: Int = 0
     var averageHr: Int = 0
     var averagePaceSecPerKm: Int = 0
     var rpe: Int = 0
@@ -852,6 +853,7 @@ final class RunLog {
         distanceKm: Double = 0,
         movingSeconds: Int = 0,
         elevationGainM: Int = 0,
+        elevationLossM: Int = 0,
         averageHr: Int = 0,
         averagePaceSecPerKm: Int = 0,
         rpe: Int = 0,
@@ -867,6 +869,7 @@ final class RunLog {
         self.distanceKm = distanceKm
         self.movingSeconds = movingSeconds
         self.elevationGainM = elevationGainM
+        self.elevationLossM = elevationLossM
         self.averageHr = averageHr
         self.averagePaceSecPerKm = averagePaceSecPerKm
         self.rpe = rpe

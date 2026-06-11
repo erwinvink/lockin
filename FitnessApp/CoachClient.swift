@@ -28,6 +28,7 @@ struct CoachRunSummary: Codable, Equatable {
     var distanceKm: Double
     var movingSeconds: Int
     var elevationGainM: Int
+    var elevationLossM: Int? = nil
     var averageHr: Int?
     var rpe: Int?
     var feelScore: Int? = nil   // 1 very weak ... 5 very strong; nil when never set
@@ -243,6 +244,8 @@ struct GarminActivityResponse: Codable, Equatable {
     var distanceKm: Double
     var movingSeconds: Int
     var elevationGainM: Int
+    // Optional: older proxies omit it; descent drives downhill conditioning.
+    var elevationLossM: Int? = nil
     var averageHr: Int
     var averagePaceSecPerKm: Int
     var name: String
@@ -954,13 +957,14 @@ func makeCoachRequest(
             recentRuns: runLogs
                 .filter { !$0.needsConfirmation }
                 .sorted { $0.completedAt < $1.completedAt }
-                .suffix(20)
+                .suffix(30)
                 .map {
                     CoachRunSummary(
                         completedAt: $0.completedAt,
                         distanceKm: $0.distanceKm,
                         movingSeconds: $0.movingSeconds,
                         elevationGainM: $0.elevationGainM,
+                        elevationLossM: $0.elevationLossM > 0 ? $0.elevationLossM : nil,
                         averageHr: $0.averageHr > 0 ? $0.averageHr : nil,
                         rpe: $0.rpe > 0 ? $0.rpe : nil,
                         feelScore: $0.feelScore > 0 ? $0.feelScore : nil,

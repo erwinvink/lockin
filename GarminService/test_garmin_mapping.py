@@ -264,6 +264,7 @@ class TestRunningActivity:
             "distanceKm": 12.03,
             "movingSeconds": 4480,
             "elevationGainM": 156,
+            "elevationLossM": 150,
             "averageHr": 148,
             "averagePaceSecPerKm": 374,  # 1000 / 2.672 m/s
             "name": "Utrecht Hardlopen",
@@ -320,6 +321,7 @@ class TestRunningActivity:
             "distanceKm": 0,
             "movingSeconds": 0,
             "elevationGainM": 0,
+            "elevationLossM": 0,
             "averageHr": 0,
             "averagePaceSecPerKm": 0,
             "name": "",

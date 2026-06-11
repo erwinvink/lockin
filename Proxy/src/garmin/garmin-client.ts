@@ -15,6 +15,7 @@ export type GarminActivity = {
   distanceKm: number;
   movingSeconds: number;
   elevationGainM: number;
+  elevationLossM: number;
   averageHr: number;
   averagePaceSecPerKm: number;
   name: string;

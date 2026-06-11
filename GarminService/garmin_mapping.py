@@ -240,6 +240,7 @@ def running_activity(activity_json: Any) -> dict[str, Any] | None:
         "distanceKm": distance_km,
         "movingSeconds": moving_seconds,
         "elevationGainM": _int(activity_json.get("elevationGain")),
+        "elevationLossM": _int(activity_json.get("elevationLoss")),
         "averageHr": _int(activity_json.get("averageHR")),
         "averagePaceSecPerKm": pace,
         "name": _str(activity_json.get("activityName")),

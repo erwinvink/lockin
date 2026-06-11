@@ -282,6 +282,7 @@ func matchGarminActivities(
             distanceKm: activity.distanceKm,
             movingSeconds: activity.movingSeconds,
             elevationGainM: activity.elevationGainM,
+            elevationLossM: activity.elevationLossM ?? 0,
             averageHr: activity.averageHr,
             averagePaceSecPerKm: activity.averagePaceSecPerKm,
             rpe: 0,
