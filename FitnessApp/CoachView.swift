@@ -78,7 +78,15 @@ struct CoachView: View {
                 .disabled(isGeneratingPlan || isPushingRunsToWatch)
                 .opacity(isGeneratingPlan || isPushingRunsToWatch ? 0.55 : 1)
 
-                if let generationStatus {
+                if isGeneratingPlan {
+                    HStack(spacing: 10) {
+                        SwiftUI.ProgressView()
+                        Text("Planning your week — the running coach goes first, then strength. This takes a minute or two.")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.muted)
+                    }
+                    .card()
+                } else if let generationStatus {
                     Text(generationStatus)
                         .font(.caption)
                         .foregroundStyle(AppTheme.muted)

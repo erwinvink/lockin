@@ -21,6 +21,10 @@ const skillRoot = join(process.cwd(), "src", "coach", "skills", "fitness-coach-p
 const runningSkillRoot = join(process.cwd(), "src", "coach", "skills", "running-coach-planner");
 
 createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    console.log(`${req.method} ${req.url} -> ${res.statusCode} (${Date.now() - startedAt}ms)`);
+  });
   try {
     if (req.method === "GET" && req.url === "/health") {
       writeJSON(res, 200, { ok: true, hasApiKey: Boolean(apiKey), defaultModel: defaultCoachModel });
