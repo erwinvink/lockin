@@ -381,4 +381,9 @@ if __name__ == "__main__":
         raise SystemExit(_cli_login())
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    # Bind dual-stack (IPv6 + IPv4), not 0.0.0.0 which is IPv4-only. Container
+    # platforms (e.g. Coolify) resolve this sidecar's service name to an IPv6
+    # address, so the Node proxy connects over IPv6; an IPv4-only socket
+    # silently refuses those connections. "::" with the Linux default
+    # IPV6_V6ONLY=0 accepts both families.
+    uvicorn.run(app, host="::", port=PORT)
