@@ -191,6 +191,12 @@ private struct CoachVerdictCard: View {
                     .foregroundStyle(AppTheme.muted)
             }
 
+            CoachJudgementScorecard(verdict: verdict)
+
+            if !verdict.coachEvaluationReasons.isEmpty {
+                CoachReadSection(title: "Why", bodyText: verdict.coachEvaluationReasons.prefix(3).joined(separator: "\n"))
+            }
+
             VStack(alignment: .leading, spacing: 12) {
                 DomainCoachReadSection(title: "Running", systemImage: "figure.run", bodyText: verdict.runningRead)
                 Hairline()
@@ -256,6 +262,104 @@ private struct CoachVerdictCard: View {
     private var pillIcon: String {
         if verdict?.shouldUpdatePlan == true { return "exclamationmark.triangle.fill" }
         return "checkmark.circle.fill"
+    }
+}
+
+private struct CoachJudgementScorecard: View {
+    var verdict: CoachVerdict
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Hairline()
+            HStack(alignment: .top, spacing: 0) {
+                CoachJudgementCell(
+                    title: "State",
+                    value: verdict.evaluationStatusLabel,
+                    detail: nil,
+                    color: statusColor
+                )
+                verticalRule
+                CoachJudgementCell(
+                    title: "Adherence",
+                    value: verdict.adherenceLabel,
+                    detail: verdict.adherenceDetail,
+                    color: adherenceColor
+                )
+                verticalRule
+                CoachJudgementCell(
+                    title: "Plan",
+                    value: verdict.planDecisionLabel,
+                    detail: verdict.shouldUpdatePlan ? "Auto update" : "Hold",
+                    color: planColor
+                )
+            }
+            .padding(.vertical, 12)
+            Hairline()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("coach-evaluation-scorecard")
+    }
+
+    private var verticalRule: some View {
+        Rectangle()
+            .fill(AppTheme.divider)
+            .frame(width: 1, height: 46)
+            .padding(.horizontal, 10)
+    }
+
+    private var statusColor: Color {
+        switch verdict.evaluationStatus {
+        case "ahead", "on_track", "building":
+            return AppTheme.accent
+        case "watch", "behind", "needs_recovery", "recovery_needed", "overreaching":
+            return AppTheme.warning
+        default:
+            return AppTheme.text
+        }
+    }
+
+    private var adherenceColor: Color {
+        guard let pct = verdict.adherencePct else { return AppTheme.muted }
+        return pct >= 80 ? AppTheme.accent : AppTheme.warning
+    }
+
+    private var planColor: Color {
+        switch verdict.planDecisionActionRaw {
+        case "keep_plan":
+            return AppTheme.accent
+        case "gate_intensity", "update_plan", "recovery_first":
+            return AppTheme.warning
+        default:
+            return verdict.shouldUpdatePlan ? AppTheme.warning : AppTheme.accent
+        }
+    }
+}
+
+private struct CoachJudgementCell: View {
+    var title: String
+    var value: String
+    var detail: String?
+    var color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            MicroLabel(text: title.uppercased(), color: AppTheme.faint)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(color)
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+                .fixedSize(horizontal: false, vertical: true)
+            if let detail {
+                Text(detail)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(AppTheme.muted)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

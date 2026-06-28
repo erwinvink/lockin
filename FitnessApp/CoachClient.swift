@@ -421,6 +421,66 @@ struct CoachVerdictResponse: Codable, Equatable {
     var shouldUpdatePlan: Bool
     var contextState: String
     var safetyFlags: [String]
+    var evaluation: CoachEvaluationResponse? = nil
+    var snapshot: CoachSnapshotResponse? = nil
+}
+
+struct CoachEvaluationResponse: Codable, Equatable {
+    var status: String
+    var statusLabel: String
+    var adherence: CoachAdherenceEvaluationResponse
+    var readiness: CoachReadinessEvaluationResponse
+    var progress: CoachProgressEvaluationResponse
+    var planDecision: CoachPlanDecisionResponse
+    var nextAction: String
+}
+
+struct CoachAdherenceEvaluationResponse: Codable, Equatable {
+    var standardPct: Int
+    var band: String
+    var completedPct: Int?
+    var dueSessions: Int
+    var completedSessions: Int
+    var partialSessions: Int
+    var deloadSessions: Int
+    var missedSessions: Int
+    var futureSessionsExcluded: Int
+    var rationale: String
+}
+
+struct CoachReadinessEvaluationResponse: Codable, Equatable {
+    var state: String
+    var painOrFatigueFlag: Bool
+    var hrvGate: String?
+    var trainingReadiness: Int?
+    var riskFlags: [String]
+    var rationale: String
+}
+
+struct CoachProgressEvaluationResponse: Codable, Equatable {
+    var state: String
+    var trendLabel: String
+    var flatGoalMetrics: [String]
+    var rationale: String
+}
+
+struct CoachPlanDecisionResponse: Codable, Equatable {
+    var action: String
+    var shouldUpdatePlan: Bool
+    var rationale: String
+}
+
+struct CoachSnapshotResponse: Codable, Equatable {
+    var version: Int
+    var generatedAt: String
+    var status: String
+    var statusLabel: String
+    var adherencePct: Int?
+    var readinessState: String
+    var planDecision: String
+    var shouldUpdatePlan: Bool
+    var nextAction: String
+    var facts: [String]
 }
 
 struct CoachProxyHealthResponse: Codable, Equatable {

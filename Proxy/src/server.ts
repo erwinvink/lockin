@@ -12,7 +12,9 @@ import { coachReferencePoints, computeTrainingSignals } from "./coach/planner/co
 import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
 import { validateRunningWeek } from "./coach/planner/validate-running-week";
 import { validateCombinedWeek } from "./coach/planner/validate-combined-week";
-import type { CoachContext, CoachRequest, CoachVerdict, RunningWeek, WeeklyPlan } from "./coach/planner/types";
+import { evaluateCoachRead } from "./coach/planner/evaluate-coach-read";
+import type { CoachContext, CoachEvaluation, CoachRequest, CoachSnapshot, CoachVerdict, RunningWeek, WeeklyPlan } from "./coach/planner/types";
+import type { TrainingSignals } from "./coach/planner/compute-training-signals";
 import {
   AutoPlanStore,
   markAutoPlanFailed,
@@ -98,14 +100,23 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
-      const generated = await generateCoachVerdict(apiKey, model, context, coachTelemetry(payload, model, "/coach-verdict", "coach_verdict", context));
+      const trainingSignals = computeTrainingSignals(context);
+      const evaluation = evaluateCoachRead(context, trainingSignals);
+      const generated = await generateCoachVerdict(
+        apiKey,
+        model,
+        context,
+        trainingSignals,
+        evaluation,
+        coachTelemetry(payload, model, "/coach-verdict", "coach_verdict", context)
+      );
 
       if (!generated.ok) {
         res.writeHead(generated.status, { "content-type": "application/json" }).end(generated.body);
         return;
       }
 
-      writeJSON(res, 200, normalizeCoachVerdict(generated.verdict, context));
+      writeJSON(res, 200, normalizeCoachVerdict(generated.verdict, context, evaluation));
       return;
     }
 
@@ -979,11 +990,10 @@ async function generateCoachVerdict(
   apiKey: string,
   model: string,
   context: CoachContext,
+  trainingSignals: TrainingSignals | null,
+  coachEvaluation: CoachEvaluation & { snapshot: CoachSnapshot },
   telemetry: OpenAIRequestTelemetry
 ): Promise<VerdictResult> {
-  // All figures the read may cite are computed here, in code — the model
-  // writes prose around exact numbers, it never does arithmetic over logs.
-  const trainingSignals = computeTrainingSignals(context);
   const isHybrid = Boolean(context.running);
   const response = await fetchOpenAIResponse(apiKey, {
     model,
@@ -999,6 +1009,10 @@ async function generateCoachVerdict(
           "Return a short read on the athlete's current state. This is shown directly to the athlete, not to a developer.",
           "Separate running and strength clearly. runningRead is only running/endurance/race-readiness. strengthRead is only strength, mobility, pain, fatigue, or durability work. If one side has no real signal, say so plainly in athlete language.",
           "Use nextStep for the one thing the athlete should do next. Do not tell the athlete to request, generate, refresh, or update a plan; lockin handles plan updates automatically.",
+          "coachEvaluation is computed by code and is the source of truth. Do not change its status, adherence percentage, readiness gate, progress state, plan decision, or next action.",
+          "Do not calculate adherence, readiness, progress, or plan status from raw logs. Use coachEvaluation and athleteSignals only.",
+          "The headline and summary must reflect coachEvaluation.statusLabel. nextStep must match coachEvaluation.nextAction in athlete-facing words.",
+          "shouldUpdatePlan must match coachEvaluation.planDecision.shouldUpdatePlan.",
           "Cite only numbers present in athleteSignals or coachContext, exactly as provided — never compute, estimate, or invent figures. Work at least one of the athlete's actual numbers into the summary.",
           "Pick exactly ONE actionable next step — the single highest-leverage lever right now. More than one ask dilutes all of them.",
           "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work and coachContext.plannedWork.todaySessions is not empty, gate today's intensity rather than rewriting the week. When todaySessions is empty, say there is no training today and make nextStep about rest, syncing data, or the next planned session.",
@@ -1015,6 +1029,8 @@ async function generateCoachVerdict(
         content: JSON.stringify({
           coachContext: context,
           athleteSignals: trainingSignals,
+          coachEvaluation,
+          coachSnapshot: coachEvaluation.snapshot,
           coachReferencePoints: isHybrid ? coachReferencePoints : undefined,
           verdictRules: {
             keepSummaryUnderWords: 65,
@@ -1107,7 +1123,11 @@ function buildCoachPromptPayload(
   };
 }
 
-function normalizeCoachVerdict(verdict: CoachVerdict, context: CoachContext): CoachVerdict {
+function normalizeCoachVerdict(
+  verdict: CoachVerdict,
+  context: CoachContext,
+  evaluation: CoachEvaluation & { snapshot: CoachSnapshot }
+): CoachVerdict {
   const noPlannedSessions = context.adherence.planned === 0;
   const shouldUpdateForReadiness = context.readiness.state === "recovery_needed" || context.readiness.state === "overreaching";
   const shouldUpdateForFlatProgression = flatGoalMetricsRequiringProgression(context).length > 0;
@@ -1124,10 +1144,17 @@ function normalizeCoachVerdict(verdict: CoachVerdict, context: CoachContext): Co
     recommendation,
     runningRead: athleteFacingText(verdict.runningRead || latestChange),
     strengthRead: athleteFacingText(verdict.strengthRead || recommendation),
-    nextStep,
+    nextStep: athleteFacingText(evaluation.nextAction || nextStep),
     watchItems: humanWatchItems(verdict.watchItems, [...context.readiness.riskFlags, ...verdict.safetyFlags]),
     contextState: context.readiness.state,
-    shouldUpdatePlan: verdict.shouldUpdatePlan || noPlannedSessions || shouldUpdateForReadiness || shouldUpdateForFlatProgression
+    shouldUpdatePlan:
+      evaluation.planDecision.shouldUpdatePlan ||
+      verdict.shouldUpdatePlan ||
+      noPlannedSessions ||
+      shouldUpdateForReadiness ||
+      shouldUpdateForFlatProgression,
+    evaluation,
+    snapshot: evaluation.snapshot
   };
 }
 

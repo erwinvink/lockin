@@ -353,6 +353,81 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(verdict.watchItems, ["Pain reached 4/10 recently", "Effort has been higher than planned"])
     }
 
+    func testCoachVerdictPersistsStructuredEvaluationAndSnapshot() {
+        let response = CoachVerdictResponse(
+            headline: "On track",
+            summary: "Adherence is good and readiness is clear.",
+            latestChange: "Recent work is steady.",
+            recommendation: "Keep the next session controlled.",
+            runningRead: "Running stays steady.",
+            strengthRead: "Strength stays productive.",
+            nextStep: "Complete today's session.",
+            watchItems: [],
+            shouldUpdatePlan: false,
+            contextState: "building",
+            safetyFlags: [],
+            evaluation: CoachEvaluationResponse(
+                status: "on_track",
+                statusLabel: "On track",
+                adherence: CoachAdherenceEvaluationResponse(
+                    standardPct: 80,
+                    band: "on_track",
+                    completedPct: 83,
+                    dueSessions: 6,
+                    completedSessions: 5,
+                    partialSessions: 0,
+                    deloadSessions: 0,
+                    missedSessions: 1,
+                    futureSessionsExcluded: 2,
+                    rationale: "83% meets the 80% adherence standard. 2 future sessions excluded."
+                ),
+                readiness: CoachReadinessEvaluationResponse(
+                    state: "building",
+                    painOrFatigueFlag: false,
+                    hrvGate: "ok-for-hard",
+                    trainingReadiness: 71,
+                    riskFlags: [],
+                    rationale: "No current readiness gate is blocking normal work."
+                ),
+                progress: CoachProgressEvaluationResponse(
+                    state: "holding",
+                    trendLabel: "flat",
+                    flatGoalMetrics: [],
+                    rationale: "Progress is holding rather than clearly moving forward."
+                ),
+                planDecision: CoachPlanDecisionResponse(
+                    action: "keep_plan",
+                    shouldUpdatePlan: false,
+                    rationale: "The current plan is still the right structure."
+                ),
+                nextAction: "Complete today's session."
+            ),
+            snapshot: CoachSnapshotResponse(
+                version: 1,
+                generatedAt: "2026-06-28T12:00:00.000Z",
+                status: "on_track",
+                statusLabel: "On track",
+                adherencePct: 83,
+                readinessState: "building",
+                planDecision: "keep_plan",
+                shouldUpdatePlan: false,
+                nextAction: "Complete today's session.",
+                facts: ["Adherence 83%", "Readiness building"]
+            )
+        )
+
+        let verdict = CoachVerdict(response: response, sourceLogId: nil)
+
+        XCTAssertEqual(verdict.evaluationStatus, "on_track")
+        XCTAssertEqual(verdict.evaluationStatusLabel, "On track")
+        XCTAssertEqual(verdict.adherencePct, 83)
+        XCTAssertEqual(verdict.adherenceLabel, "83%")
+        XCTAssertEqual(verdict.adherenceDetail, "6 due, 2 future excluded")
+        XCTAssertEqual(verdict.planDecisionLabel, "Keep plan")
+        XCTAssertTrue(verdict.coachEvaluationReasons.contains("No current readiness gate is blocking normal work."))
+        XCTAssertFalse(verdict.coachSnapshotRaw.isEmpty)
+    }
+
     func testRejectsMaxOutputPlanWhenItIsNotATest() {
         let response = CoachPlanResponse(
             summary: "Too hot",

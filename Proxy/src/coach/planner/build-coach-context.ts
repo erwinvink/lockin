@@ -25,7 +25,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
     validCompletedMonthLogCount,
     validCurrentMonthLogCount
   );
-  const adherence = summarizeAdherence(request);
+  const adherence = summarizeAdherence(request, now);
   const state = classifyState(riskFlags, twoFullMonthTrend.label, validCompletedMonthLogCount, validCurrentMonthLogCount, adherence);
 
   return {
@@ -112,13 +112,33 @@ function collectRiskFlags(
   return flags;
 }
 
-function summarizeAdherence(request: CoachRequest): CoachContext["adherence"] {
+function summarizeAdherence(request: CoachRequest, now: Date): CoachContext["adherence"] {
   const planned = request.plannedSessions.length;
+  const nowTime = now.getTime();
+  const dueSessions = request.plannedSessions.filter((session) => {
+    const scheduled = new Date(session.scheduledDate).getTime();
+    return Number.isFinite(scheduled) && scheduled <= nowTime;
+  });
+  const future = Math.max(0, planned - dueSessions.length);
+  const completed = dueSessions.filter((session) => session.status === "completed").length;
+  const partial = dueSessions.filter((session) => session.status === "partial").length;
+  const deload = dueSessions.filter((session) => session.status === "deload").length;
+  const missed = dueSessions.filter((session) => session.status === "missed").length;
+  const pending = dueSessions.filter((session) => session.status === "planned").length;
+  const adherenceScorePct = dueSessions.length > 0
+    ? Math.round(((completed + deload + partial * 0.5) / dueSessions.length) * 100)
+    : null;
+
   return {
     planned,
-    completed: request.plannedSessions.filter((session) => session.status === "completed").length,
-    missed: request.plannedSessions.filter((session) => session.status === "missed").length,
-    deload: request.plannedSessions.filter((session) => session.status === "deload").length
+    due: dueSessions.length,
+    future,
+    completed,
+    partial,
+    missed,
+    deload,
+    pending,
+    adherenceScorePct
   };
 }
 

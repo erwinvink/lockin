@@ -144,10 +144,17 @@ export type CoachContext = {
     };
   };
   adherence: {
+    /** All planned sessions in the request window, including future sessions. */
     planned: number;
+    /** Sessions scheduled up to now; future work is excluded from adherence judgement. */
+    due?: number;
+    future?: number;
     completed: number;
+    partial?: number;
     missed: number;
     deload: number;
+    pending?: number;
+    adherenceScorePct?: number | null;
   };
   plannedWork: {
     todaySessions: Array<{
@@ -216,6 +223,63 @@ export type CoachVerdict = {
   shouldUpdatePlan: boolean;
   contextState: ContextState;
   safetyFlags: string[];
+  evaluation?: CoachEvaluation;
+  snapshot?: CoachSnapshot;
+};
+
+export type CoachEvaluationStatus = "ahead" | "on_track" | "watch" | "behind" | "needs_recovery";
+export type CoachAdherenceBand = "excellent" | "on_track" | "watch" | "behind" | "not_enough_due_sessions";
+export type CoachProgressState = "improving" | "holding" | "declining" | "not_enough_data";
+export type CoachPlanDecisionAction = "keep_plan" | "gate_intensity" | "update_plan" | "recovery_first";
+
+export type CoachEvaluation = {
+  status: CoachEvaluationStatus;
+  statusLabel: string;
+  adherence: {
+    standardPct: 80;
+    band: CoachAdherenceBand;
+    completedPct: number | null;
+    dueSessions: number;
+    completedSessions: number;
+    partialSessions: number;
+    deloadSessions: number;
+    missedSessions: number;
+    futureSessionsExcluded: number;
+    rationale: string;
+  };
+  readiness: {
+    state: ContextState;
+    painOrFatigueFlag: boolean;
+    hrvGate: "ok-for-hard" | "favor-easy" | null;
+    trainingReadiness: number | null;
+    riskFlags: string[];
+    rationale: string;
+  };
+  progress: {
+    state: CoachProgressState;
+    trendLabel: TrendSummary["label"];
+    flatGoalMetrics: string[];
+    rationale: string;
+  };
+  planDecision: {
+    action: CoachPlanDecisionAction;
+    shouldUpdatePlan: boolean;
+    rationale: string;
+  };
+  nextAction: string;
+};
+
+export type CoachSnapshot = {
+  version: 1;
+  generatedAt: string;
+  status: CoachEvaluationStatus;
+  statusLabel: string;
+  adherencePct: number | null;
+  readinessState: ContextState;
+  planDecision: CoachPlanDecisionAction;
+  shouldUpdatePlan: boolean;
+  nextAction: string;
+  facts: string[];
 };
 
 export type RunKind = "easy" | "long" | "recovery" | "hills" | "tempo" | "intervals";

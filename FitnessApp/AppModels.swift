@@ -796,6 +796,18 @@ final class CoachVerdict {
     var shouldUpdatePlan: Bool = false
     var contextState: String = ""
     var safetyFlagsRaw: String = ""
+    var evaluationStatusRaw: String = ""
+    var evaluationStatusLabelRaw: String = ""
+    var adherencePctRaw: Int = -1
+    var adherenceBandRaw: String = ""
+    var adherenceDueSessions: Int = 0
+    var adherenceFutureSessionsExcluded: Int = 0
+    var adherenceRationaleRaw: String = ""
+    var readinessRationaleRaw: String = ""
+    var progressRationaleRaw: String = ""
+    var planDecisionActionRaw: String = ""
+    var planDecisionRationaleRaw: String = ""
+    var coachSnapshotRaw: String = ""
 
     init(
         id: UUID = UUID(),
@@ -811,7 +823,19 @@ final class CoachVerdict {
         watchItems: [String] = [],
         shouldUpdatePlan: Bool,
         contextState: String,
-        safetyFlags: [String]
+        safetyFlags: [String],
+        evaluationStatus: String = "",
+        evaluationStatusLabel: String = "",
+        adherencePct: Int? = nil,
+        adherenceBand: String = "",
+        adherenceDueSessions: Int = 0,
+        adherenceFutureSessionsExcluded: Int = 0,
+        adherenceRationale: String = "",
+        readinessRationale: String = "",
+        progressRationale: String = "",
+        planDecisionAction: String = "",
+        planDecisionRationale: String = "",
+        coachSnapshot: String = ""
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -827,6 +851,18 @@ final class CoachVerdict {
         self.shouldUpdatePlan = shouldUpdatePlan
         self.contextState = contextState
         self.safetyFlagsRaw = safetyFlags.joined(separator: "|")
+        self.evaluationStatusRaw = evaluationStatus
+        self.evaluationStatusLabelRaw = evaluationStatusLabel
+        self.adherencePctRaw = adherencePct ?? -1
+        self.adherenceBandRaw = adherenceBand
+        self.adherenceDueSessions = max(0, adherenceDueSessions)
+        self.adherenceFutureSessionsExcluded = max(0, adherenceFutureSessionsExcluded)
+        self.adherenceRationaleRaw = adherenceRationale
+        self.readinessRationaleRaw = readinessRationale
+        self.progressRationaleRaw = progressRationale
+        self.planDecisionActionRaw = planDecisionAction
+        self.planDecisionRationaleRaw = planDecisionRationale
+        self.coachSnapshotRaw = coachSnapshot
     }
 
     convenience init(response: CoachVerdictResponse, sourceLogId: UUID?) {
@@ -842,7 +878,19 @@ final class CoachVerdict {
             watchItems: response.watchItems ?? response.safetyFlags,
             shouldUpdatePlan: response.shouldUpdatePlan,
             contextState: response.contextState,
-            safetyFlags: response.safetyFlags
+            safetyFlags: response.safetyFlags,
+            evaluationStatus: response.evaluation?.status ?? response.snapshot?.status ?? "",
+            evaluationStatusLabel: response.evaluation?.statusLabel ?? response.snapshot?.statusLabel ?? "",
+            adherencePct: response.evaluation?.adherence.completedPct ?? response.snapshot?.adherencePct,
+            adherenceBand: response.evaluation?.adherence.band ?? "",
+            adherenceDueSessions: response.evaluation?.adherence.dueSessions ?? 0,
+            adherenceFutureSessionsExcluded: response.evaluation?.adherence.futureSessionsExcluded ?? 0,
+            adherenceRationale: response.evaluation?.adherence.rationale ?? "",
+            readinessRationale: response.evaluation?.readiness.rationale ?? "",
+            progressRationale: response.evaluation?.progress.rationale ?? "",
+            planDecisionAction: response.evaluation?.planDecision.action ?? response.snapshot?.planDecision ?? "",
+            planDecisionRationale: response.evaluation?.planDecision.rationale ?? "",
+            coachSnapshot: Self.snapshotStorage(response.snapshot)
         )
     }
 
@@ -869,6 +917,52 @@ final class CoachVerdict {
     var watchItems: [String] {
         let items = watchItemsRaw.split(separator: "|").map(String.init)
         return items.isEmpty ? safetyFlags.map(humanReadableCoachFlag) : items.map(humanReadableCoachFlag)
+    }
+
+    var evaluationStatus: String {
+        evaluationStatusRaw.isEmpty ? contextState : evaluationStatusRaw
+    }
+
+    var evaluationStatusLabel: String {
+        if !evaluationStatusLabelRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return evaluationStatusLabelRaw
+        }
+        return humanReadableCoachStatus(evaluationStatus)
+    }
+
+    var adherencePct: Int? {
+        adherencePctRaw >= 0 ? adherencePctRaw : nil
+    }
+
+    var adherenceLabel: String {
+        if let adherencePct {
+            return "\(adherencePct)%"
+        }
+        return "Not scored"
+    }
+
+    var adherenceDetail: String {
+        if adherenceDueSessions == 0 {
+            return adherenceFutureSessionsExcluded > 0 ? "No due sessions yet" : "No sessions due"
+        }
+        let due = "\(adherenceDueSessions) due"
+        if adherenceFutureSessionsExcluded == 0 { return due }
+        return "\(due), \(adherenceFutureSessionsExcluded) future excluded"
+    }
+
+    var planDecisionLabel: String {
+        humanReadableCoachPlanDecision(planDecisionActionRaw)
+    }
+
+    var coachEvaluationReasons: [String] {
+        [adherenceRationaleRaw, readinessRationaleRaw, progressRationaleRaw, planDecisionRationaleRaw]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func snapshotStorage(_ snapshot: CoachSnapshotResponse?) -> String {
+        guard let snapshot, let data = try? JSONEncoder.coachEncoder.encode(snapshot) else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 
@@ -898,6 +992,44 @@ func humanReadableCoachFlag(_ flag: String) -> String {
             .replacingOccurrences(of: "averageDeltaLast5", with: "recent effort trend")
             .replacingOccurrences(of: "abovePlanBy2Count", with: "sessions harder than planned")
             .replacingOccurrences(of: "maxPain", with: "highest pain")
+    }
+}
+
+func humanReadableCoachStatus(_ status: String) -> String {
+    switch status {
+    case "ahead":
+        return "Ahead"
+    case "on_track", "building":
+        return "On track"
+    case "watch", "overreaching":
+        return "Watch"
+    case "behind", "plateau":
+        return "Behind"
+    case "needs_recovery", "recovery_needed":
+        return "Needs recovery"
+    case "insufficient_history":
+        return "Learning"
+    default:
+        return status
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+}
+
+func humanReadableCoachPlanDecision(_ action: String) -> String {
+    switch action {
+    case "keep_plan":
+        return "Keep plan"
+    case "gate_intensity":
+        return "Gate intensity"
+    case "update_plan":
+        return "Update plan"
+    case "recovery_first":
+        return "Recovery first"
+    default:
+        return action.isEmpty ? "Keep plan" : action
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
     }
 }
 

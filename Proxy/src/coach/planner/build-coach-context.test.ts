@@ -151,6 +151,27 @@ test("reports no planned sessions today when the plan only has future work", () 
   assert.deepEqual(context.plannedWork.todaySessions, []);
 });
 
+test("excludes future sessions from adherence scoring", () => {
+  const request = baseRequest({
+    weekStart: "2026-06-28T00:00:00Z",
+    plannedSessions: [
+      plannedSession("past-done", "2026-06-27T08:00:00Z", "completed"),
+      plannedSession("past-missed", "2026-06-27T18:00:00Z", "missed"),
+      plannedSession("later-today", "2026-06-28T18:00:00Z", "planned"),
+      plannedSession("future", "2026-06-29T08:00:00Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-06-28T12:00:00Z"));
+
+  assert.equal(context.adherence.planned, 4);
+  assert.equal(context.adherence.due, 2);
+  assert.equal(context.adherence.future, 2);
+  assert.equal(context.adherence.completed, 1);
+  assert.equal(context.adherence.missed, 1);
+  assert.equal(context.adherence.adherenceScorePct, 50);
+});
+
 test("rounds partial weeks to race up", () => {
   const request = baseRequest({
     running: runningRequest({

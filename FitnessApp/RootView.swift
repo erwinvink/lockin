@@ -337,9 +337,27 @@ func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date = Date(
         summary: "Seven sessions logged over two weeks. One missed day reset the streak, but the last four sessions rebuilt momentum.",
         latestChange: "Pull-ups moved from 5 to 8, push-ups from 20 to 28, and plank from 1:00 to 1:35.",
         recommendation: "Keep Friday as pull capacity and Saturday as core control. Do not add make-up volume for the missed session.",
+        runningRead: "The easy run is complete and the next planned run can stay controlled.",
+        strengthRead: "Strength is on track after four straight logged sessions.",
+        nextStep: "Complete the next planned session as written and log the result.",
+        watchItems: ["One missed day is already accounted for"],
         shouldUpdatePlan: false,
         contextState: "building",
-        safetyFlags: ["shoulder warmed up before pull work"]
+        safetyFlags: ["shoulder warmed up before pull work"],
+        evaluationStatus: "on_track",
+        evaluationStatusLabel: "On track",
+        adherencePct: 86,
+        adherenceBand: "on_track",
+        adherenceDueSessions: 7,
+        adherenceFutureSessionsExcluded: 2,
+        adherenceRationale: "86% meets the 80% adherence standard. 2 future sessions excluded.",
+        readinessRationale: "No current readiness gate is blocking normal work.",
+        progressRationale: "Recent pull-up, push-up, and plank numbers are improving.",
+        planDecisionAction: "keep_plan",
+        planDecisionRationale: "The current plan is still the right structure; execution is the lever.",
+        coachSnapshot: """
+        {"version":1,"generatedAt":"2026-06-28T12:00:00.000Z","status":"on_track","statusLabel":"On track","adherencePct":86,"readinessState":"building","planDecision":"keep_plan","shouldUpdatePlan":false,"nextAction":"Complete the next planned session as written and log the result.","facts":["Adherence 86%","Readiness building"]}
+        """
     ))
 
     try modelContext.save()
