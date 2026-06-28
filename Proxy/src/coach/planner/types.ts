@@ -150,6 +150,13 @@ export type CoachContext = {
     deload: number;
   };
   plannedWork: {
+    todaySessions: Array<{
+      id: string;
+      title: string;
+      status: string;
+      focus: SessionFocus;
+      scheduledDate: string;
+    }>;
     recentGoalTargets: {
       pullUps: PlannedGoalTrend;
       pushUps: PlannedGoalTrend;

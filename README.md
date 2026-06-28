@@ -177,7 +177,7 @@ One command starts the full local backend — the coach proxy and the Garmin sid
 
 It installs missing dependencies on first run, reports whether the local Garmin login is connected (one-time fix: `cd GarminService && .venv/bin/python main.py login`), and stops both servers on Ctrl-C.
 
-The proxy endpoint is configuration, not app state: it is never stored on the device and never shown or editable in the app. Debug builds (anything run from Xcode) talk to `http://127.0.0.1:8787`; Release/TestFlight builds compile the local path out and stay pinned to `https://lockin.elevenfactor.com`. The only override is the `COACH_PROXY_ENDPOINT` environment variable in the Xcode scheme (Product → Scheme → Edit Scheme → Run → Arguments → Environment Variables) — set it to the Mac's LAN IP (for example `http://192.168.1.20:8787`) when running on a physical iPhone.
+The proxy endpoint is configuration, not app state: it is never stored on the device and never shown or editable in the app. Debug Simulator builds talk to `http://127.0.0.1:8787`; Debug builds on a physical iPhone default to `https://lockin.elevenfactor.com` because `127.0.0.1` would mean the phone itself. Release/TestFlight builds compile the local path out and stay pinned to `https://lockin.elevenfactor.com`. The only local-device override is the `COACH_PROXY_ENDPOINT` environment variable in the Xcode scheme (Product → Scheme → Edit Scheme → Run → Arguments → Environment Variables) — set it to the Mac's LAN IP (for example `http://192.168.1.20:8787`) when deliberately running a physical iPhone against your Mac.
 
 Put the real key in `Proxy/.env`:
 
@@ -218,7 +218,7 @@ The proxy is a Node/TypeScript app in `Proxy/`.
 
 Server requirements:
 
-- Node.js runtime
+- Node.js `22.13.0` or newer. The sync store uses Node's built-in `node:sqlite` module; before Node `22.13.0`, it still requires `--experimental-sqlite`.
 - `npm install`
 - `npm start`
 - `OPENAI_API_KEY` set in server environment variables
@@ -228,6 +228,7 @@ Server requirements:
 Coolify-style setup:
 
 - App/root directory: `Proxy`
+- Runtime: Node `22.13.0` or newer. If Coolify/Nixpacks chooses an older Node 22 patch, set `NIXPACKS_NODE_VERSION=22.13.0` or add `NODE_OPTIONS=--experimental-sqlite`.
 - Install command: `npm install`
 - Start command: `npm start`
 - Environment variables:

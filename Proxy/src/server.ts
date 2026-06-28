@@ -1001,7 +1001,7 @@ async function generateCoachVerdict(
           "Use nextStep for the one thing the athlete should do next. Do not tell the athlete to request, generate, refresh, or update a plan; lockin handles plan updates automatically.",
           "Cite only numbers present in athleteSignals or coachContext, exactly as provided — never compute, estimate, or invent figures. Work at least one of the athlete's actual numbers into the summary.",
           "Pick exactly ONE actionable next step — the single highest-leverage lever right now. More than one ask dilutes all of them.",
-          "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work, gate today's intensity rather than rewriting the week.",
+          "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work and coachContext.plannedWork.todaySessions is not empty, gate today's intensity rather than rewriting the week. When todaySessions is empty, say there is no training today and make nextStep about rest, syncing data, or the next planned session.",
           "If there are no completed training logs or runs, say that you only know the starting profile and goals.",
           "If the latest session raises pain, very poor feel, overreaching, or progress concerns, recommend updating the week.",
           "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, internal systems, or variable names.",
@@ -1025,6 +1025,12 @@ async function generateCoachVerdict(
             keepRecommendationUnderWords: 32,
             noPlanMutation: true,
             oneActionableChange: true,
+            todayHasPlannedSessions: context.plannedWork.todaySessions.length > 0,
+            todaySessions: context.plannedWork.todaySessions,
+            noTodayTrainingRule:
+              context.plannedWork.todaySessions.length === 0
+                ? "There are no planned sessions today. Do not tell the athlete to adjust, complete, or gate today's training."
+                : undefined,
             citeOnlyProvidedNumbers: true,
             athleteLanguageOnly: true,
             noInternalMetricNames: true,

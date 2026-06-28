@@ -162,10 +162,10 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Ready for the first week"].exists)
         XCTAssertTrue(app.staticTexts["Plan"].exists)
         XCTAssertTrue(app.staticTexts["Automatic"].exists)
-        XCTAssertFalse(app.buttons["Plan my week"].exists)
+        XCTAssertTrue(app.buttons["Create week schedule"].exists)
         XCTAssertFalse(app.buttons["Read new session"].exists)
-        // Coach inputs and the manual regenerate fallback live behind Advanced;
-        // the main surface stays focused on read and automation status.
+        // Coach inputs and technical fallback controls live behind Advanced;
+        // the main surface keeps only the user-facing plan action visible.
         XCTAssertFalse(app.staticTexts["What I'll use"].exists)
     }
 

@@ -51,6 +51,7 @@ function cleanFlatContext(overrides: Partial<CoachContext> = {}): CoachContext {
     history: baseHistory(),
     adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
     plannedWork: {
+      todaySessions: [],
       recentGoalTargets: {
         pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
         pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },

@@ -32,6 +32,12 @@ struct ProgressView: View {
         sessions.filter { $0.status == .missed }.count
     }
 
+    private var streakSnapshot: TrainingStreakSnapshot {
+        let computed = trainingStreakSnapshot(from: sessions)
+        if computed.best > 0 { return computed }
+        return TrainingStreakSnapshot(current: rank.streak, best: rank.displayedBestStreak)
+    }
+
     var body: some View {
         NavigationStack {
             ScreenBackground(title: "Progress") {
@@ -51,7 +57,7 @@ struct ProgressView: View {
 
     private var coreProgress: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ConsistencyLedger(rank: rank, missedTrainingCount: missedTrainingCount)
+            ConsistencyLedger(streak: streakSnapshot, missedTrainingCount: missedTrainingCount)
             strengthGoals
         }
     }
@@ -399,19 +405,19 @@ private struct RunningSection: View {
 // MARK: - Consistency
 
 private struct ConsistencyLedger: View {
-    var rank: RankState
+    var streak: TrainingStreakSnapshot
     var missedTrainingCount: Int
 
     var body: some View {
         VStack(spacing: 0) {
             Hairline()
             HStack(spacing: 0) {
-                MetricCell(model: MetricCellModel(label: "STREAK", value: "\(rank.streak)", detail: "sessions"))
+                MetricCell(model: MetricCellModel(label: "STREAK", value: "\(streak.current)", detail: "days"))
                     .padding(.vertical, 8)
                 Rectangle()
                     .fill(AppTheme.divider)
                     .frame(width: 1, height: 30)
-                MetricCell(model: MetricCellModel(label: "BEST", value: "\(rank.displayedBestStreak)"))
+                MetricCell(model: MetricCellModel(label: "BEST", value: "\(streak.best)"))
                     .padding(.leading, 14)
                     .padding(.vertical, 8)
             }

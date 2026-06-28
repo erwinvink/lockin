@@ -29,6 +29,51 @@ func duePlannedSessions(from sessions: [WorkoutSession], now: Date = Date(), cal
         }
 }
 
+struct TrainingStreakSnapshot: Equatable {
+    var current: Int
+    var best: Int
+}
+
+/// Display streaks as training days, not scored sessions. Multiple completed
+/// sessions on the same calendar day count once; any missed training day resets
+/// the run. Rest days do not break the streak because they were never planned.
+func trainingStreakSnapshot(
+    from sessions: [WorkoutSession],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> TrainingStreakSnapshot {
+    let today = calendar.startOfDay(for: now)
+    let history = sessions
+        .filter { $0.scheduledDate <= now || calendar.startOfDay(for: $0.scheduledDate) <= today }
+        .reduce(into: [Date: (trained: Bool, missed: Bool)]()) { result, session in
+            let day = calendar.startOfDay(for: session.scheduledDate)
+            var state = result[day] ?? (trained: false, missed: false)
+            switch session.status {
+            case .completed, .deload:
+                state.trained = true
+            case .missed:
+                state.missed = true
+            case .planned, .partial:
+                break
+            }
+            result[day] = state
+        }
+        .sorted { $0.key < $1.key }
+
+    var current = 0
+    var best = 0
+    for (_, state) in history {
+        if state.missed {
+            current = 0
+        }
+        if state.trained {
+            current += 1
+            best = max(best, current)
+        }
+    }
+    return TrainingStreakSnapshot(current: current, best: best)
+}
+
 /// Planned sessions that should be marked missed. Strength sessions are
 /// overdue as soon as their scheduled day has passed. Running sessions get
 /// one grace day so an evening run can still arrive via the overnight Garmin

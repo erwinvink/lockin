@@ -1,7 +1,10 @@
 {
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "tsx src/server.ts",
-    "start": "tsx src/server.ts",
+    "start": "node --experimental-sqlite --import tsx src/server.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },

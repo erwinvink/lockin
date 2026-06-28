@@ -50,6 +50,7 @@ const baseContext: CoachContext = {
   },
   adherence: { planned: 0, completed: 0, missed: 0, deload: 0 },
   plannedWork: {
+    todaySessions: [],
     recentGoalTargets: {
       pullUps: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null },
       pushUps: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null },

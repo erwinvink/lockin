@@ -50,7 +50,8 @@ struct CoachView: View {
                 PlanAutomationCard(
                     latestPlan: latestPlan,
                     isGenerating: isGeneratingPlan,
-                    status: generationStatus
+                    status: generationStatus,
+                    onRegeneratePlan: generateAIWeek
                 )
 
                 AdvancedCoachControls(
@@ -337,6 +338,7 @@ private struct PlanAutomationCard: View {
     var latestPlan: CoachPlan?
     var isGenerating: Bool
     var status: String?
+    var onRegeneratePlan: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -356,6 +358,14 @@ private struct PlanAutomationCard: View {
                 InfoLine(title: "Mode", value: "Night + training")
                 InfoLine(title: "Latest AI plan", value: latestPlanText)
             }
+
+            Button(action: onRegeneratePlan) {
+                Label(isGenerating ? "Creating schedule" : "Create week schedule", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryActionButtonStyle())
+            .disabled(isGenerating)
+            .accessibilityIdentifier("plan-week-button")
 
             if isGenerating {
                 SwiftUI.ProgressView("Updating plan")

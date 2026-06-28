@@ -115,6 +115,42 @@ test("carries running request through with computed weeksToRace", () => {
   assert.equal(context.running?.longRunDayOffset, 5);
 });
 
+test("summarizes planned sessions scheduled today for coach read rules", () => {
+  const request = baseRequest({
+    weekStart: "2026-06-28T00:00:00Z",
+    plannedSessions: [
+      plannedSession("past", "2026-06-27T08:00:00Z", "completed"),
+      plannedSession("today", "2026-06-28T18:00:00Z", "planned"),
+      plannedSession("future", "2026-06-29T08:00:00Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-06-28T12:00:00Z"));
+
+  assert.deepEqual(context.plannedWork.todaySessions, [
+    {
+      id: "today",
+      title: "Today session",
+      status: "planned",
+      focus: "mixed",
+      scheduledDate: "2026-06-28T18:00:00Z"
+    }
+  ]);
+});
+
+test("reports no planned sessions today when the plan only has future work", () => {
+  const request = baseRequest({
+    weekStart: "2026-06-28T00:00:00Z",
+    plannedSessions: [
+      plannedSession("future", "2026-06-29T08:00:00Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-06-28T12:00:00Z"));
+
+  assert.deepEqual(context.plannedWork.todaySessions, []);
+});
+
 test("rounds partial weeks to race up", () => {
   const request = baseRequest({
     running: runningRequest({
@@ -250,6 +286,17 @@ function runSummary(completedAt: string, overrides: Partial<RunSummary> = {}): R
     rpe: 5,
     kind: "easy",
     ...overrides
+  };
+}
+
+function plannedSession(id: string, scheduledDate: string, status: string): CoachRequest["plannedSessions"][number] {
+  return {
+    id,
+    scheduledDate,
+    title: `${id[0].toUpperCase()}${id.slice(1)} session`,
+    focus: "mixed",
+    status,
+    exercises: []
   };
 }
 

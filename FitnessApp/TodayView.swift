@@ -28,6 +28,12 @@ struct TodayView: View {
         ranks.first ?? RankState()
     }
 
+    private var streakSnapshot: TrainingStreakSnapshot {
+        let computed = trainingStreakSnapshot(from: sessions)
+        if computed.best > 0 { return computed }
+        return TrainingStreakSnapshot(current: rank.streak, best: rank.displayedBestStreak)
+    }
+
     /// Morning readiness only counts when the snapshot is from today or
     /// yesterday — stale wellness shown as "readiness" would mislead.
     private var todaysSnapshot: GarminDailySnapshot? {
@@ -124,8 +130,8 @@ struct TodayView: View {
                 }
 
                 MetricStrip(cells: [
-                    MetricCellModel(label: "STREAK", value: "\(rank.streak)"),
-                    MetricCellModel(label: "BEST", value: "\(rank.displayedBestStreak)"),
+                    MetricCellModel(label: "STREAK", value: "\(streakSnapshot.current)"),
+                    MetricCellModel(label: "BEST", value: "\(streakSnapshot.best)"),
                     MetricCellModel(label: "WEEK", value: runDistanceText(km: thisWeekKm))
                 ])
                 .entrance(3)

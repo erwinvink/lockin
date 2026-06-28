@@ -38,6 +38,7 @@ const baseContext: CoachContext = {
   },
   adherence: { planned: 0, completed: 0, missed: 0, deload: 0 },
   plannedWork: {
+    todaySessions: [],
     recentGoalTargets: {
       pullUps: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null },
       pushUps: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null },
@@ -116,6 +117,7 @@ test("rejects static pull and push prescriptions after clean flat recent work", 
     },
     adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
     plannedWork: {
+      todaySessions: [],
       recentGoalTargets: {
         pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
         pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
@@ -143,6 +145,7 @@ test("accepts flat recent targets when the new plan progresses volume", () => {
     },
     adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
     plannedWork: {
+      todaySessions: [],
       recentGoalTargets: {
         pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
         pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },

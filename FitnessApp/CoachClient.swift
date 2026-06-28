@@ -1488,28 +1488,43 @@ func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -
 struct LocalCoachClient {
     static let hostedEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
     // The endpoint is configuration, not app state: it is never stored on the
-    // device and never shown or editable in the app. Debug builds (Xcode runs)
-    // talk to the proxy on the developer's machine — override the address only
-    // via the COACH_PROXY_ENDPOINT environment variable in the Xcode scheme
-    // (e.g. a Mac LAN IP for physical-device runs). Release builds (TestFlight,
-    // App Store) compile the local path out entirely and stay pinned to the
-    // hosted proxy.
+    // device and never shown or editable in the app. Debug Simulator builds
+    // talk to the proxy on the developer's machine. A Debug build installed on
+    // a physical iPhone defaults to production because 127.0.0.1 would mean the
+    // phone itself; set COACH_PROXY_ENDPOINT to a Mac LAN IP when deliberately
+    // testing against a local proxy. Release builds (TestFlight, App Store)
+    // compile the local path out entirely and stay pinned to the hosted proxy.
     #if DEBUG
     static let defaultEndpointString = resolvedDevelopmentEndpoint()
     static let allowsLocalEndpointsByDefault = true
 
-    static func resolvedDevelopmentEndpoint(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+    static func resolvedDevelopmentEndpoint(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        isSimulator: Bool = isRunningInSimulator
+    ) -> String {
         let override = environment["COACH_PROXY_ENDPOINT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let override, !override.isEmpty {
+            if !isSimulator, isLoopbackEndpoint(override) {
+                return hostedEndpointString
+            }
             return override
         }
-        return "http://127.0.0.1:8787/generate-week-plan"
+        return isSimulator ? "http://127.0.0.1:8787/generate-week-plan" : hostedEndpointString
     }
     #else
     static let defaultEndpointString = hostedEndpointString
     static let allowsLocalEndpointsByDefault = false
     #endif
     private static let hostedProxyHost = "lockin.elevenfactor.com"
+    #if DEBUG
+    private static var isRunningInSimulator: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }
+    #endif
 
     var endpoint: URL
     var session: URLSession = .shared
@@ -2003,6 +2018,15 @@ struct LocalCoachClient {
         if octets[0] == 192, octets[1] == 168 { return true }
         if octets[0] == 172, (16...31).contains(octets[1]) { return true }
         return false
+    }
+
+    private static func isLoopbackEndpoint(_ value: String) -> Bool {
+        var rawValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rawValue.contains("://") {
+            rawValue = "http://\(rawValue)"
+        }
+        guard let host = URLComponents(string: rawValue)?.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
     private static func generateWeekEndpoint(from endpoint: URL) -> URL? {

@@ -39,20 +39,49 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(message.contains("GARMIN_SERVICE_URL"))
     }
 
-    func testDevelopmentEndpointFallsBackToLoopbackProxy() {
+    func testSimulatorDevelopmentEndpointFallsBackToLoopbackProxy() {
         XCTAssertEqual(
-            LocalCoachClient.resolvedDevelopmentEndpoint(environment: [:]),
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: [:], isSimulator: true),
             "http://127.0.0.1:8787/generate-week-plan"
         )
         XCTAssertEqual(
-            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "   "]),
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "   "], isSimulator: true),
             "http://127.0.0.1:8787/generate-week-plan"
+        )
+    }
+
+    func testPhysicalDeviceDevelopmentEndpointFallsBackToHostedProxy() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: [:], isSimulator: false),
+            LocalCoachClient.hostedEndpointString
+        )
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "   "], isSimulator: false),
+            LocalCoachClient.hostedEndpointString
         )
     }
 
     func testDevelopmentEndpointHonorsSchemeEnvironmentOverride() {
         XCTAssertEqual(
-            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "http://192.168.1.20:8787"]),
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "http://192.168.1.20:8787"], isSimulator: true),
+            "http://192.168.1.20:8787"
+        )
+    }
+
+    func testPhysicalDeviceDevelopmentEndpointIgnoresLoopbackOverride() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "http://127.0.0.1:8787"], isSimulator: false),
+            LocalCoachClient.hostedEndpointString
+        )
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "localhost:8787"], isSimulator: false),
+            LocalCoachClient.hostedEndpointString
+        )
+    }
+
+    func testPhysicalDeviceDevelopmentEndpointAllowsLanOverride() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "http://192.168.1.20:8787"], isSimulator: false),
             "http://192.168.1.20:8787"
         )
     }

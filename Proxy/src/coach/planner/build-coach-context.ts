@@ -124,6 +124,20 @@ function summarizeAdherence(request: CoachRequest): CoachContext["adherence"] {
 
 function summarizePlannedWork(plannedSessions: CoachRequest["plannedSessions"], weekStart: string): CoachContext["plannedWork"] {
   const startTime = new Date(weekStart).getTime();
+  const endOfToday = startTime + 24 * 60 * 60 * 1000;
+  const todaySessions = plannedSessions
+    .filter((session) => {
+      const scheduled = new Date(session.scheduledDate).getTime();
+      return Number.isFinite(scheduled) && scheduled >= startTime && scheduled < endOfToday;
+    })
+    .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime())
+    .map((session) => ({
+      id: session.id,
+      title: session.title,
+      status: session.status,
+      focus: session.focus,
+      scheduledDate: session.scheduledDate
+    }));
   const goalEntries = plannedSessions
     .filter((session) => new Date(session.scheduledDate).getTime() < startTime)
     .flatMap((session) =>
@@ -142,6 +156,7 @@ function summarizePlannedWork(plannedSessions: CoachRequest["plannedSessions"], 
     .sort((a, b) => new Date(b.scheduledDate).getTime() - new Date(a.scheduledDate).getTime());
 
   return {
+    todaySessions,
     recentGoalTargets: {
       pullUps: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "pullUps")),
       pushUps: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "pushUps")),

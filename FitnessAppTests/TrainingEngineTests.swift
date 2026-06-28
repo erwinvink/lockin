@@ -118,6 +118,29 @@ final class TrainingEngineTests: XCTestCase {
         XCTAssertEqual(rank.displayedBestStreak, 5)
     }
 
+    func testTrainingStreakCountsUniqueTrainingDaysNotSessions() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 28, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let threeDaysAgo = try XCTUnwrap(calendar.date(byAdding: .day, value: -3, to: today))
+
+        let missed = WorkoutSession(scheduledDate: threeDaysAgo, title: "Missed", weekIndex: 0, focus: .mixed, status: .missed, summary: "Missed")
+        let firstYesterday = WorkoutSession(scheduledDate: yesterday, title: "Strength", weekIndex: 0, focus: .pull, status: .completed, summary: "Done")
+        let secondYesterday = WorkoutSession(scheduledDate: yesterday.addingTimeInterval(3_600), title: "Run", weekIndex: 0, focus: .mixed, status: .completed, summary: "Done", discipline: .running)
+        let todayDone = WorkoutSession(scheduledDate: today, title: "Core", weekIndex: 0, focus: .core, status: .deload, summary: "Done")
+
+        let snapshot = trainingStreakSnapshot(
+            from: [todayDone, missed, secondYesterday, firstYesterday],
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(snapshot.current, 2)
+        XCTAssertEqual(snapshot.best, 2)
+    }
+
     func testTodayOnlyTreatsCurrentDaySessionsAsDue() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
