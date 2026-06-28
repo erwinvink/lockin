@@ -29,6 +29,16 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(message.contains("Coolify environment variables"))
     }
 
+    func testMissingGarminRouteErrorExplainsProxyRedeploy() throws {
+        let endpoint = try XCTUnwrap(URL(string: "https://lockin.elevenfactor.com/garmin/connect"))
+        let error = CoachClientError.missingGarminRoute(endpoint)
+        let message = error.localizedDescription
+
+        XCTAssertTrue(message.contains("/garmin/connect"))
+        XCTAssertTrue(message.contains("Redeploy the coach proxy"))
+        XCTAssertTrue(message.contains("GARMIN_SERVICE_URL"))
+    }
+
     func testDevelopmentEndpointFallsBackToLoopbackProxy() {
         XCTAssertEqual(
             LocalCoachClient.resolvedDevelopmentEndpoint(environment: [:]),
@@ -99,6 +109,7 @@ final class CoachValidationTests: XCTestCase {
 
     func testCoachPlanRequestEncodesSelectedModel() throws {
         let request = CoachPlanRequest(
+            userId: LockinCurrentUser.username,
             model: "gpt-5.5",
             baseline: CoachBaseline(pullUps: 1, pushUps: 2, plankSeconds: 30),
             goals: CoachGoals(pullUps: 10, pushUps: 20, plankSeconds: 120),
@@ -133,11 +144,13 @@ final class CoachValidationTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         XCTAssertEqual(object["model"] as? String, "gpt-5.5")
+        XCTAssertEqual(object["userId"] as? String, LockinCurrentUser.username)
         XCTAssertEqual(object["profileNotes"] as? String, "Left elbow gets cranky after high pull volume.")
         XCTAssertEqual(object["trainingDays"] as? [String], ["monday", "wednesday", "friday"])
         XCTAssertEqual(object["trainingDayOffsets"] as? [Int], [1, 3, 5])
         let logs = try XCTUnwrap(object["trainingLogs"] as? [[String: Any]])
-        XCTAssertEqual(logs.first?["notes"] as? String, "Felt shoulder tightness near the end.")
+        let firstLog = try XCTUnwrap(logs.first)
+        XCTAssertEqual(firstLog["notes"] as? String, "Felt shoulder tightness near the end.")
     }
 
     func testCoachPlanRequestIncludesPreviousPrescriptions() throws {
@@ -178,6 +191,7 @@ final class CoachValidationTests: XCTestCase {
             weekStart: scheduledDate.addingTimeInterval(86_400)
         )
 
+        XCTAssertEqual(request.userId, profile.id.uuidString)
         let exercise = try XCTUnwrap(request.plannedSessions.first?.exercises.first)
         XCTAssertEqual(exercise.exercise, "pullUp")
         XCTAssertEqual(exercise.sets, 3)
@@ -286,6 +300,28 @@ final class CoachValidationTests: XCTestCase {
 
         XCTAssertTrue(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: staleLegacyVerdict))
         XCTAssertFalse(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: currentLegacyVerdict))
+    }
+
+    func testCoachVerdictHumanizesWatchItemsAndUsesDomainReads() {
+        let verdict = CoachVerdict(
+            sourceLogId: nil,
+            headline: "Recovery needed",
+            summary: "Keep the next step simple.",
+            latestChange: "Fallback running",
+            recommendation: "Fallback strength",
+            runningRead: "Running volume rose quickly; keep the next run easy.",
+            strengthRead: "Strength stays supportive while pain settles.",
+            nextStep: "Keep the next session easy.",
+            watchItems: ["recent_pain_level_4_or_higher", "recent_effort_above_plan"],
+            shouldUpdatePlan: true,
+            contextState: "recovery_needed",
+            safetyFlags: []
+        )
+
+        XCTAssertEqual(verdict.runningRead, "Running volume rose quickly; keep the next run easy.")
+        XCTAssertEqual(verdict.strengthRead, "Strength stays supportive while pain settles.")
+        XCTAssertEqual(verdict.nextStep, "Keep the next session easy.")
+        XCTAssertEqual(verdict.watchItems, ["Pain reached 4/10 recently", "Effort has been higher than planned"])
     }
 
     func testRejectsMaxOutputPlanWhenItIsNotATest() {
@@ -588,7 +624,7 @@ final class CoachValidationTests: XCTestCase {
         let runLogs = [
             RunLog(completedAt: weekStart.addingTimeInterval(-86_400), distanceKm: 12, movingSeconds: 4_200, elevationGainM: 180, averageHr: 151, rpe: 6),
             RunLog(completedAt: weekStart.addingTimeInterval(-3 * 86_400), distanceKm: 8, movingSeconds: 2_900, elevationGainM: 60),
-            RunLog(completedAt: weekStart.addingTimeInterval(-2 * 86_400), distanceKm: 21, movingSeconds: 7_600, elevationGainM: 400, needsConfirmation: true)
+            RunLog(completedAt: weekStart.addingTimeInterval(-2 * 86_400), distanceKm: 21, movingSeconds: 7_600, elevationGainM: 400)
         ]
 
         let request = makeCoachRequest(
@@ -613,13 +649,63 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(running.runningDayOffsets, [1, 3, 5])
         XCTAssertEqual(running.longRunDay, "saturday")
         XCTAssertEqual(running.longRunDayOffset, 5)
-        XCTAssertEqual(running.recentRuns.count, 2)
-        XCTAssertEqual(running.recentRuns.map(\.distanceKm), [8, 12])
+        XCTAssertEqual(running.recentRuns.count, 3)
+        XCTAssertEqual(running.recentRuns.map(\.distanceKm), [8, 21, 12])
         XCTAssertNil(running.recentRuns[0].averageHr)
         XCTAssertNil(running.recentRuns[0].rpe)
-        XCTAssertEqual(running.recentRuns[1].averageHr, 151)
-        XCTAssertEqual(running.recentRuns[1].rpe, 6)
-        XCTAssertNil(running.recentRuns[1].kind)
+        XCTAssertNil(running.recentRuns[1].rpe)
+        XCTAssertEqual(running.recentRuns[1].feelScore, 3)
+        XCTAssertEqual(running.recentRuns[2].averageHr, 151)
+        XCTAssertEqual(running.recentRuns[2].rpe, 6)
+        XCTAssertNil(running.recentRuns[2].kind)
+    }
+
+    func testMakeCoachRequestDeduplicatesGarminActivityIdsForRecentRuns() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
+        let runDate = weekStart.addingTimeInterval(-86_400)
+        let matchedSession = WorkoutSession(
+            scheduledDate: runDate,
+            title: "Easy run",
+            weekIndex: 1,
+            focus: .mixed,
+            status: .completed,
+            summary: "Completed from Garmin.",
+            discipline: .running
+        )
+        let duplicateStandalone = RunLog(
+            sessionId: RunLog.unattachedSessionId,
+            completedAt: runDate,
+            distanceKm: 35,
+            movingSeconds: 12_600,
+            garminActivityId: "garmin-35k",
+            source: .garmin
+        )
+        let matchedLog = RunLog(
+            sessionId: matchedSession.id,
+            completedAt: runDate,
+            distanceKm: 35,
+            movingSeconds: 12_600,
+            averageHr: 142,
+            garminActivityId: "garmin-35k",
+            source: .garmin
+        )
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [matchedSession],
+            raceGoal: raceGoalFixture(),
+            runLogs: [duplicateStandalone, matchedLog],
+            weekStart: weekStart
+        )
+
+        let running = try XCTUnwrap(request.running)
+        XCTAssertEqual(running.recentRuns.count, 1)
+        XCTAssertEqual(running.recentRuns.first?.distanceKm, 35)
+        XCTAssertEqual(running.recentRuns.first?.averageHr, 142)
     }
 
     func testMakeCoachRequestCapsRecentRunsToMostRecentThirty() throws {
@@ -889,23 +975,28 @@ final class CoachValidationTests: XCTestCase {
 
     func testGarminStatusResponseDecodesProxyShape() throws {
         let degradedJSON = """
-        { "ok": false, "loggedIn": true, "lastError": "Garmin service timed out." }
+        { "ok": false, "userId": "user-1", "loggedIn": true, "state": "connected", "connectedEmail": "runner@example.com", "lastError": "Garmin service timed out." }
         """
 
         let degraded = try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: Data(degradedJSON.utf8))
 
         XCTAssertFalse(degraded.ok)
+        XCTAssertEqual(degraded.userId, "user-1")
         XCTAssertTrue(degraded.loggedIn)
+        XCTAssertEqual(degraded.state, .connected)
+        XCTAssertEqual(degraded.connectedEmail, "runner@example.com")
         XCTAssertEqual(degraded.lastError, "Garmin service timed out.")
 
         let healthyJSON = """
-        { "ok": true, "loggedIn": true, "lastError": null }
+        { "ok": true, "loggedIn": false, "state": "mfa_required", "connectedEmail": null, "lastError": null }
         """
 
         let healthy = try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: Data(healthyJSON.utf8))
 
         XCTAssertTrue(healthy.ok)
-        XCTAssertTrue(healthy.loggedIn)
+        XCTAssertFalse(healthy.loggedIn)
+        XCTAssertEqual(healthy.state, .mfaRequired)
+        XCTAssertEqual(healthy.displayState.text, "MFA needed")
         XCTAssertNil(healthy.lastError)
     }
 
@@ -1156,6 +1247,104 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(scheduledRun.pushedToGarminAt, stampDate)
         XCTAssertTrue(failedRun.garminWorkoutId.isEmpty, "Failed results must not stamp the session")
         XCTAssertNil(failedRun.pushedToGarminAt)
+    }
+
+    func testGarminSyncWorkoutsIncludesExistingGarminWorkoutIdForAdoption() throws {
+        let runDate = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 16, hour: 9)))
+        let plannedRun = WorkoutSession(
+            scheduledDate: runDate,
+            title: "Steady run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Keep it smooth.",
+            estimatedDurationMinutes: 50,
+            discipline: .running,
+            runKind: .easy,
+            plannedDistanceKm: 8,
+            garminWorkoutId: "existing-9001",
+            pushedToGarminAt: Date(timeIntervalSince1970: 1_750_000_000)
+        )
+
+        let workout = try XCTUnwrap(garminSyncWorkouts(from: [plannedRun]).first)
+
+        XCTAssertEqual(workout.sessionId, plannedRun.id.uuidString)
+        XCTAssertEqual(workout.existingGarminWorkoutId, "existing-9001")
+        XCTAssertEqual(workout.date, "2026-06-16")
+    }
+
+    func testGarminSyncResponseDecodesProxyShape() throws {
+        let json = """
+        {
+          "userId": "user-1",
+          "planRevisionId": "plan-1",
+          "status": "blocked_on_delete",
+          "message": "Replacing Garmin workouts after old ones are removed.",
+          "workouts": [
+            { "sessionId": "A", "status": "synced", "garminWorkoutId": "1290881234", "error": null, "pushedAt": "2026-06-13T09:30:00.000Z" },
+            { "sessionId": "B", "status": "failed", "garminWorkoutId": null, "error": "not logged in", "pushedAt": null }
+          ],
+          "pendingDeleteCount": 1,
+          "failedDeleteCount": 0,
+          "nextRetryAt": null,
+          "lastError": "Old Garmin workouts must be removed before replacements can be created."
+        }
+        """
+
+        let response = try JSONDecoder.coachDecoder.decode(GarminSyncPlanResponse.self, from: Data(json.utf8))
+
+        XCTAssertEqual(response.status, .blockedOnDelete)
+        XCTAssertEqual(response.workouts.count, 2)
+        XCTAssertEqual(response.workouts[0].status, .synced)
+        XCTAssertEqual(response.workouts[1].status, .failed)
+        XCTAssertEqual(response.pendingDeleteCount, 1)
+    }
+
+    func testApplyGarminSyncResultsStampsSyncedAndFailedStatuses() {
+        let syncedRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Tempo run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Quality.",
+            discipline: .running,
+            runKind: .tempo
+        )
+        let failedRun = WorkoutSession(
+            scheduledDate: Date(),
+            title: "Easy run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Recovery.",
+            discipline: .running,
+            runKind: .easy
+        )
+        let stampDate = Date(timeIntervalSince1970: 1_750_100_000)
+        let results = [
+            GarminSyncWorkoutStatus(
+                sessionId: syncedRun.id.uuidString,
+                status: .synced,
+                garminWorkoutId: "1290881234",
+                error: nil,
+                pushedAt: "2026-06-13T09:30:00Z"
+            ),
+            GarminSyncWorkoutStatus(
+                sessionId: failedRun.id.uuidString,
+                status: .failed,
+                garminWorkoutId: nil,
+                error: "not logged in",
+                pushedAt: nil
+            )
+        ]
+
+        let applied = applyGarminSyncResults(results, to: [syncedRun, failedRun], at: stampDate)
+
+        XCTAssertEqual(applied, 2)
+        XCTAssertEqual(syncedRun.garminWorkoutId, "1290881234")
+        XCTAssertEqual(syncedRun.garminSyncStatus, .synced)
+        XCTAssertNotNil(syncedRun.pushedToGarminAt)
+        XCTAssertEqual(failedRun.garminSyncStatus, .failed)
+        XCTAssertEqual(failedRun.garminSyncError, "not logged in")
+        XCTAssertTrue(failedRun.garminWorkoutId.isEmpty)
     }
 
     func testGarminDeleteResponseDecodesProxyShape() throws {

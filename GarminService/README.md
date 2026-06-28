@@ -14,7 +14,7 @@ cd GarminService
 python3 -m venv .venv            # Python 3.11+
 . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env             # fill in your Garmin credentials
+cp .env.example .env             # optional: fill default/legacy Garmin credentials
 ```
 
 Env vars (read from `.env` in this directory, real env wins):
@@ -23,8 +23,14 @@ Env vars (read from `.env` in this directory, real env wins):
 | --- | --- | --- |
 | `GARMIN_EMAIL` | — | Garmin Connect account email |
 | `GARMIN_PASSWORD` | — | Garmin Connect account password |
+| `GARMIN_DEFAULT_USER_ID` | `default` | Legacy/default user id for routes without `userId` |
 | `GARMIN_TOKENS_DIR` | `./tokens` | Where OAuth tokens are persisted (relative paths resolve against this directory) |
 | `PORT` | `8788` | Listen port (used by `python main.py`) |
+
+`GARMIN_EMAIL` and `GARMIN_PASSWORD` are now only for the legacy/default
+server account and the CLI login. The in-app beta flow posts a user's Garmin
+email/password to `POST /connect` once, saves Garmin session tokens under that
+Lockin `userId`, and does not persist the password.
 
 ## One-time login
 
@@ -49,12 +55,18 @@ uvicorn main:app --port 8788
 
 ## API
 
-- `GET /status` → `{"ok": true, "loggedIn": bool, "lastError": str|null}`.
+- `POST /connect` body `{"userId","email","password","mfaCode"?}` → status
+  with `state: "connected" | "mfa_required" | "not_connected"`. If MFA is
+  required, call it again with the same credentials plus `mfaCode`.
+- `POST /disconnect` body `{"userId"}` → drops the cached client and removes
+  that user's token directory.
+- `GET /status?userId=...` → `{"ok": true, "userId": str, "loggedIn": bool,
+  "state": str, "connectedEmail": str|null, "lastError": str|null}`.
   Auth problems never crash the service; they show up here. After a failed
   login the sidecar waits 60s before trying again — requests during that
   cooldown return the logged-out degraded state immediately instead of
   hammering Garmin SSO.
-- `GET /wellness?days=N` (default 7, max 30, clamped) → list of
+- `GET /wellness?userId=...&days=N` (default 7, max 30, clamped) → list of
   `{"date","sleepScore","sleepSeconds","hrvStatus","hrvMs","bodyBattery",
   "trainingReadiness","restingHr"}` — one per calendar day, **most recent
   first**. Missing metrics (older watch, no data) degrade to `0`/`""`.
@@ -63,17 +75,17 @@ uvicorn main:app --port 8788
   row, the response is truncated to the complete rows fetched so far —
   remaining days are omitted, never zero-filled. Consumers must treat a
   missing day as "no data" and must not fabricate zeros for it.
-- `GET /activities?days=N` (default 14, max 60, clamped) → running activities
+- `GET /activities?userId=...&days=N` (default 14, max 60, clamped) → running activities
   only (typeKey containing `running`/`ultra`), most recent first:
   `{"garminActivityId","startTime","activityType","distanceKm",
   "movingSeconds","elevationGainM","averageHr","averagePaceSecPerKm","name"}`.
-- `POST /workouts/push` body `{"workouts":[{"sessionId","title","date","kind",
+- `POST /workouts/push` body `{"userId","workouts":[{"sessionId","title","date","kind",
   "distanceKm","durationMinutes","target":{"type","low","high"},"notes"}]}` →
   per item `{"sessionId","garminWorkoutId","scheduled","error"}`. Creates a
   structured workout (hard kinds get warmup/main/cooldown; easy/recovery one
   steady step) and schedules it on `date`. Pace targets are sec/km in, m/s
   speed zones out. One failure never aborts the batch.
-- `POST /workouts/delete` body `{"workoutIds":[...]}` → per id
+- `POST /workouts/delete` body `{"userId","workoutIds":[...]}` → per id
   `{"workoutId","deleted","error"}`. Already-deleted ids count as deleted.
 
 ## Coolify deployment

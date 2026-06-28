@@ -471,6 +471,7 @@ struct WorkoutStatusIcon: View {
         switch status {
         case .planned: "circle"
         case .completed, .deload: "checkmark.circle.fill"
+        case .partial: "minus.circle.fill"
         case .missed: "xmark.circle.fill"
         }
     }
@@ -479,6 +480,7 @@ struct WorkoutStatusIcon: View {
         switch status {
         case .planned: "Open"
         case .completed: "Done"
+        case .partial: "Partial"
         case .missed: "Missed"
         case .deload: "Deloaded"
         }
@@ -503,6 +505,7 @@ struct WorkoutStatusPill: View {
         switch status {
         case .planned: "OPEN"
         case .completed: "DONE"
+        case .partial: "PARTIAL"
         case .missed: "MISSED"
         case .deload: "DELOAD"
         }
@@ -512,6 +515,7 @@ struct WorkoutStatusPill: View {
         switch status {
         case .planned: "circle"
         case .completed, .deload: "checkmark.circle.fill"
+        case .partial: "minus.circle.fill"
         case .missed: "xmark.circle.fill"
         }
     }

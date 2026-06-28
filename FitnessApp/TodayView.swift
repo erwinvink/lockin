@@ -12,36 +12,12 @@ struct TodayView: View {
 
     var profile: UserProfile
     @State private var loggingSession: WorkoutSession?
-    @State private var loggingRunSession: WorkoutSession?
-    @State private var editingPendingRun: PendingRun?
     @State private var pendingLoggingSessionID: UUID?
     @State private var previewSession: WorkoutSession?
     @State private var workoutCardResetID = UUID()
 
-    private struct PendingRun: Identifiable {
-        let session: WorkoutSession
-        let log: RunLog
-        var id: UUID { log.id }
-    }
-
     private var dueSessions: [WorkoutSession] {
         duePlannedSessions(from: sessions)
-    }
-
-    /// Synced runs waiting for athlete confirmation, joined to their session —
-    /// any session, today or past, planned or missed — so a pending card
-    /// survives midnight instead of vanishing with the due list.
-    private var pendingConfirmations: [PendingRun] {
-        runLogs
-            .filter(\.needsConfirmation)
-            .compactMap { log in
-                sessions.first { $0.id == log.sessionId }.map { PendingRun(session: $0, log: log) }
-            }
-            .sorted { $0.session.scheduledDate < $1.session.scheduledDate }
-    }
-
-    private var pendingSessionIds: Set<UUID> {
-        Set(pendingConfirmations.map(\.session.id))
     }
 
     private var futureSession: WorkoutSession? {
@@ -87,8 +63,8 @@ struct TodayView: View {
 
     private var thisWeekKm: Double {
         guard let weekInterval else { return 0 }
-        return runLogs
-            .filter { !$0.needsConfirmation && weekInterval.start <= $0.completedAt && $0.completedAt < weekInterval.end }
+        return confirmedGarminRunLogs(from: runLogs)
+            .filter { weekInterval.start <= $0.completedAt && $0.completedAt < weekInterval.end }
             .reduce(0) { $0 + $1.distanceKm }
     }
 
@@ -108,15 +84,12 @@ struct TodayView: View {
                 }
 
                 if !dueSessions.isEmpty {
-                    // A due session with a pending log already renders above.
-                    let visibleDueSessions = dueSessions.filter { !pendingSessionIds.contains($0.id) }
                     VStack(alignment: .leading, spacing: AppTheme.sectionSpacing) {
-                        ForEach(Array(visibleDueSessions.enumerated()), id: \.element.id) { index, session in
+                        ForEach(Array(dueSessions.enumerated()), id: \.element.id) { index, session in
                             if session.isRun {
                                 RunPrescriptionCard(
                                     session: session,
-                                    prominent: index == 0,
-                                    onLog: { beginRunLogging(session) }
+                                    prominent: index == 0
                                 )
                             } else {
                                 WorkoutPrescriptionCard(
@@ -135,7 +108,7 @@ struct TodayView: View {
                     EmptyStateView(
                         systemImage: "sparkles",
                         title: "No AI plan yet",
-                        message: "Open Coach and generate an AI week to populate Today and Log."
+                        message: "Open Coach to check automatic planning status."
                     )
                     .entrance(2)
                 } else if let session = futureSession {
@@ -150,36 +123,20 @@ struct TodayView: View {
                     .entrance(2)
                 }
 
-                ForEach(pendingConfirmations) { pending in
-                    ConfirmRunCard(
-                        session: pending.session,
-                        log: pending.log,
-                        onConfirm: { rpe, feel in confirmRun(session: pending.session, log: pending.log, rpe: rpe, feel: feel) },
-                        onEdit: { editingPendingRun = pending }
-                    )
-                }
-                .entrance(3)
-
                 MetricStrip(cells: [
                     MetricCellModel(label: "STREAK", value: "\(rank.streak)"),
                     MetricCellModel(label: "BEST", value: "\(rank.displayedBestStreak)"),
                     MetricCellModel(label: "WEEK", value: runDistanceText(km: thisWeekKm))
                 ])
-                .entrance(4)
+                .entrance(3)
 
                 if !thisWeekSessions.isEmpty {
                     ThisWeekSection(sessions: thisWeekSessions, onSelect: { previewSession = $0 })
-                        .entrance(5)
+                        .entrance(4)
                 }
             }
             .sheet(item: $loggingSession, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { session in
                 LogWorkoutView(session: session, profile: profile)
-            }
-            .sheet(item: $loggingRunSession) { session in
-                LogRunView(session: session)
-            }
-            .sheet(item: $editingPendingRun) { edit in
-                LogRunView(session: edit.session, prefilledFrom: edit.log)
             }
             .sheet(item: $previewSession) { session in
                 FutureWorkoutPreviewSheet(
@@ -209,18 +166,6 @@ struct TodayView: View {
         guard session.status == .planned else { return }
         pendingLoggingSessionID = session.id
         loggingSession = session
-    }
-
-    private func beginRunLogging(_ session: WorkoutSession) {
-        guard session.status == .planned else { return }
-        loggingRunSession = session
-    }
-
-    /// completeRun owns the shared confirm/scoring path (including refunding
-    /// a wrongly-applied miss when the run synced after the missed sweep).
-    private func confirmRun(session: WorkoutSession, log: RunLog, rpe: Int, feel: Int) {
-        guard log.needsConfirmation else { return }
-        try? completeRun(session: session, log: log, rpe: rpe, feelScore: feel, ranks: ranks, in: modelContext)
     }
 
     private func resetCheckedWorkoutIfLogWasCancelled() {
@@ -377,7 +322,6 @@ private struct SessionHeading: View {
 private struct RunPrescriptionCard: View {
     var session: WorkoutSession
     var prominent: Bool = false
-    var onLog: () -> Void
 
     private var purposeText: String {
         var purpose = session.summary
@@ -395,13 +339,13 @@ private struct RunPrescriptionCard: View {
                 prominent: prominent
             )
 
-            if session.estimatedDurationMinutes > 0 || session.pushedToGarminAt != nil {
+            if session.estimatedDurationMinutes > 0 || garminWatchPill(for: session) != nil {
                 HStack(spacing: 14) {
                     if session.estimatedDurationMinutes > 0 {
                         DurationPill(minutes: session.estimatedDurationMinutes)
                     }
-                    if session.pushedToGarminAt != nil {
-                        StatusPill(text: "On your watch", color: AppTheme.muted, systemImage: "applewatch")
+                    if let pill = garminWatchPill(for: session) {
+                        StatusPill(text: pill.text, color: pill.color, systemImage: pill.systemImage)
                     }
                     Spacer(minLength: 0)
                 }
@@ -426,116 +370,7 @@ private struct RunPrescriptionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button("Log this run", action: onLog)
-                .buttonStyle(PrimaryActionButtonStyle())
-                .accessibilityIdentifier("log-run-button")
         }
-    }
-}
-
-private struct ConfirmRunCard: View {
-    var session: WorkoutSession
-    var log: RunLog
-    var onConfirm: (_ rpe: Int, _ feel: Int) -> Void
-    var onEdit: () -> Void
-
-    @State private var rpe = 6
-    @State private var howFelt = 3
-    @State private var confirmTapped = false
-
-    /// "Monday's run · 8 Jun" when the session is not scheduled today, so a
-    /// confirmation that survived midnight still names the day it belongs to.
-    private var scheduledDayText: String? {
-        let calendar = Calendar.current
-        guard !calendar.isDateInToday(session.scheduledDate) else { return nil }
-        let weekday = session.scheduledDate.formatted(.dateTime.weekday(.wide))
-        let date = session.scheduledDate.formatted(date: .abbreviated, time: .omitted)
-        return "\(weekday)'s run · \(date)"
-    }
-
-    private var actualsText: String {
-        var parts: [String] = []
-        if log.distanceKm > 0 {
-            parts.append(runDistanceText(km: log.distanceKm))
-        }
-        if log.movingSeconds > 0 {
-            parts.append(Self.movingTimeText(seconds: log.movingSeconds))
-        }
-        if log.elevationGainM > 0 {
-            parts.append("\(log.elevationGainM) m+")
-        }
-        if log.elevationLossM > 0 {
-            parts.append("\(log.elevationLossM) m−")
-        }
-        if log.averageHr > 0 {
-            parts.append("avg \(log.averageHr) bpm")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(session.title)
-                        .font(.lockinSection)
-                        .foregroundStyle(AppTheme.text)
-                    Spacer(minLength: 12)
-                    StatusPill(text: "Synced from Garmin", color: AppTheme.accent, systemImage: "applewatch.radiowaves.left.and.right")
-                }
-                if let scheduledDayText {
-                    Text(scheduledDayText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(AppTheme.muted)
-                }
-            }
-
-            if !actualsText.isEmpty {
-                Text(actualsText)
-                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(AppTheme.text)
-            }
-
-            VStack(spacing: 2) {
-                ReadinessSlider(
-                    title: "Perceived effort",
-                    systemImage: "speedometer",
-                    value: $rpe,
-                    range: 1...10,
-                    descriptor: ReadinessScale.perceivedEffort
-                )
-                Hairline()
-                ReadinessSlider(
-                    title: "How did you feel?",
-                    systemImage: "face.smiling",
-                    value: $howFelt,
-                    range: 1...5,
-                    descriptor: ReadinessScale.howIFelt
-                )
-            }
-
-            Button("Confirm run") {
-                confirmTapped = true
-                onConfirm(rpe, howFelt)
-            }
-            .buttonStyle(PrimaryActionButtonStyle())
-            .sensoryFeedback(.success, trigger: confirmTapped) { _, newValue in newValue }
-            .accessibilityIdentifier("confirm-run-button")
-
-            Button("Edit details", action: onEdit)
-                .buttonStyle(SecondaryActionButtonStyle())
-                .accessibilityIdentifier("edit-run-details-button")
-        }
-        .card()
-    }
-
-    private static func movingTimeText(seconds: Int) -> String {
-        let hours = seconds / 3_600
-        let minutes = (seconds % 3_600) / 60
-        if hours > 0 {
-            return "\(hours):" + String(format: "%02d", minutes)
-        }
-        return "\(max(1, minutes)) min"
     }
 }
 
@@ -633,13 +468,13 @@ private struct UpcomingSessionCard: View {
                 if session.isRun, session.plannedDistanceKm > 0 {
                     InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
                 }
-                if session.isRun, session.pushedToGarminAt != nil {
+                if let pill = garminWatchPill(for: session) {
                     HStack {
                         Text("Watch")
                             .font(.footnote)
                             .foregroundStyle(AppTheme.muted)
                         Spacer()
-                        StatusPill(text: "On your watch", color: AppTheme.muted, systemImage: "applewatch")
+                        StatusPill(text: pill.text, color: pill.color, systemImage: pill.systemImage)
                     }
                 }
                 if durationMinutes > 0 {
@@ -737,6 +572,24 @@ private struct ThisWeekSection: View {
     }
 }
 
+private func garminWatchPill(for session: WorkoutSession) -> (text: String, color: Color, systemImage: String)? {
+    guard session.isRun else { return nil }
+    if session.pushedToGarminAt != nil || session.garminSyncStatus == .synced {
+        return ("On your watch", AppTheme.muted, "applewatch")
+    }
+
+    switch session.garminSyncStatus {
+    case .some(.pending), .some(.retrying), .some(.blockedOnDelete):
+        return ("Syncing to watch", AppTheme.muted, "hourglass")
+    case .some(.failed):
+        return ("Watch sync failed", AppTheme.warning, "exclamationmark.triangle.fill")
+    case .some(.deleted), .none:
+        return ("Awaiting Garmin", AppTheme.muted, "applewatch.radiowaves.left.and.right")
+    case .some(.synced):
+        return ("On your watch", AppTheme.muted, "applewatch")
+    }
+}
+
 private struct ThisWeekRow: View {
     var session: WorkoutSession
     var onSelect: () -> Void = {}
@@ -748,6 +601,7 @@ private struct ThisWeekRow: View {
     private var stateText: String {
         switch session.status {
         case .completed: "Done"
+        case .partial: "Partial"
         case .deload: "Deload"
         case .missed: "Missed"
         case .planned: isToday ? "Today" : "Planned"
@@ -756,7 +610,7 @@ private struct ThisWeekRow: View {
 
     private var stateColor: Color {
         switch session.status {
-        case .completed, .deload: AppTheme.accent
+        case .completed, .partial, .deload: AppTheme.accent
         case .missed: AppTheme.warning
         case .planned: isToday ? AppTheme.accent : AppTheme.muted
         }

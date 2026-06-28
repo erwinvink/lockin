@@ -12,6 +12,7 @@ state), covering the subtle paths:
 
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,6 +40,9 @@ def _fresh_state(monkeypatch):
     monkeypatch.setattr(main, "_client", None)
     monkeypatch.setattr(main, "_login_failed_at", None)
     monkeypatch.setattr(main, "last_error", None)
+    main._clients.clear()
+    main.last_errors.clear()
+    main._login_failed_ats.clear()
     monkeypatch.setattr(main, "Garmin", _NoNetworkGarmin)
 
 
@@ -80,6 +84,99 @@ def _raise(exc: Exception):
         raise exc
 
     return _fn
+
+
+# ---------------------------------------------------------------------------
+# Per-user connection
+# ---------------------------------------------------------------------------
+
+
+def test_connect_saves_tokens_under_the_lockin_user(monkeypatch, tmp_path):
+    calls = []
+
+    class LoginGarmin:
+        def __init__(self, email=None, password=None, **_kwargs):
+            self.email = email
+            self.password = password
+
+        def login(self, tokenstore=None):
+            calls.append((self.email, self.password, tokenstore))
+            Path(tokenstore, "oauth.json").write_text("{}", encoding="utf8")
+
+    monkeypatch.setenv("GARMIN_TOKENS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "Garmin", LoginGarmin)
+
+    resp = client.post(
+        "/connect",
+        json={"userId": "user-1", "email": "runner@example.com", "password": "secret"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["loggedIn"] is True
+    assert body["state"] == "connected"
+    assert body["userId"] == "user-1"
+    assert body["connectedEmail"] == "runner@example.com"
+    assert calls[0][0:2] == ("runner@example.com", "secret")
+    assert str(tmp_path / "users" / "user-1") == calls[0][2]
+
+
+def test_connect_reports_mfa_required_without_starting_cooldown(monkeypatch, tmp_path):
+    class MFAGarmin:
+        def __init__(self, prompt_mfa=None, **_kwargs):
+            self.prompt_mfa = prompt_mfa
+
+        def login(self, tokenstore=None):
+            self.prompt_mfa()
+
+    monkeypatch.setenv("GARMIN_TOKENS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "Garmin", MFAGarmin)
+
+    body = client.post(
+        "/connect",
+        json={"userId": "user-1", "email": "runner@example.com", "password": "secret"},
+    ).json()
+
+    assert body["loggedIn"] is False
+    assert body["state"] == "mfa_required"
+    assert body["lastError"] == "Garmin needs the MFA code for this login."
+    assert main._login_failed_ats.get("user-1") is None
+
+
+def test_connect_treats_library_mfa_message_as_mfa_required(monkeypatch, tmp_path):
+    class LibraryMFAGarmin:
+        def __init__(self, **_kwargs):
+            pass
+
+        def login(self, tokenstore=None):
+            raise GarminConnectConnectionError("Login failed: MFA code required")
+
+    monkeypatch.setenv("GARMIN_TOKENS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "Garmin", LibraryMFAGarmin)
+
+    body = client.post(
+        "/connect",
+        json={"userId": "user-1", "email": "runner@example.com", "password": "secret"},
+    ).json()
+
+    assert body["loggedIn"] is False
+    assert body["state"] == "mfa_required"
+    assert body["lastError"] == "Garmin needs the MFA code for this login."
+    assert main._login_failed_ats.get("user-1") is None
+
+
+def test_user_scoped_wellness_uses_the_user_client(monkeypatch):
+    today = date.today()
+    default_fake = FakeGarmin(get_sleep_data=lambda _iso: None)
+    user_fake = FakeGarmin(get_sleep_data=lambda _iso: None)
+    monkeypatch.setattr(main, "_client", default_fake)
+    main._clients["user-1"] = user_fake
+
+    rows = client.get("/wellness", params={"userId": "user-1", "days": 1}).json()
+
+    assert rows[0]["date"] == today.isoformat()
+    assert default_fake.calls == []
+    assert any(call[0] == "get_sleep_data" for call in user_fake.calls)
 
 
 # ---------------------------------------------------------------------------

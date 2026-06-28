@@ -3,6 +3,7 @@ import type { CoachContext, RunningWeek } from "./types";
 export type RunningValidation = { accepted: boolean; messages: string[] };
 
 const HARD_KINDS = new Set(["long", "tempo", "intervals", "hills"]);
+const RECOVERY_STATES = new Set(["overreaching", "recovery_needed"]);
 
 export function validateRunningWeek(week: RunningWeek, context: CoachContext): RunningValidation {
   const messages: string[] = [];
@@ -11,8 +12,26 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
   const hasSelectedDays = allowed.length > 0;
   const hasSafetyFlags = week.safetyFlags.length > 0;
 
-  if (hasSelectedDays && week.sessions.length !== allowed.length) {
-    messages.push(`Running week must contain exactly ${allowed.length} runs, one per remaining running day this week.`);
+  if (hasSelectedDays && week.sessions.length === 0) {
+    messages.push("Running week must contain at least one run when future running days are available.");
+  }
+
+  if (running && hasSelectedDays) {
+    const frequency = runFrequencyPolicy(running, allowed.length);
+    const canReduceFrequency =
+      hasSafetyFlags ||
+      RECOVERY_STATES.has(context.readiness.state) ||
+      (running.weeksToRace > 0 && running.weeksToRace <= 3);
+
+    if (!canReduceFrequency && week.sessions.length < frequency.minRuns) {
+      messages.push(
+        `Running week is too sparse for the athlete's current base; use at least ${frequency.minRuns} runs or add safety flags explaining the reduction.`
+      );
+    }
+
+    if (week.sessions.length > frequency.maxRuns) {
+      messages.push(frequency.maxReason);
+    }
   }
 
   let previousOffset = -1;
@@ -81,6 +100,50 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
   }
 
   return { accepted: messages.length === 0, messages };
+}
+
+function runFrequencyPolicy(running: NonNullable<CoachContext["running"]>, availableDays: number): {
+  minRuns: number;
+  maxRuns: number;
+  maxReason: string;
+} {
+  if (availableDays <= 0) {
+    return { minRuns: 0, maxRuns: 0, maxReason: "No future running days are available." };
+  }
+
+  const recentRunCount = running.recentRuns.length;
+  const baselineWeeklyKm = running.baselineWeeklyKm || 0;
+  const longestRecentRunKm = running.longestRecentRunKm || 0;
+  const lowStartingBase = recentRunCount < 3 && baselineWeeklyKm <= 20 && longestRecentRunKm <= 8;
+  const establishedBase = baselineWeeklyKm >= 35 || longestRecentRunKm >= 16 || recentRunCount >= 8;
+  const highFrequencyBase = baselineWeeklyKm >= 55 || longestRecentRunKm >= 24 || recentRunCount >= 15;
+
+  if (lowStartingBase) {
+    const maxRuns = Math.min(availableDays, 3);
+    return {
+      minRuns: maxRuns,
+      maxRuns,
+      maxReason: `Starter running weeks should use at most ${maxRuns} runs so recovery days stay in the plan.`
+    };
+  }
+
+  const minRuns =
+    availableDays <= 2
+      ? availableDays
+      : establishedBase && availableDays >= 4
+        ? 4
+        : 3;
+  const maxRuns =
+    availableDays >= 6 && !highFrequencyBase
+      ? 5
+      : availableDays;
+
+  return {
+    minRuns,
+    maxRuns,
+    maxReason:
+      `Six-run weeks need demonstrated high-frequency or high-volume history; this context supports at most ${maxRuns} runs.`
+  };
 }
 
 // Rounding the raw difference (same approach as weeksToRace) keeps the offset

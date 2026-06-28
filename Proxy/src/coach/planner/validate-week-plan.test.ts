@@ -53,6 +53,16 @@ test("accepts a balanced four-session plan with mixed exposure", () => {
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
+test("rejects strength sessions with running titles", () => {
+  const plan = balancedPlan();
+  plan.sessions[0] = { ...plan.sessions[0], title: "Easy Run" };
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("looks like a running session")));
+});
+
 test("rejects all-light normal weeks without safety explanation", () => {
   const plan = balancedPlan();
   plan.sessions = plan.sessions.map((session, index) => ({

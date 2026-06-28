@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { deleteWorkouts, garminSnapshot, garminStatus, pushWorkouts } from "./garmin-client";
+import { connectGarmin, deleteWorkouts, disconnectGarmin, garminSnapshot, garminStatus, pushWorkouts } from "./garmin-client";
 
 type RecordedCall = { url: string; init?: RequestInit };
 
-const onlineStatus = { ok: true, loggedIn: true, lastError: null };
+const onlineStatus = {
+  ok: true,
+  userId: undefined,
+  loggedIn: true,
+  state: undefined,
+  connectedEmail: null,
+  lastError: null
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -87,7 +94,7 @@ test("garminStatus maps the sidecar status payload through", async (t) => {
   const calls: RecordedCall[] = [];
   const fetchImpl = stubFetch(() => jsonResponse({ ok: true, loggedIn: true, lastError: null }), calls);
 
-  assert.deepEqual(await garminStatus(fetchImpl), { ok: true, loggedIn: true, lastError: null });
+  assert.deepEqual(await garminStatus(fetchImpl), onlineStatus);
   assert.deepEqual(
     calls.map((call) => call.url),
     ["http://127.0.0.1:8788/status"]
@@ -99,8 +106,54 @@ test("garminStatus reads GARMIN_SERVICE_URL lazily per call", async (t) => {
   const calls: RecordedCall[] = [];
   const fetchImpl = stubFetch(() => jsonResponse({ ok: true, loggedIn: false, lastError: "MFA required" }), calls);
 
-  assert.deepEqual(await garminStatus(fetchImpl), { ok: true, loggedIn: false, lastError: "MFA required" });
+  assert.deepEqual(await garminStatus(fetchImpl), {
+    ...onlineStatus,
+    loggedIn: false,
+    lastError: "MFA required"
+  });
   assert.equal(calls[0]?.url, "http://garmin.test:9999/status");
+});
+
+test("garminStatus passes userId as a sidecar query parameter", async (t) => {
+  useServiceURL(t, undefined);
+  const calls: RecordedCall[] = [];
+  const fetchImpl = stubFetch(() => jsonResponse({ ok: true, userId: "user-1", loggedIn: true, state: "connected", connectedEmail: "runner@example.com", lastError: null }), calls);
+
+  assert.deepEqual(await garminStatus(fetchImpl, { userId: "user-1" }), {
+    ok: true,
+    userId: "user-1",
+    loggedIn: true,
+    state: "connected",
+    connectedEmail: "runner@example.com",
+    lastError: null
+  });
+  assert.equal(calls[0]?.url, "http://127.0.0.1:8788/status?userId=user-1");
+});
+
+test("connectGarmin and disconnectGarmin post user-scoped connection requests", async (t) => {
+  useServiceURL(t, undefined);
+  const calls: RecordedCall[] = [];
+  const fetchImpl = stubFetch((url) => {
+    if (url.endsWith("/connect")) {
+      return jsonResponse({ ok: true, userId: "user-1", loggedIn: false, state: "mfa_required", connectedEmail: null, lastError: "Garmin needs the MFA code." });
+    }
+    return jsonResponse({ ok: true, userId: "user-1", loggedIn: false, state: "not_connected", connectedEmail: null, lastError: null });
+  }, calls);
+
+  const connected = await connectGarmin({ userId: "user-1", email: "runner@example.com", password: "secret", mfaCode: "123456" }, fetchImpl);
+  const disconnected = await disconnectGarmin("user-1", fetchImpl);
+
+  assert.equal(connected.state, "mfa_required");
+  assert.equal(disconnected.state, "not_connected");
+  assert.equal(calls[0]?.url, "http://127.0.0.1:8788/connect");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    userId: "user-1",
+    email: "runner@example.com",
+    password: "secret",
+    mfaCode: "123456"
+  });
+  assert.equal(calls[1]?.url, "http://127.0.0.1:8788/disconnect");
+  assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), { userId: "user-1" });
 });
 
 test("garminStatus degrades instead of throwing when the sidecar is unreachable", async (t) => {
@@ -262,6 +315,26 @@ test("garminSnapshot skips the activities fetch when includeActivities is false"
   );
 });
 
+test("garminSnapshot passes userId to every sidecar endpoint", async (t) => {
+  useServiceURL(t, undefined);
+  const calls: RecordedCall[] = [];
+  const fetchImpl = stubFetch(
+    (url) => (url.includes("/status") ? jsonResponse({ ...onlineStatus, userId: "user-1" }) : jsonResponse([])),
+    calls
+  );
+
+  await garminSnapshot(7, fetchImpl, { userId: "user-1" });
+
+  assert.deepEqual(
+    calls.map((call) => call.url).sort(),
+    [
+      "http://127.0.0.1:8788/activities?days=90&userId=user-1",
+      "http://127.0.0.1:8788/status?userId=user-1",
+      "http://127.0.0.1:8788/wellness?days=7&userId=user-1"
+    ]
+  );
+});
+
 test("pushWorkouts posts the batch and wraps the sidecar results", async (t) => {
   useServiceURL(t, undefined);
   const results = [{ sessionId: "s1", garminWorkoutId: "9001", scheduled: true, error: null }];
@@ -274,6 +347,18 @@ test("pushWorkouts posts the batch and wraps the sidecar results", async (t) => 
   assert.equal(calls[0]?.url, "http://127.0.0.1:8788/workouts/push");
   assert.equal(calls[0]?.init?.method, "POST");
   assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { workouts });
+});
+
+test("pushWorkouts and deleteWorkouts include userId when provided", async (t) => {
+  useServiceURL(t, undefined);
+  const calls: RecordedCall[] = [];
+  const fetchImpl = stubFetch(() => jsonResponse([]), calls);
+
+  await pushWorkouts([{ sessionId: "s1" }], fetchImpl, { userId: "user-1" });
+  await deleteWorkouts(["9001"], fetchImpl, { userId: "user-1" });
+
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), { userId: "user-1", workouts: [{ sessionId: "s1" }] });
+  assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), { userId: "user-1", workoutIds: ["9001"] });
 });
 
 test("pushWorkouts accepts a results-wrapped sidecar payload", async (t) => {

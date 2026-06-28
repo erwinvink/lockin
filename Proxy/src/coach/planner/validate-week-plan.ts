@@ -33,6 +33,7 @@ const exerciseKinds = new Set<ExerciseKind>([
   "shoulderMobility"
 ]);
 const loggingFields = new Set(["pullUps", "pushUps", "plankSeconds"]);
+const runningTitlePattern = /\b(?:easy|long|recovery|tempo|interval)\s+run\b|\brunning\b|\brun\b|\bjog(?:ging)?\b|\bintervals\b/i;
 
 export function validateWeeklyPlan(plan: unknown, context: CoachContext): ValidationResult {
   const messages: string[] = [];
@@ -76,6 +77,8 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
 
     if (typeof session.title !== "string") {
       messages.push(`Session ${sessionIndex + 1} title is missing or not a string.`);
+    } else if (runningTitlePattern.test(session.title)) {
+      messages.push(`Session ${sessionIndex + 1} title looks like a running session; strength sessions need strength-specific titles.`);
     }
 
     if (typeof session.purpose !== "string") {

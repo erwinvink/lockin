@@ -20,7 +20,8 @@ final class DesignScreenshotTour: XCTestCase {
         app.launch()
 
         // Today, pristine.
-        XCTAssertTrue(app.buttons["confirm-run-button"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["STREAK"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["save-run-feedback-button"].exists)
         snap(app, "01-today-top", in: directory)
         app.swipeUp()
         snap(app, "02-today-scrolled", in: directory)
@@ -74,16 +75,6 @@ final class DesignScreenshotTour: XCTestCase {
         // Back to Today for the interactive flows.
         app.tabBars.buttons["Today"].tap()
         sleepBriefly()
-
-        // Edit pending run -> LogRunView sheet.
-        let editRun = app.buttons["edit-run-details-button"]
-        if editRun.waitForExistence(timeout: 5) {
-            editRun.tap()
-            XCTAssertTrue(app.buttons["save-run-button"].waitForExistence(timeout: 5))
-            snap(app, "14-log-run-sheet", in: directory)
-            app.buttons["Cancel"].tap()
-            sleepBriefly()
-        }
 
         // Workout info popover/sheet from the due session's first prescription.
         app.swipeUp()
@@ -162,16 +153,19 @@ final class FitnessAppUITests: XCTestCase {
         onboardDefault(app)
 
         XCTAssertTrue(app.staticTexts["No AI plan yet"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Open Coach and generate an AI week to populate Today and Log."].exists)
+        XCTAssertTrue(app.staticTexts["Open Coach to check automatic planning status."].exists)
         XCTAssertFalse(app.navigationBars["Today"].exists)
 
         app.tabBars.buttons["Coach"].tap()
         XCTAssertTrue(app.navigationBars["Coach"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Ready for the first week"].exists)
-        XCTAssertTrue(app.buttons["Plan my week"].exists)
-        // Coach inputs moved behind Advanced; the main surface stays focused
-        // on the read and the one primary action.
+        XCTAssertTrue(app.staticTexts["Plan"].exists)
+        XCTAssertTrue(app.staticTexts["Automatic"].exists)
+        XCTAssertFalse(app.buttons["Plan my week"].exists)
+        XCTAssertFalse(app.buttons["Read new session"].exists)
+        // Coach inputs and the manual regenerate fallback live behind Advanced;
+        // the main surface stays focused on read and automation status.
         XCTAssertFalse(app.staticTexts["What I'll use"].exists)
     }
 
@@ -270,8 +264,7 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["BEST"].exists)
         XCTAssertFalse(app.staticTexts["CONSISTENCY"].exists)
         XCTAssertFalse(app.staticTexts["No session due today"].exists)
-        // The seeded pending Garmin run renders a confirm card above the due session.
-        XCTAssertTrue(app.buttons["confirm-run-button"].exists)
+        XCTAssertFalse(app.buttons["save-run-feedback-button"].exists)
         XCTAssertTrue(app.staticTexts["Today Simulation"].exists)
         XCTAssertTrue(app.staticTexts["Pull-up"].exists)
         XCTAssertTrue(app.buttons["exercise-checkbox-unchecked"].exists)
@@ -314,9 +307,35 @@ final class FitnessAppUITests: XCTestCase {
         app.tabBars.buttons["Coach"].tap()
         XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Back on track"].exists)
+        XCTAssertTrue(app.staticTexts["RUNNING"].exists)
+        XCTAssertTrue(app.staticTexts["STRENGTH"].exists)
+        XCTAssertTrue(app.staticTexts["NEXT STEP"].exists)
+        XCTAssertTrue(app.staticTexts["coach-read-updated-at"].exists)
+        XCTAssertFalse(app.buttons["Read new session"].exists)
 
         app.tabBars.buttons["Log"].tap()
         XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
+    }
+
+    func testProfileDebugSeedButtonLoadsDemoHistory() {
+        let app = launchFreshApp()
+        onboardDefault(app)
+
+        app.tabBars.buttons["Profile"].tap()
+        XCTAssertTrue(app.staticTexts["Profile"].waitForExistence(timeout: 5))
+        tapWhenReady(app.buttons["seed-demo-history-button"], in: app)
+        XCTAssertTrue(app.alerts["Replace with demo history?"].waitForExistence(timeout: 5))
+        app.alerts["Replace with demo history?"].buttons["Seed demo history"].tap()
+
+        app.tabBars.buttons["Coach"].tap()
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Back on track"].exists)
+        XCTAssertTrue(app.staticTexts["coach-read-updated-at"].exists)
+        XCTAssertFalse(app.buttons["Read new session"].exists)
+
+        app.tabBars.buttons["Progress"].tap()
+        XCTAssertTrue(app.staticTexts["Readiness"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["RUNNING"].exists)
     }
 
     private func launchFreshApp() -> XCUIApplication {

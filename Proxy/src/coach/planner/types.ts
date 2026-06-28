@@ -23,6 +23,7 @@ export type PlannedEffort = {
 };
 
 export type CoachRequest = {
+  userId?: string;
   model: string;
   baseline: { pullUps: number; pushUps: number; plankSeconds: number };
   goals: { pullUps: number; pushUps: number; plankSeconds: number };
@@ -201,6 +202,10 @@ export type CoachVerdict = {
   summary: string;
   latestChange: string;
   recommendation: string;
+  runningRead: string;
+  strengthRead: string;
+  nextStep: string;
+  watchItems: string[];
   shouldUpdatePlan: boolean;
   contextState: ContextState;
   safetyFlags: string[];

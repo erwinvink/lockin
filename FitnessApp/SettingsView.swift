@@ -11,9 +11,15 @@ struct SettingsView: View {
     // Configuration, not state: fixed per build flavor (see LocalCoachClient).
     private let coachEndpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
+    @AppStorage("garminConnectionActive") private var garminConnectionActive = false
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
+    #if DEBUG
+    @State private var isShowingSeedConfirmation = false
+    @State private var seedMessage: String?
+    @State private var seedError: String?
+    #endif
 
     var profile: UserProfile
 
@@ -28,19 +34,26 @@ struct SettingsView: View {
                 RunningGoalCard(
                     profile: profile,
                     raceGoal: raceGoals.first,
-                    hasConfirmedRuns: runLogs.contains { !$0.needsConfirmation },
+                    hasConfirmedRuns: runLogs.contains { $0.source == .garmin },
                     onCreateGoal: createRaceGoal,
                     onRemoveGoal: removeRaceGoal,
                     onRunningDaysChange: saveRunningDays,
                     onLongRunDayChange: saveLongRunDay,
                     onGoalChange: saveRaceGoalEdits
                 )
-                GarminCard(endpoint: coachEndpoint)
+                GarminCard(endpoint: coachEndpoint, userId: profile.id.uuidString)
                 ReminderSettingsCard(
                     profile: profile,
                     onReminderToggle: saveReminderPreference,
                     onReminderTimeChange: saveReminderTime
                 )
+                #if DEBUG
+                DemoHistorySeedCard(
+                    seedMessage: seedMessage,
+                    seedError: seedError,
+                    onSeedTap: { isShowingSeedConfirmation = true }
+                )
+                #endif
                 ResetCard(
                     resetError: resetError,
                     onResetTap: { isShowingResetConfirmation = true }
@@ -56,6 +69,14 @@ struct SettingsView: View {
             } message: {
                 Text("This removes every measurement, workout, log, streak, and coach record from the app.")
             }
+            #if DEBUG
+            .alert("Replace with demo history?", isPresented: $isShowingSeedConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Seed demo history", role: .destructive, action: seedDemoHistory)
+            } message: {
+                Text("This wipes local app data and adds fake strength sessions, Garmin-style runs, readiness, a race goal, and a coach read.")
+            }
+            #endif
             .alert("Enable notifications", isPresented: $isShowingReminderPermissionAlert) {
                 Button("Enable", action: openNotificationSettings)
                 Button("Cancel", role: .cancel) {}
@@ -171,10 +192,28 @@ struct SettingsView: View {
             // re-pull. The pending-delete stash is deliberately kept: those
             // pushed watch workouts still need cleanup on the Garmin side.
             garminLastSyncAt = 0
+            garminConnectionActive = false
         } catch {
             resetError = error.localizedDescription
         }
     }
+
+    #if DEBUG
+    private func seedDemoHistory() {
+        do {
+            WorkoutNotificationScheduler().clearWorkoutReminders()
+            try seedTwoWeekActivityPreview(in: modelContext)
+            garminLastSyncAt = 0
+            garminConnectionActive = false
+            seedMessage = "Demo history loaded."
+            seedError = nil
+            resetError = nil
+        } catch {
+            seedMessage = nil
+            seedError = error.localizedDescription
+        }
+    }
+    #endif
 }
 
 private struct ProfileSummaryCard: View {
@@ -284,7 +323,7 @@ private struct RaceGoalEditor: View {
                 // would be silently overwritten on the next sync.
                 InfoLine(title: "Baseline weekly volume", value: "\(Int(goal.baselineWeeklyKm.rounded())) km")
                 InfoLine(title: "Longest recent run", value: "\(Int(goal.longestRecentRunKm.rounded())) km")
-                Text("Updated automatically from your confirmed Garmin runs.")
+                Text("Updated automatically from your Garmin runs.")
                     .font(.system(size: 12))
                     .foregroundStyle(AppTheme.faint)
             } else {
@@ -296,10 +335,10 @@ private struct RaceGoalEditor: View {
             }
             TrainingDaysPicker(
                 selectedDays: runningDaysBinding,
-                title: "Running days",
+                title: "Available running days",
                 minDays: 1,
                 maxDays: 7,
-                caption: "Pick 1 to 7 days. At least one running day is needed while a race goal is set.",
+                caption: "Pick the days you can run. The coach may leave rest days open while you build.",
                 preventsEmptySelection: true
             )
             if !orderedRunningDays.isEmpty {
@@ -395,16 +434,28 @@ private struct RaceGoalEditor: View {
 
 private struct GarminCard: View {
     var endpoint: String
+    var userId: String
 
     @Environment(\.modelContext) private var modelContext
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
+    @AppStorage("garminConnectionActive") private var garminConnectionActive = false
     @State private var status: GarminStatusResponse?
+    @State private var watchSyncStatus: GarminSyncPlanResponse?
     @State private var statusFailed = false
     @State private var isSyncing = false
-    @State private var isPushing = false
+    @State private var isConnecting = false
+    @State private var isDisconnecting = false
+    @State private var isRetryingWatchSync = false
+    @State private var isShowingConnectForm = false
+    @State private var isShowingTroubleshoot = false
+    @State private var garminEmail = ""
+    @State private var garminPassword = ""
+    @State private var garminMFACode = ""
+    @State private var connectMessage: String?
+    @State private var connectError: String?
     @State private var syncResult: String?
     @State private var syncError: String?
-    @State private var pushStatus: String?
+    @State private var watchRetryStatus: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -412,22 +463,69 @@ private struct GarminCard: View {
                 StatusPill(text: statusText, color: statusColor, systemImage: statusIcon)
             }
 
+            if let connectedEmail = status?.connectedEmail, !connectedEmail.isEmpty {
+                InfoLine(title: "Account", value: connectedEmail)
+            }
             InfoLine(title: "Last sync", value: relativeSyncText(epochSeconds: garminLastSyncAt))
+            InfoLine(title: "Watch plan", value: watchPlanText)
 
-            if let lastError = status?.lastError, !lastError.isEmpty {
-                Text(lastError)
+            if let watchError = watchSyncStatus?.lastError, !watchError.isEmpty {
+                Text(watchError)
                     .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
+                    .foregroundStyle(watchSyncStatus?.status == .failed ? AppTheme.warning : AppTheme.muted)
             }
 
-            Button(action: syncNow) {
-                Label(isSyncing ? "Syncing" : "Sync now", systemImage: "arrow.triangle.2.circlepath")
-                    .frame(maxWidth: .infinity)
+            if isConnected {
+                Button(action: syncNow) {
+                    Label(isSyncing ? "Importing" : "Import Garmin data", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("garmin-sync-now")
+                .disabled(isSyncing)
+                .opacity(isSyncing ? 0.55 : 1)
+            } else {
+                Button(action: { isShowingConnectForm.toggle() }) {
+                    Label(isShowingConnectForm ? "Hide sign-in fields" : "Connect Garmin", systemImage: "link")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("garmin-connect-toggle")
             }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .accessibilityIdentifier("garmin-sync-now")
-            .disabled(isSyncing)
-            .opacity(isSyncing ? 0.55 : 1)
+
+            if isShowingConnectForm && !isConnected {
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Garmin email", text: $garminEmail)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .font(.subheadline)
+                        .lockinField()
+                        .accessibilityIdentifier("garmin-email-field")
+
+                    SecureField("Garmin password", text: $garminPassword)
+                        .font(.subheadline)
+                        .lockinField()
+                        .accessibilityIdentifier("garmin-password-field")
+
+                    if shouldShowMFAField {
+                        TextField("MFA code", text: $garminMFACode)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.numberPad)
+                            .font(.subheadline)
+                            .lockinField()
+                            .accessibilityIdentifier("garmin-mfa-field")
+                    }
+
+                    Button(action: connectGarmin) {
+                        Label(isConnecting ? "Connecting" : connectButtonTitle, systemImage: "checkmark.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryActionButtonStyle())
+                    .accessibilityIdentifier("garmin-connect-submit")
+                    .disabled(isConnecting || garminEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || garminPassword.isEmpty)
+                    .opacity(isConnecting ? 0.55 : 1)
+                }
+            }
 
             if let syncResult {
                 Text(syncResult)
@@ -441,41 +539,86 @@ private struct GarminCard: View {
                     .foregroundStyle(AppTheme.warning)
             }
 
-            Button(action: pushRunsToWatch) {
-                Label(isPushing ? "Pushing runs" : "Push runs to watch", systemImage: "arrow.up.circle")
-                    .frame(maxWidth: .infinity)
+            if shouldShowWatchRetry && isConnected {
+                Button(action: retryWatchSync) {
+                    Label(isRetryingWatchSync ? "Retrying watch sync" : "Retry watch sync", systemImage: "arrow.clockwise.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("garmin-watch-sync-retry")
+                .disabled(isRetryingWatchSync)
+                .opacity(isRetryingWatchSync ? 0.55 : 1)
             }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .accessibilityIdentifier("garmin-push-retry")
-            .disabled(isPushing)
-            .opacity(isPushing ? 0.55 : 1)
 
-            if let pushStatus {
-                Text(pushStatus)
+            if let watchRetryStatus {
+                Text(watchRetryStatus)
                     .font(.footnote)
                     .foregroundStyle(AppTheme.muted)
             }
 
-            Text("Garmin login lives on the lockin server. If this shows Not logged in, run the login step on the server. When Garmin is unreachable, coaching continues from your logged training.")
-                .font(.system(size: 12))
-                .foregroundStyle(AppTheme.faint)
+            if let connectMessage {
+                Text(connectMessage)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.muted)
+            }
+
+            if let connectError {
+                Text(connectError)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.warning)
+            }
+
+            HStack(spacing: 10) {
+                Button(action: { isShowingTroubleshoot.toggle() }) {
+                    Label("Troubleshoot", systemImage: "wrench.and.screwdriver")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("garmin-troubleshoot")
+
+                if isConnected {
+                    Button(role: .destructive, action: disconnectGarmin) {
+                        Label(isDisconnecting ? "Disconnecting" : "Disconnect", systemImage: "xmark.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryActionButtonStyle())
+                    .accessibilityIdentifier("garmin-disconnect")
+                    .disabled(isDisconnecting)
+                    .opacity(isDisconnecting ? 0.55 : 1)
+                }
+            }
+
+            if isShowingTroubleshoot {
+                VStack(alignment: .leading, spacing: 6) {
+                    InfoLine(title: "Connection", value: statusText)
+                    if let lastError = status?.lastError, !lastError.isEmpty {
+                        Text(lastError)
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.warning)
+                    } else if statusFailed {
+                        Text("Lockin could not reach the coach proxy.")
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.warning)
+                    }
+                }
+            }
         }
         .ruled(verticalPadding: 16)
         .task { await loadStatus() }
     }
 
-    private func pushRunsToWatch() {
-        guard !isPushing, !GarminPushCoordinator.isPushing else { return }
-        isPushing = true
-        pushStatus = nil
+    private func retryWatchSync() {
+        guard !isRetryingWatchSync, !GarminSyncCoordinator.isSyncing else { return }
+        isRetryingWatchSync = true
+        watchRetryStatus = nil
         Task {
-            defer { isPushing = false }
-            let note = await GarminPushCoordinator.pushPlannedRuns(
+            defer { isRetryingWatchSync = false }
+            watchRetryStatus = await GarminSyncCoordinator.retryFailedSync(
                 endpoint: endpoint,
-                stalePushedIds: [],
+                userId: userId,
                 in: modelContext
             )
-            pushStatus = note ?? "All planned runs are already on your watch."
+            await loadStatus()
         }
     }
 
@@ -495,12 +638,88 @@ private struct GarminCard: View {
     }
 
     private func loadStatus() async {
+        let client: LocalCoachClient
         do {
-            status = try await LocalCoachClient(endpointString: endpoint).fetchGarminStatus()
+            client = try LocalCoachClient(endpointString: endpoint)
+        } catch {
+            status = nil
+            watchSyncStatus = nil
+            statusFailed = true
+            return
+        }
+
+        do {
+            status = try await client.fetchGarminStatus(userId: userId)
             statusFailed = false
+            garminConnectionActive = status?.loggedIn == true
+            if status?.state == .mfaRequired {
+                isShowingConnectForm = true
+            }
         } catch {
             status = nil
             statusFailed = true
+        }
+
+        do {
+            watchSyncStatus = try await client.fetchGarminSyncStatus(userId: userId)
+        } catch {
+            watchSyncStatus = nil
+        }
+    }
+
+    private func connectGarmin() {
+        guard !isConnecting else { return }
+        isConnecting = true
+        connectMessage = nil
+        connectError = nil
+        Task {
+            defer { isConnecting = false }
+            do {
+                let response = try await LocalCoachClient(endpointString: endpoint).connectGarmin(GarminConnectRequest(
+                    userId: userId,
+                    email: garminEmail,
+                    password: garminPassword,
+                    mfaCode: garminMFACode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : garminMFACode
+                ))
+                status = response
+                statusFailed = false
+                if response.loggedIn {
+                    garminConnectionActive = true
+                    isShowingConnectForm = false
+                    garminPassword = ""
+                    garminMFACode = ""
+                    connectMessage = "Garmin connected."
+                    await loadStatus()
+                } else if response.state == .mfaRequired {
+                    garminMFACode = ""
+                    connectError = response.lastError ?? "Garmin needs the MFA code."
+                    isShowingConnectForm = true
+                } else {
+                    connectError = response.lastError ?? "Garmin connection failed."
+                }
+            } catch {
+                connectError = error.localizedDescription
+            }
+        }
+    }
+
+    private func disconnectGarmin() {
+        guard !isDisconnecting else { return }
+        isDisconnecting = true
+        connectMessage = nil
+        connectError = nil
+        Task {
+            defer { isDisconnecting = false }
+            do {
+                status = try await LocalCoachClient(endpointString: endpoint).disconnectGarmin(userId: userId)
+                statusFailed = false
+                garminConnectionActive = false
+                garminLastSyncAt = 0
+                connectMessage = "Garmin disconnected."
+                await loadStatus()
+            } catch {
+                connectError = error.localizedDescription
+            }
         }
     }
 
@@ -512,17 +731,20 @@ private struct GarminCard: View {
         Task {
             defer { isSyncing = false }
             do {
-                let ingested = try await performGarminSync(endpoint: endpoint, in: modelContext)
+                let ingested = try await performGarminSync(endpoint: endpoint, userId: userId, in: modelContext)
                 garminLastSyncAt = Date().timeIntervalSince1970
-                if ingested.importedRuns > 0 {
+                if ingested.completedRuns > 0 || ingested.partialRuns > 0 || ingested.importedRuns > 0 {
                     UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
                 }
                 var parts: [String] = []
+                if ingested.completedRuns > 0 {
+                    parts.append("\(ingested.completedRuns) \(ingested.completedRuns == 1 ? "planned run" : "planned runs") completed")
+                }
+                if ingested.partialRuns > 0 {
+                    parts.append("\(ingested.partialRuns) \(ingested.partialRuns == 1 ? "run" : "runs") partial")
+                }
                 if ingested.importedRuns > 0 {
                     parts.append("\(ingested.importedRuns) \(ingested.importedRuns == 1 ? "run" : "runs") imported")
-                }
-                if ingested.pendingRuns > 0 {
-                    parts.append("\(ingested.pendingRuns) to confirm")
                 }
                 syncResult = parts.isEmpty ? "Synced" : "Synced — " + parts.joined(separator: ", ")
             } catch {
@@ -530,6 +752,47 @@ private struct GarminCard: View {
             }
             await loadStatus()
         }
+    }
+
+    private var watchPlanText: String {
+        guard isConnected else { return "Not connected" }
+        guard let watchSyncStatus else { return statusFailed ? "Unavailable" : "Checking" }
+        switch watchSyncStatus.status {
+        case .idle:
+            return "No future plan"
+        case .syncing:
+            return "Syncing"
+        case .synced:
+            return "Ready"
+        case .retrying:
+            return "Retrying"
+        case .failed:
+            return "Needs retry"
+        case .blockedOnDelete:
+            return "Replacing"
+        }
+    }
+
+    private var shouldShowWatchRetry: Bool {
+        guard let watchSyncStatus else { return false }
+        switch watchSyncStatus.status {
+        case .failed, .retrying, .blockedOnDelete:
+            return true
+        case .idle, .syncing, .synced:
+            return false
+        }
+    }
+
+    private var isConnected: Bool {
+        status?.loggedIn == true
+    }
+
+    private var shouldShowMFAField: Bool {
+        status?.state == .mfaRequired || !garminMFACode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var connectButtonTitle: String {
+        shouldShowMFAField ? "Submit MFA code" : "Connect"
     }
 }
 
@@ -591,3 +854,38 @@ private struct ResetCard: View {
         .ruled(verticalPadding: 16)
     }
 }
+
+#if DEBUG
+private struct DemoHistorySeedCard: View {
+    var seedMessage: String?
+    var seedError: String?
+    var onSeedTap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("Demo data")
+            Text("Loads a fake two-week training block with strength logs, Garmin-style runs, readiness, race goal, and coach state.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.faint)
+            Button(action: onSeedTap) {
+                Label("Seed demo history", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SecondaryActionButtonStyle())
+            .accessibilityIdentifier("seed-demo-history-button")
+
+            if let seedMessage {
+                Text(seedMessage)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.muted)
+            }
+            if let seedError {
+                Text(seedError)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.warning)
+            }
+        }
+        .ruled(verticalPadding: 16)
+    }
+}
+#endif

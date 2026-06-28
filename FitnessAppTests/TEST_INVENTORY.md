@@ -184,18 +184,20 @@ This file is the durable human-readable test list for the lockin app. It records
   - Confirms strength sessions are still missed at the start of the next day.
 
 - `testRunningSessionWithRunLogIsNeverAutoMissed`
-  - Confirms any run log — pending or confirmed — shields the session from the missed sweep.
+  - Confirms any Garmin run log — including legacy pending rows — shields the session from the missed sweep.
 
-- `testCompleteRunOnMissedSessionRefundsMissAndScoresNormally`
-  - Walks the Monday-run-confirmed-on-Wednesday trace: sweep misses the run, a late Garmin sync matches it, confirming refunds.
-  - Verifies the miss penalty/consistency refund is exact, completion scores normally, and a double confirm is a no-op.
+- `testLegacyManualRunLogDoesNotBlockGarminSourceOfTruth`
+  - Confirms legacy manual run rows do not satisfy completion, and do not block a later Garmin activity from completing the planned run.
 
-- `testCompleteRunOnPlannedSessionAppliesConfirmScoring`
-  - Verifies confirming a pending run log completes the session, stores RPE/feel, and applies normal completion scoring.
+- `testGarminCompletionOnMissedSessionRefundsMissAndScoresNormally`
+  - Walks the Monday-run-synced-on-Wednesday trace: sweep misses the run, a late Garmin sync completes it and refunds.
+  - Verifies the miss penalty/consistency refund is exact, completion scores normally, and no app-side confirmation is needed.
 
-- `testCompleteRunOnCompletedSessionAbsorbsPendingLogWithoutRescoring`
-  - Verifies confirming a pending log on an already-completed session absorbs the duplicate (needsConfirmation cleared) instead of stranding a zombie confirm card.
-  - Confirms no rescoring happens: rank values, score impact, and session status are unchanged.
+- `testGarminCompletionOnPlannedSessionScoresImmediately`
+  - Verifies Garmin completion completes the session, scores immediately, and clears any legacy pending flag.
+
+- `testGarminCompletionOnShortPlannedRunMarksPartial`
+  - Verifies a meaningful Garmin run below 80% of planned distance marks the session partial, grants partial credit, and does not add a full streak.
 
 - `testWipeAllDataDeletesRunningModels`
   - Verifies reset also deletes race goals, run logs, and wellness snapshots.
@@ -245,8 +247,17 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testIngestWellnessUpsertsOneSnapshotPerCalendarDay`
   - Verifies Garmin wellness ingest upserts exactly one snapshot per calendar day.
 
-- `testMatchGarminActivitiesCreatesPendingRunLogForSameDayPlannedRun`
-  - Verifies a synced Garmin activity creates a pending run log on the same-day planned run.
+- `testMatchGarminActivitiesCompletesSameDayPlannedRun`
+  - Verifies a synced Garmin activity completes the same-day planned run without app-side confirmation.
+
+- `testMatchGarminActivitiesMarksSameDayShortRunPartial`
+  - Verifies a 5 km Garmin run against a 12 km planned session attaches to the plan as partial, not done or missed.
+
+- `testMatchGarminActivitiesLeavesTinyRunStandalone`
+  - Verifies a very small Garmin activity does not satisfy the planned run and imports as standalone history.
+
+- `testMatchGarminActivitiesReplacesPreviewMatchWithRealPartialRun`
+  - Verifies real Garmin data can replace preview/demo run data on the same planned session.
 
 - `testMatchGarminActivitiesMatchesMissedRunningSessionOnSameDay`
   - Confirms a late-synced activity still matches a session the sweep already marked missed.
@@ -257,8 +268,8 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testMatchGarminActivitiesMatchesClosestPlannedDistance`
   - Verifies an activity matches the same-day run with the closest planned distance.
 
-- `testMatchGarminActivitiesIgnoresActivityWithoutSameDayPlannedRun`
-  - Confirms activities without a same-day planned run are ignored.
+- `testUnmatchedGarminActivityImportsAsStandaloneConfirmedRun`
+  - Confirms activities without a same-day planned run import as standalone Garmin history.
 
 - `testMatchGarminActivitiesClaimsEachSessionOnceAndSkipsNonRunningTypes`
   - Confirms each session is claimed by at most one activity and non-running activity types are skipped.
@@ -282,7 +293,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Completes onboarding with default values.
   - Verifies Today opens with the AI-only empty plan state.
   - Opens Coach.
-  - Verifies Coach shows the coach read, the ready-for-the-first-week status, and the `Plan my week` action.
+  - Verifies Coach shows the coach read, the ready-for-the-first-week status, automatic plan status, no `Plan my week` action, and no manual coach-read refresh action.
 
 - `testLogShowsEmptyAIOnlyStateAfterOnboarding`
   - Completes onboarding.
@@ -294,7 +305,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testCoachReadAndAdvancedControlsAfterOnboarding`
   - Completes onboarding.
-  - Tests the Coach read surface and the Advanced disclosure with model and proxy status controls.
+  - Tests the passive Coach read surface and the Advanced disclosure with model and proxy status controls.
 
 - `testProfileResetFlowUsesAIOnlyPlanCreation`
   - Completes onboarding.
@@ -302,8 +313,8 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testTwoWeekSeedPreviewDataSurfaces`
   - Launches with the seeded two-week activity fixture.
-  - Verifies the pending Garmin run renders a confirm card above the due session.
-  - Verifies Log history, the future workout preview, Progress readiness and running volume (longest run), and the coach read headline.
+  - Verifies the seeded Garmin run does not render a feedback button.
+  - Verifies Log history, the future workout preview, Progress readiness and running volume (longest run), and the coach read headline plus last-updated timestamp.
 
 ## Screen Coverage Checklist
 
@@ -330,7 +341,7 @@ This file is the durable human-readable test list for the lockin app. It records
   - Still useful: score behavior after varied completion and miss patterns.
 
 - Coach
-  - Covered: generator surface, Context model settings, Rules.
+  - Covered: automatic plan status, Context model settings, Rules.
   - Covered in unit tests: technical AI output validation and accepted AI conversion.
   - Still useful: UI-level proxy unavailable and missing API key messages.
 
@@ -365,7 +376,7 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - Add UI test for Coach proxy error display:
   - Point proxy URL to an unavailable endpoint.
-  - Tap `Plan my week`.
+  - Open Advanced and tap `Regenerate plan`.
   - Verify the user-facing error explains how to start the proxy.
 
 ### Medium Priority

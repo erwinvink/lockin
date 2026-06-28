@@ -15,7 +15,7 @@ Verified prescription (Wang 2023 meta-analysis of 14 RCTs; outcomes are sub-ultr
 
 - Taper for 8-14 days when the block has gone well; never longer than 21 days.
 - Cut weekly volume progressively to a total reduction of 41-60% versus the pre-taper week. Cutting more than 60% adds nothing — race week still holds roughly half of normal volume.
-- Hold intensity and run frequency constant through the taper: keep short quality touches (strides, brief tempo) into race week. Shorten sessions; do not slow them all down or remove them.
+- Hold intensity and the athlete's established run frequency constant through the taper: keep short quality touches (strides, brief tempo) into race week. Shorten sessions; do not slow them all down, remove them, or inflate frequency to every available day.
 
 ## Long-Run Progression
 

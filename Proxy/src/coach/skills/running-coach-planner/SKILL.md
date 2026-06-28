@@ -7,7 +7,7 @@ description: Use when generating or repairing validated weekly ultrarunning plan
 
 ## Purpose
 
-Generate a schema-valid ultrarunning week, calibrated to the athlete's demonstrated training, from `coachContext.running` (race goal, weeks to race, recent runs, baseline weekly km, longest recent run, selected running days with future day offsets, long-run day) plus shared readiness and optional `coachContext.garmin` wellness. The skill output becomes app-visible training and Garmin-pushable workouts, so return only schema-valid JSON and keep today's run locked.
+Generate a schema-valid ultrarunning week, calibrated to the athlete's demonstrated training, from `coachContext.running` (race goal, weeks to race, recent runs, baseline weekly km, longest recent run, available running days with future day offsets, long-run day) plus shared readiness and optional `coachContext.garmin` wellness. The skill output becomes app-visible training and Garmin-pushable workouts, so return only schema-valid JSON and keep today's run locked.
 
 ## Coach Temperament
 
@@ -19,7 +19,7 @@ Athlete-facing text should name each session's job plainly: what to run, at what
 
 Use the deterministic `coachContext` built by the proxy before the model call. It includes:
 
-- `coachContext.running`: race goal, weeks to race, recent runs (with elevation gain and loss per run), baseline weekly km, longest recent run, selected running days with future day offsets, and the long-run day
+- `coachContext.running`: race goal, weeks to race, recent runs (with elevation gain and loss per run), baseline weekly km, longest recent run, available running days with future day offsets, and the long-run day
 - Recent runs may include `feelScore`: 1 very weak … 5 very strong; treat 1-2 as a heavily-weighted warning sign.
 - shared readiness state and risk flags
 - optional `coachContext.garmin` wellness signals (training readiness, body battery, sleep score, HRV status)
@@ -37,20 +37,30 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 
 1. Read `coachContext`, references, and any repair request.
 2. Use the provided readiness state and apply the Garmin readiness gates from the periodization reference.
-3. Plan only the selected future running-day offsets: exactly one run per selected day, `dayOffset` values strictly increasing. If no future running-day offsets are provided, return an empty `sessions` array and use `summary` to explain that this running week is already underway and the next full week starts after the coming rest days.
+3. Treat available future running-day offsets as availability, not a quota. Plan runs only on those offsets, choose the number of runs from the Frequency Policy below, and keep `dayOffset` values strictly increasing. Leave unused available offsets as rest days.
 4. Place the long run on the long-run day when one is provided.
-5. Build a normal build week around the long run plus one or two quality sessions (`tempo`, `intervals`, or `hills`); easy and recovery runs fill the remaining selected days. Keep roughly an 80/20 easy-to-hard split by time — the 20% is real, structured intensity, not an afterthought.
+5. Build a normal build week around the long run plus one or two quality sessions (`tempo`, `intervals`, or `hills`); easy and recovery runs fill the remaining planned run days. Keep roughly an 80/20 easy-to-hard split by time — the 20% is real, structured intensity, not an afterthought.
 6. Plan weekly volume from `baselineWeeklyKm` and the `recentRuns` trajectory, building toward the race demand. Do not undershoot the athlete's demonstrated weekly volume without a safety flag naming the reason. In build and peak, build descent durability per the periodization reference: sustained downhill work inside hill sessions and long runs, with the last hard downhill-loaded run 2-3 weeks before the race.
-7. Inside 21 days of `raceDate`, taper per the periodization reference: cut volume toward a 41-60% total reduction while holding intensity touches and run frequency constant.
+7. Inside 21 days of `raceDate`, taper per the periodization reference: cut volume toward a 41-60% total reduction while holding intensity touches and the athlete's established run frequency constant.
 8. When `raceGoal.raceDate` falls on one of this week's offsets, make that day's session the race effort: title it with the race name, kind `long`, the race distance and elevation, and a goal-effort target. Keep every other run that week a short shakeout or recovery run.
 9. Give every session a `target`: `pace` in seconds per km with `low` as the faster bound, or `hr` in bpm, so each run can be pushed to Garmin as a structured workout. Write `zone` values in the form "Zone 2" (capital Z, space, digit) so app display stays consistent.
 10. Write `summary`, `purpose`, and `notes` in the calm coach voice.
 11. Return JSON only, matching `running-week.schema.json`.
 
+## Frequency Policy
+
+- Availability is a ceiling, not the plan. Never schedule a run only because a day is available.
+- Low/no running history or a very small base: use 3 runs when at least 3 future days are available, spaced with rest days when possible. This is an assessment/building week, not a daily running week.
+- Moderate base: use 3-4 runs, preserving at least one true rest day unless the athlete's recent history already supports more.
+- Established base: use 4-5 runs, and keep progressive weekly volume toward race demand.
+- Use 6 runs only when the athlete's demonstrated history supports 5-6 runs per week or strong weekly volume, readiness is clean, and the extra day is an easy/recovery run.
+- Do not make the plan timid: when readiness is clean, progress the main training variable for the phase (usually weekly volume, long-run distance, or race-specific elevation) within the safety caps.
+- If readiness or recent pain/fatigue calls for fewer runs, explain it with a safety flag rather than pretending availability changed.
+
 ## Hard Rules
 
 - Today (`dayOffset: 0`) is locked. Never create, replace, or repair a run for today.
-- When selected future running-day offsets are provided, use only those offsets. Schedule exactly one run on every provided offset; when load must drop, shorten a day to a recovery run rather than skipping it.
+- When available future running-day offsets are provided, use only those offsets. Do not create runs on unavailable days.
 - If no future running-day offsets are provided, return an empty `sessions` array and use `summary` to explain that this running week is already underway and the next full week starts after the coming rest days.
 - The long run goes on the long-run day when one is provided. When the race itself falls in this week, the race session takes precedence and counts as the long run wherever it lands.
 - No weekly volume jump above 15% week-over-week without a safety flag.

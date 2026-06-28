@@ -15,6 +15,7 @@ xcuserdata/
 node_modules/
 dist/
 coverage/
+Proxy/.data/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

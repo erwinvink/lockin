@@ -43,7 +43,7 @@ enum AppTheme {
     static func statusColor(_ status: SessionStatus) -> Color {
         switch status {
         case .planned: muted
-        case .completed, .deload: accent
+        case .completed, .partial, .deload: accent
         case .missed: warning
         }
     }

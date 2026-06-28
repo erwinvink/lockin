@@ -97,14 +97,82 @@ test("rejects non-increasing day offsets", () => {
   assert.ok(result.messages.some((message) => message.includes("strictly later than the previous run")));
 });
 
-test("rejects fewer runs than selected running days", () => {
+test("rejects a too-sparse established build week without safety flags", () => {
   const week = validWeek();
   week.sessions = week.sessions.slice(0, 3);
 
   const result = validateRunningWeek(week, baseContext);
 
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("exactly 4 runs")));
+  assert.ok(result.messages.some((message) => message.includes("too sparse")));
+});
+
+test("accepts a progressive subset of six available days for an established base", () => {
+  const context = contextWith({
+    runningDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+    runningDayOffsets: [1, 2, 3, 4, 5, 6],
+    longRunDay: "friday",
+    longRunDayOffset: 5
+  });
+  const week = validWeek();
+
+  const result = validateRunningWeek(week, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("rejects daily running for a starter base even when six days are available", () => {
+  const context = contextWith({
+    baselineWeeklyKm: 0,
+    longestRecentRunKm: 0,
+    runningDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+    runningDayOffsets: [1, 2, 3, 4, 5, 6],
+    longRunDay: "saturday",
+    longRunDayOffset: 6,
+    recentRuns: []
+  });
+  const week: RunningWeek = {
+    summary: "Daily starter week.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy starter run", 1, "easy", 3),
+      run("Recovery jog", 2, "recovery", 3),
+      run("Easy starter run", 3, "easy", 3),
+      run("Recovery jog", 4, "recovery", 3),
+      run("Easy starter run", 5, "easy", 3),
+      run("Long starter run", 6, "long", 5)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("Starter running weeks")));
+});
+
+test("accepts a three-run starter week from six available days", () => {
+  const context = contextWith({
+    baselineWeeklyKm: 0,
+    longestRecentRunKm: 0,
+    runningDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+    runningDayOffsets: [1, 2, 3, 4, 5, 6],
+    longRunDay: "friday",
+    longRunDayOffset: 5,
+    recentRuns: []
+  });
+  const week: RunningWeek = {
+    summary: "Starter week with rest days between runs and one longer aerobic touch.",
+    safetyFlags: ["Minimal assessment week because no recent running history is available."],
+    sessions: [
+      run("Easy starter run", 1, "easy", 3),
+      run("Easy aerobic run", 3, "easy", 4),
+      run("Long starter run", 5, "long", 5)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
 test("rejects a long run jumping more than 40% past the recent longest run without safety flags", () => {

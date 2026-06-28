@@ -14,8 +14,11 @@ One-time interactive login (saves tokens to GARMIN_TOKENS_DIR):
     python main.py login
 """
 
+import json
 import logging
 import os
+import re
+import shutil
 import sys
 import threading
 import time
@@ -60,16 +63,63 @@ _load_env_file()
 
 GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "")
 GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD", "")
+GARMIN_DEFAULT_USER_ID = os.environ.get("GARMIN_DEFAULT_USER_ID", "default")
 PORT = int(os.environ.get("PORT", "8788"))
 
 
-def _tokens_dir() -> str:
+def _tokens_base_dir() -> Path:
     raw = os.environ.get("GARMIN_TOKENS_DIR", "./tokens")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = _BASE_DIR / path
     path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
+def _tokens_dir(user_id: str | None = None) -> str:
+    path = _tokens_base_dir() if not user_id else _tokens_base_dir() / "users" / _clean_user_id(user_id)
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
     return str(path)
+
+
+def _clean_user_id(value: str | None) -> str:
+    raw = (value or "").strip() or GARMIN_DEFAULT_USER_ID
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)[:120] or GARMIN_DEFAULT_USER_ID
+
+
+def _is_default_user(user_id: str) -> bool:
+    return user_id == _clean_user_id("") or user_id == _clean_user_id(GARMIN_DEFAULT_USER_ID)
+
+
+def _token_files_exist(user_id: str | None = None) -> bool:
+    path = Path(_tokens_dir(user_id))
+    return any(item.is_file() and item.name != "lockin-connection.json" for item in path.rglob("*"))
+
+
+def _metadata_path(user_id: str) -> Path:
+    return Path(_tokens_dir(user_id)) / "lockin-connection.json"
+
+
+def _write_metadata(user_id: str, email: str) -> None:
+    _metadata_path(user_id).write_text(
+        json.dumps({"email": email, "connectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}),
+        encoding="utf8",
+    )
+
+
+def _read_metadata(user_id: str) -> dict[str, Any]:
+    try:
+        return json.loads(_metadata_path(user_id).read_text(encoding="utf8"))
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +127,10 @@ def _tokens_dir() -> str:
 # ---------------------------------------------------------------------------
 
 _client: Garmin | None = None
+_clients: dict[str, Garmin] = {}
 _client_lock = threading.Lock()
 last_error: str | None = None
+last_errors: dict[str, str | None] = {}
 
 # garminconnect serializes nothing internally: any API call may trigger a
 # token refresh that mutates client state and rewrites the token file. One
@@ -91,59 +143,152 @@ _io_lock = threading.Lock()
 # hammering Garmin SSO). Cleared by the next successful login.
 _LOGIN_COOLDOWN_SECONDS = 60.0
 _login_failed_at: float | None = None
+_login_failed_ats: dict[str, float | None] = {}
 
 
-def _get_client(prompt_mfa: Any = None) -> Garmin | None:
+class MFARequiredError(Exception):
+    pass
+
+
+def _is_mfa_required_text(value: str | None) -> bool:
+    text = (value or "").lower()
+    if not text:
+        return False
+    return (
+        ("mfa" in text or "multi-factor" in text or "two-factor" in text or "2fa" in text)
+        and ("required" in text or "code" in text)
+    )
+
+
+def _is_mfa_required_error(exc: Exception) -> bool:
+    return isinstance(exc, MFARequiredError) or _is_mfa_required_text(f"{type(exc).__name__}: {exc}")
+
+
+def _cached_client(user_id: str) -> Garmin | None:
+    if _is_default_user(user_id):
+        return _client
+    return _clients.get(user_id)
+
+
+def _set_cached_client(user_id: str, client: Garmin | None) -> None:
+    global _client
+    if _is_default_user(user_id):
+        _client = client
+    elif client is None:
+        _clients.pop(user_id, None)
+    else:
+        _clients[user_id] = client
+
+
+def _last_error(user_id: str) -> str | None:
+    return last_error if _is_default_user(user_id) else last_errors.get(user_id)
+
+
+def _set_last_error(user_id: str, value: str | None) -> None:
+    global last_error
+    if _is_default_user(user_id):
+        last_error = value
+    else:
+        last_errors[user_id] = value
+
+
+def _get_login_failed_at(user_id: str) -> float | None:
+    return _login_failed_at if _is_default_user(user_id) else _login_failed_ats.get(user_id)
+
+
+def _set_login_failed_at(user_id: str, value: float | None) -> None:
+    global _login_failed_at
+    if _is_default_user(user_id):
+        _login_failed_at = value
+    else:
+        _login_failed_ats[user_id] = value
+
+
+def _status_payload(user_id: str, logged_in: bool, state: str | None = None) -> dict[str, Any]:
+    meta = _read_metadata(user_id)
+    return {
+        "ok": True,
+        "userId": user_id,
+        "loggedIn": logged_in,
+        "state": state or ("connected" if logged_in else "not_connected"),
+        "connectedEmail": meta.get("email") if isinstance(meta.get("email"), str) else None,
+        "lastError": _last_error(user_id),
+    }
+
+
+def _get_client(
+    user_id_input: str | None = None,
+    *,
+    email: str | None = None,
+    password: str | None = None,
+    prompt_mfa: Any = None,
+    force_credentials: bool = False,
+) -> Garmin | None:
     """Login lazily: token-dir resume first, email/password fallback (which
     writes fresh tokens to the dir). Auth failures land in last_error and are
     reported via /status instead of crashing the service. A failed login
     starts a cooldown during which no new attempt is made."""
-    global _client, last_error, _login_failed_at
+    user_id = _clean_user_id(user_id_input)
     with _client_lock:
-        if _client is not None:
-            return _client
+        cached = _cached_client(user_id)
+        if cached is not None:
+            return cached
         if (
-            _login_failed_at is not None
-            and time.monotonic() - _login_failed_at < _LOGIN_COOLDOWN_SECONDS
+            not force_credentials
+            and _get_login_failed_at(user_id) is not None
+            and time.monotonic() - (_get_login_failed_at(user_id) or 0) < _LOGIN_COOLDOWN_SECONDS
         ):
             return None  # cooling down — degraded state, don't hit SSO again
+        login_email = (email or "").strip()
+        login_password = password or ""
+        if not login_email and _is_default_user(user_id):
+            login_email = GARMIN_EMAIL
+        if not login_password and _is_default_user(user_id):
+            login_password = GARMIN_PASSWORD
+        if not force_credentials and not _token_files_exist(None if _is_default_user(user_id) else user_id) and not (login_email and login_password):
+            _set_last_error(user_id, None)
+            return None
         try:
             client = Garmin(
-                email=GARMIN_EMAIL or None,
-                password=GARMIN_PASSWORD or None,
+                email=login_email or None,
+                password=login_password or None,
                 prompt_mfa=prompt_mfa,
                 # Library default is 3 retries with 15s timeouts — enough to
                 # occupy a worker thread for minutes when Garmin is down.
                 retry_attempts=1,
             )
-            client.login(tokenstore=_tokens_dir())
-            _client = client
-            last_error = None
-            _login_failed_at = None
-            logger.info("Garmin login OK")
+            client.login(tokenstore=_tokens_dir(None if _is_default_user(user_id) else user_id))
+            _set_cached_client(user_id, client)
+            _set_last_error(user_id, None)
+            _set_login_failed_at(user_id, None)
+            if login_email:
+                _write_metadata(user_id, login_email)
+            logger.info("Garmin login OK for %s", user_id)
         except Exception as exc:  # noqa: BLE001 — sidecar must stay up
-            last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("Garmin login failed: %s", last_error)
-            _client = None
-            _login_failed_at = time.monotonic()
-        return _client
+            is_mfa_required = _is_mfa_required_error(exc)
+            _set_last_error(user_id, f"{type(exc).__name__}: {exc}")
+            logger.warning("Garmin login failed for %s: %s", user_id, _last_error(user_id))
+            _set_cached_client(user_id, None)
+            if not is_mfa_required:
+                _set_login_failed_at(user_id, time.monotonic())
+        return _cached_client(user_id)
 
 
-def _drop_client_on_auth_error(exc: Exception) -> None:
+def _drop_client_on_auth_error(exc: Exception, user_id_input: str | None = None) -> None:
     """Expired/revoked tokens: forget the client so the next request retries
     the full login order (tokens, then credentials). Undecorated library
     paths surface raw errors formatted "API Error {status} - ...", so match
     the anchored prefix — a stray "401" elsewhere in a message (an id, a
     detail string) must not force a re-login."""
-    global _client, last_error
+    user_id = _clean_user_id(user_id_input)
     text = str(exc)
     if isinstance(exc, GarminConnectAuthenticationError) or text.startswith("API Error 401"):
         with _client_lock:
-            _client = None
-            last_error = f"{type(exc).__name__}: {exc}"
+            _set_cached_client(user_id, None)
+            _set_last_error(user_id, f"{type(exc).__name__}: {exc}")
 
 
-def _safe(label: str, fn: Any, *args: Any, default: Any = None) -> Any:
+def _safe(label: str, fn: Any, *args: Any, default: Any = None, user_id: str | None = None) -> Any:
     """Run one garminconnect call (serialized via _io_lock); any failure
     (e.g. no training readiness on older watches) degrades to `default`
     instead of a 500."""
@@ -152,7 +297,7 @@ def _safe(label: str, fn: Any, *args: Any, default: Any = None) -> Any:
             return fn(*args)
     except Exception as exc:  # noqa: BLE001
         logger.info("%s failed (%s): %s", label, type(exc).__name__, exc)
-        _drop_client_on_auth_error(exc)
+        _drop_client_on_auth_error(exc, user_id)
         return default
 
 
@@ -164,21 +309,77 @@ app = FastAPI(title="lockin Garmin sidecar", docs_url=None, redoc_url=None)
 
 
 class PushBody(BaseModel):
+    userId: str = ""
     workouts: list[dict[str, Any]] = []
 
 
 class DeleteBody(BaseModel):
+    userId: str = ""
     workoutIds: list[Any] = []
 
 
+class ConnectBody(BaseModel):
+    userId: str = ""
+    email: str = ""
+    password: str = ""
+    mfaCode: str | None = None
+
+
+class DisconnectBody(BaseModel):
+    userId: str = ""
+
+
 @app.get("/status")
-def status() -> dict[str, Any]:
-    client = _get_client()
-    return {"ok": True, "loggedIn": client is not None, "lastError": last_error}
+def status(userId: str = Query(default="")) -> dict[str, Any]:
+    user_id = _clean_user_id(userId)
+    client = _get_client(user_id)
+    return _status_payload(user_id, client is not None)
+
+
+@app.post("/connect")
+def connect(body: ConnectBody) -> dict[str, Any]:
+    user_id = _clean_user_id(body.userId)
+    email = body.email.strip()
+    if not email or not body.password:
+        _set_last_error(user_id, "Garmin email and password are required.")
+        return _status_payload(user_id, False, "credentials_required")
+
+    def prompt_mfa() -> str:
+        code = (body.mfaCode or "").strip()
+        if not code:
+            raise MFARequiredError("MFA code required")
+        return code
+
+    client = _get_client(
+        user_id,
+        email=email,
+        password=body.password,
+        prompt_mfa=prompt_mfa,
+        force_credentials=True,
+    )
+    if client is not None:
+        return _status_payload(user_id, True, "connected")
+
+    if _is_mfa_required_text(_last_error(user_id)):
+        _set_last_error(user_id, "Garmin needs the MFA code for this login.")
+        return _status_payload(user_id, False, "mfa_required")
+    return _status_payload(user_id, False, "not_connected")
+
+
+@app.post("/disconnect")
+def disconnect(body: DisconnectBody) -> dict[str, Any]:
+    user_id = _clean_user_id(body.userId)
+    with _client_lock:
+        _set_cached_client(user_id, None)
+        _set_last_error(user_id, None)
+        _set_login_failed_at(user_id, None)
+    if not _is_default_user(user_id):
+        shutil.rmtree(_tokens_dir(user_id), ignore_errors=True)
+    return _status_payload(user_id, False, "not_connected")
 
 
 @app.get("/wellness")
-def wellness(days: int = Query(default=7)) -> list[dict[str, Any]]:
+def wellness(days: int = Query(default=7), userId: str = Query(default="")) -> list[dict[str, Any]]:
     """One wellness_day dict per date, MOST RECENT FIRST (today at index 0).
     Returns [] when not logged in; per-metric failures degrade to defaults.
 
@@ -186,8 +387,9 @@ def wellness(days: int = Query(default=7)) -> list[dict[str, Any]]:
     connection-class failures) we stop calling Garmin and return only the
     complete rows fetched so far — remaining days are OMITTED, never filled
     with fake zeros. Consumers must treat missing days as no-data."""
+    user_id = _clean_user_id(userId)
     days = max(1, min(days, 30))
-    client = _get_client()
+    client = _get_client(user_id)
     if client is None:
         return []
 
@@ -216,11 +418,11 @@ def wellness(days: int = Query(default=7)) -> list[dict[str, Any]]:
                     "%d consecutive connection failures — truncating wellness batch",
                     conn_failures,
                 )
-            _drop_client_on_auth_error(exc)
+            _drop_client_on_auth_error(exc, user_id)
             return default
         except Exception as exc:  # noqa: BLE001
             logger.info("%s failed (%s): %s", label, type(exc).__name__, exc)
-            _drop_client_on_auth_error(exc)
+            _drop_client_on_auth_error(exc, user_id)
             return default
         conn_failures = 0
         return result
@@ -254,11 +456,12 @@ def wellness(days: int = Query(default=7)) -> list[dict[str, Any]]:
 
 
 @app.get("/activities")
-def activities(days: int = Query(default=14)) -> list[dict[str, Any]]:
+def activities(days: int = Query(default=14), userId: str = Query(default="")) -> list[dict[str, Any]]:
     """Running activities (running/trail_running/ultra/... only), most recent
     first (Garmin's default sort). Returns [] when not logged in."""
+    user_id = _clean_user_id(userId)
     days = max(1, min(days, 90))
-    client = _get_client()
+    client = _get_client(user_id)
     if client is None:
         return []
 
@@ -270,6 +473,7 @@ def activities(days: int = Query(default=14)) -> list[dict[str, Any]]:
         start_iso,
         today.isoformat(),
         default=[],
+        user_id=user_id,
     )
     if not isinstance(raw, list):
         return []
@@ -280,7 +484,8 @@ def activities(days: int = Query(default=14)) -> list[dict[str, Any]]:
 def push_workouts(body: PushBody) -> list[dict[str, Any]]:
     """Per workout: build JSON -> create on Garmin -> schedule on its date.
     One failing item never aborts the batch."""
-    client = _get_client()
+    user_id = _clean_user_id(body.userId)
+    client = _get_client(user_id)
     results: list[dict[str, Any]] = []
     for payload in body.workouts:
         session_id = str(payload.get("sessionId", ""))
@@ -291,7 +496,7 @@ def push_workouts(body: PushBody) -> list[dict[str, Any]]:
             "error": None,
         }
         if client is None:
-            result["error"] = last_error or "not logged in"
+            result["error"] = _last_error(user_id) or "not logged in"
             results.append(result)
             continue
         try:
@@ -313,7 +518,7 @@ def push_workouts(body: PushBody) -> list[dict[str, Any]]:
                     client.schedule_workout(workout_id, date_str)
                 result["scheduled"] = True
         except Exception as exc:  # noqa: BLE001
-            _drop_client_on_auth_error(exc)
+            _drop_client_on_auth_error(exc, user_id)
             result["error"] = f"{type(exc).__name__}: {exc}"
         results.append(result)
     return results
@@ -323,13 +528,14 @@ def push_workouts(body: PushBody) -> list[dict[str, Any]]:
 def delete_workouts(body: DeleteBody) -> list[dict[str, Any]]:
     """Per-id delete; ids that are already gone count as deleted. One failing
     id never aborts the batch."""
-    client = _get_client()
+    user_id = _clean_user_id(body.userId)
+    client = _get_client(user_id)
     results: list[dict[str, Any]] = []
     for raw_id in body.workoutIds:
         workout_id = str(raw_id)
         result: dict[str, Any] = {"workoutId": workout_id, "deleted": False, "error": None}
         if client is None:
-            result["error"] = last_error or "not logged in"
+            result["error"] = _last_error(user_id) or "not logged in"
             results.append(result)
             continue
         try:
@@ -346,7 +552,7 @@ def delete_workouts(body: DeleteBody) -> list[dict[str, Any]]:
             if text.startswith("API Error 404") or "not found" in text.lower():
                 result["deleted"] = True  # already gone — that's the goal state
             else:
-                _drop_client_on_auth_error(exc)
+                _drop_client_on_auth_error(exc, user_id)
                 result["error"] = f"{type(exc).__name__}: {exc}"
         results.append(result)
     return results

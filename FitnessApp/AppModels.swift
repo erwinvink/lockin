@@ -1,6 +1,27 @@
 import Foundation
 import SwiftData
 
+enum LockinCurrentUser {
+    static let displayName = "Erwin vink"
+    static let username = "erwin.vink"
+
+    static func normalizedProfileName(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        if trimmed.isEmpty || ["athlete", "erwin", "edwin fink"].contains(normalized) {
+            return displayName
+        }
+        return trimmed
+    }
+}
+
+func ensureCurrentUserProfile(_ profile: UserProfile, in modelContext: ModelContext) {
+    let normalized = LockinCurrentUser.normalizedProfileName(profile.name)
+    guard profile.name != normalized else { return }
+    profile.name = normalized
+    try? modelContext.save()
+}
+
 enum PlannedEffortLabel: String, CaseIterable, Codable {
     case light
     case medium
@@ -218,6 +239,7 @@ enum TrainingWeekday: String, CaseIterable, Codable, Identifiable {
 enum SessionStatus: String, Codable {
     case planned
     case completed
+    case partial
     case missed
     case deload
 }
@@ -279,6 +301,15 @@ enum RunTargetType: String, Codable {
 enum RunLogSource: String, Codable {
     case manual
     case garmin
+}
+
+enum GarminWorkoutSyncStatus: String, Codable {
+    case pending
+    case blockedOnDelete = "blocked_on_delete"
+    case retrying
+    case synced
+    case failed
+    case deleted
 }
 
 @Model
@@ -435,6 +466,9 @@ final class WorkoutSession {
     var runZone: String = ""
     var garminWorkoutId: String = ""
     var pushedToGarminAt: Date? = nil
+    var garminSyncStatusRaw: String = ""
+    var garminSyncError: String = ""
+    var garminSyncUpdatedAt: Date? = nil
     var createdAt: Date = Date()
 
     init(
@@ -456,6 +490,11 @@ final class WorkoutSession {
         runTargetLow: Int = 0,
         runTargetHigh: Int = 0,
         runZone: String = "",
+        garminWorkoutId: String = "",
+        pushedToGarminAt: Date? = nil,
+        garminSyncStatus: GarminWorkoutSyncStatus? = nil,
+        garminSyncError: String = "",
+        garminSyncUpdatedAt: Date? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -478,6 +517,11 @@ final class WorkoutSession {
         self.runTargetLow = runTargetLow
         self.runTargetHigh = runTargetHigh
         self.runZone = runZone
+        self.garminWorkoutId = garminWorkoutId
+        self.pushedToGarminAt = pushedToGarminAt
+        self.garminSyncStatusRaw = garminSyncStatus?.rawValue ?? ""
+        self.garminSyncError = garminSyncError
+        self.garminSyncUpdatedAt = garminSyncUpdatedAt
         self.createdAt = createdAt
     }
 
@@ -486,6 +530,10 @@ final class WorkoutSession {
     var runKind: RunKind? { RunKind(rawValue: runKindRaw) }
     var runTargetType: RunTargetType? { RunTargetType(rawValue: runTargetTypeRaw) }
     var isRun: Bool { discipline == .running }
+    var garminSyncStatus: GarminWorkoutSyncStatus? {
+        get { GarminWorkoutSyncStatus(rawValue: garminSyncStatusRaw) }
+        set { garminSyncStatusRaw = newValue?.rawValue ?? "" }
+    }
     var plannedEffortLabel: PlannedEffortLabel? {
         PlannedEffortLabel(rawValue: plannedEffortLabelRaw)
     }
@@ -741,6 +789,10 @@ final class CoachVerdict {
     var summary: String = ""
     var latestChange: String = ""
     var recommendation: String = ""
+    var runningReadRaw: String = ""
+    var strengthReadRaw: String = ""
+    var nextStepRaw: String = ""
+    var watchItemsRaw: String = ""
     var shouldUpdatePlan: Bool = false
     var contextState: String = ""
     var safetyFlagsRaw: String = ""
@@ -753,6 +805,10 @@ final class CoachVerdict {
         summary: String,
         latestChange: String,
         recommendation: String,
+        runningRead: String = "",
+        strengthRead: String = "",
+        nextStep: String = "",
+        watchItems: [String] = [],
         shouldUpdatePlan: Bool,
         contextState: String,
         safetyFlags: [String]
@@ -764,6 +820,10 @@ final class CoachVerdict {
         self.summary = summary
         self.latestChange = latestChange
         self.recommendation = recommendation
+        self.runningReadRaw = runningRead
+        self.strengthReadRaw = strengthRead
+        self.nextStepRaw = nextStep
+        self.watchItemsRaw = watchItems.joined(separator: "|")
         self.shouldUpdatePlan = shouldUpdatePlan
         self.contextState = contextState
         self.safetyFlagsRaw = safetyFlags.joined(separator: "|")
@@ -776,6 +836,10 @@ final class CoachVerdict {
             summary: response.summary,
             latestChange: response.latestChange,
             recommendation: response.recommendation,
+            runningRead: response.runningRead ?? "",
+            strengthRead: response.strengthRead ?? "",
+            nextStep: response.nextStep ?? "",
+            watchItems: response.watchItems ?? response.safetyFlags,
             shouldUpdatePlan: response.shouldUpdatePlan,
             contextState: response.contextState,
             safetyFlags: response.safetyFlags
@@ -788,6 +852,52 @@ final class CoachVerdict {
 
     var safetyFlags: [String] {
         safetyFlagsRaw.split(separator: "|").map(String.init)
+    }
+
+    var runningRead: String {
+        runningReadRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? latestChange : runningReadRaw
+    }
+
+    var strengthRead: String {
+        strengthReadRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? recommendation : strengthReadRaw
+    }
+
+    var nextStep: String {
+        nextStepRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? recommendation : nextStepRaw
+    }
+
+    var watchItems: [String] {
+        let items = watchItemsRaw.split(separator: "|").map(String.init)
+        return items.isEmpty ? safetyFlags.map(humanReadableCoachFlag) : items.map(humanReadableCoachFlag)
+    }
+}
+
+func humanReadableCoachFlag(_ flag: String) -> String {
+    switch flag {
+    case "recent_pain_level_4_or_higher":
+        return "Pain reached 4/10 recently"
+    case "recent_how_you_felt_very_weak":
+        return "Recent session feedback was very weak"
+    case "repeated_high_perceived_effort":
+        return "Several recent sessions were very hard"
+    case "recent_effort_above_plan":
+        return "Effort has been higher than planned"
+    case "last_full_month_pain_flag":
+        return "Pain has shown up across the month"
+    case "last_full_month_how_you_felt_very_weak":
+        return "Fatigue has been high this month"
+    case "low_last_full_month_training_count":
+        return "Training consistency was low last month"
+    case "sudden_monthly_volume_increase":
+        return "Training volume jumped recently"
+    case "insufficient_training_history":
+        return "Not enough recent training history yet"
+    default:
+        return flag
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "averageDeltaLast5", with: "recent effort trend")
+            .replacingOccurrences(of: "abovePlanBy2Count", with: "sessions harder than planned")
+            .replacingOccurrences(of: "maxPain", with: "highest pain")
     }
 }
 
@@ -843,7 +953,7 @@ final class RunLog {
     var feelScore: Int = 3          // 1 very weak ... 5 very strong
     var notes: String = ""
     var garminActivityId: String = ""
-    var sourceRaw: String = RunLogSource.manual.rawValue
+    var sourceRaw: String = RunLogSource.garmin.rawValue
     var needsConfirmation: Bool = false
 
     init(
@@ -860,7 +970,7 @@ final class RunLog {
         feelScore: Int = 3,
         notes: String = "",
         garminActivityId: String = "",
-        source: RunLogSource = .manual,
+        source: RunLogSource = .garmin,
         needsConfirmation: Bool = false
     ) {
         self.id = id
@@ -880,7 +990,7 @@ final class RunLog {
         self.needsConfirmation = needsConfirmation
     }
 
-    var source: RunLogSource { RunLogSource(rawValue: sourceRaw) ?? .manual }
+    var source: RunLogSource { RunLogSource(rawValue: sourceRaw) ?? .garmin }
 }
 
 @Model

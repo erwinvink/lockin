@@ -13,13 +13,32 @@ import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
 import { validateRunningWeek } from "./coach/planner/validate-running-week";
 import { validateCombinedWeek } from "./coach/planner/validate-combined-week";
 import type { CoachContext, CoachRequest, CoachVerdict, RunningWeek, WeeklyPlan } from "./coach/planner/types";
-import { deleteWorkouts, garminSnapshot, garminStatus, pushWorkouts } from "./garmin/garmin-client";
+import {
+  AutoPlanStore,
+  markAutoPlanFailed,
+  markAutoPlanGenerated,
+  prepareAutoPlanTrigger,
+  toAutoPlanStatus,
+  type AutoPlanGeneratedPlan,
+  type AutoPlanSource,
+  type AutoPlanTrigger
+} from "./coach/auto-plan";
+import { connectGarmin, deleteWorkouts, disconnectGarmin, garminSnapshot, garminStatus, pushWorkouts } from "./garmin/garmin-client";
+import { GarminSyncInputError, getGarminSyncStatus, retryGarminSync, submitGarminSyncPlan } from "./garmin/garmin-sync";
+import { GarminSyncStore } from "./garmin/garmin-sync-store";
 import { defaultCoachModel, normalizeRequestedModel, pickTextModelIDs, withDefaultCoachModel } from "./model-selection";
+import { fetchOpenAIResponse, recordCoachValidationFailure, type OpenAIRequestTelemetry } from "./openai-telemetry";
+import { createLockinApiHandler } from "./storage/lockin-api";
+import { LockinStore } from "./storage/lockin-store";
 
 const port = Number(process.env.PORT ?? 8787);
 const apiKey = process.env.OPENAI_API_KEY;
 const skillRoot = join(process.cwd(), "src", "coach", "skills", "fitness-coach-planner");
 const runningSkillRoot = join(process.cwd(), "src", "coach", "skills", "running-coach-planner");
+const garminSyncStore = new GarminSyncStore();
+const autoPlanStore = new AutoPlanStore();
+const lockinStore = new LockinStore();
+const handleLockinApi = createLockinApiHandler(lockinStore);
 
 createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const startedAt = Date.now();
@@ -27,6 +46,10 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     console.log(`${req.method} ${req.url} -> ${res.statusCode} (${Date.now() - startedAt}ms)`);
   });
   try {
+    if (await handleLockinApi(req, res)) {
+      return;
+    }
+
     if (req.method === "GET" && req.url === "/health") {
       writeJSON(res, 200, { ok: true, hasApiKey: Boolean(apiKey), defaultModel: defaultCoachModel });
       return;
@@ -45,6 +68,22 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       return;
     }
 
+    if (req.method === "GET" && req.url?.split("?")[0] === "/plan/status") {
+      const userId = queryValue(req.url, "userId");
+      if (!userId) {
+        writeJSON(res, 400, { error: "userId is required" });
+        return;
+      }
+      const state = await autoPlanStore.read();
+      writeJSON(res, 200, toAutoPlanStatus(state.users[userId] ?? null, userId));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/plan/trigger") {
+      writeJSON(res, 200, await runAutoPlanTrigger(parseAutoPlanTrigger(JSON.parse(await readBody(req)))));
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/coach-verdict") {
       if (!apiKey) {
         writeJSON(res, 500, { error: "OPENAI_API_KEY is not set" });
@@ -58,8 +97,8 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      const context = await enrichWithGarmin(buildCoachContext(payload));
-      const generated = await generateCoachVerdict(apiKey, model, context);
+      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const generated = await generateCoachVerdict(apiKey, model, context, coachTelemetry(payload, model, "/coach-verdict", "coach_verdict", context));
 
       if (!generated.ok) {
         res.writeHead(generated.status, { "content-type": "application/json" }).end(generated.body);
@@ -94,9 +133,15 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const [skill, runningSkill] = await Promise.all([loadSkillBundle(), loadRunningSkillBundle()]);
-      const context = await enrichWithGarmin(buildCoachContext(payload));
+      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
 
-      const generatedRunning = await generateRunningWeek(apiKey, model, runningSkill, context);
+      const generatedRunning = await generateRunningWeek(
+        apiKey,
+        model,
+        runningSkill,
+        context,
+        coachTelemetry(payload, model, "/generate-week", "running_initial", context)
+      );
       if (!generatedRunning.ok) {
         res.writeHead(generatedRunning.status, { "content-type": "application/json" }).end(generatedRunning.body);
         return;
@@ -105,10 +150,21 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       let runningWeek = generatedRunning.week;
       const runningValidation = validateRunningWeek(runningWeek, context);
       if (!runningValidation.accepted) {
-        const repairedRunning = await generateRunningWeek(apiKey, model, runningSkill, context, {
-          messages: runningValidation.messages,
-          previousPlan: runningWeek
-        });
+        await recordCoachValidationFailure(
+          coachTelemetry(payload, model, "/generate-week", "running_initial_validation", context),
+          runningValidation.messages
+        );
+        const repairedRunning = await generateRunningWeek(
+          apiKey,
+          model,
+          runningSkill,
+          context,
+          coachTelemetry(payload, model, "/generate-week", "running_repair", context, true),
+          {
+            messages: runningValidation.messages,
+            previousPlan: runningWeek
+          }
+        );
 
         if (!repairedRunning.ok) {
           res.writeHead(repairedRunning.status, { "content-type": "application/json" }).end(repairedRunning.body);
@@ -117,6 +173,10 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
 
         const repairedRunningValidation = validateRunningWeek(repairedRunning.week, context);
         if (!repairedRunningValidation.accepted) {
+          await recordCoachValidationFailure(
+            coachTelemetry(payload, model, "/generate-week", "running_repair_validation", context, true),
+            repairedRunningValidation.messages
+          );
           writeJSON(res, 422, {
             error: "Generated running week failed validation after one repair attempt.",
             messages: repairedRunningValidation.messages,
@@ -136,7 +196,15 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         elevationMeters
       }));
 
-      const generatedStrength = await generateWeeklyPlan(apiKey, model, skill, context, undefined, plannedRuns);
+      const generatedStrength = await generateWeeklyPlan(
+        apiKey,
+        model,
+        skill,
+        context,
+        coachTelemetry(payload, model, "/generate-week", "strength_initial", context),
+        undefined,
+        plannedRuns
+      );
       if (!generatedStrength.ok) {
         res.writeHead(generatedStrength.status, { "content-type": "application/json" }).end(generatedStrength.body);
         return;
@@ -149,11 +217,16 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       ];
 
       if (strengthMessages.length > 0) {
+        await recordCoachValidationFailure(
+          coachTelemetry(payload, model, "/generate-week", "strength_initial_validation", context),
+          strengthMessages
+        );
         const repairedStrength = await generateWeeklyPlan(
           apiKey,
           model,
           skill,
           context,
+          coachTelemetry(payload, model, "/generate-week", "strength_repair", context, true),
           { messages: strengthMessages, previousPlan: strengthPlan },
           plannedRuns
         );
@@ -169,6 +242,10 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         ];
 
         if (repairedStrengthMessages.length > 0) {
+          await recordCoachValidationFailure(
+            coachTelemetry(payload, model, "/generate-week", "strength_repair_validation", context, true),
+            repairedStrengthMessages
+          );
           writeJSON(res, 422, {
             error: "Generated plan failed technical validation after one repair attempt.",
             messages: repairedStrengthMessages,
@@ -191,34 +268,67 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/status") {
-      writeJSON(res, 200, await garminStatus());
+      writeJSON(res, 200, await garminStatus(fetch, { userId: queryValue(req.url, "userId") }));
       return;
     }
 
     if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/snapshot") {
-      writeJSON(res, 200, await garminSnapshot(parseSinceDays(req.url)));
+      writeJSON(res, 200, await garminSnapshot(parseSinceDays(req.url), fetch, { userId: queryValue(req.url, "userId") }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/garmin/connect") {
+      const payload = JSON.parse(await readBody(req)) as { userId?: unknown; email?: unknown; password?: unknown; mfaCode?: unknown };
+      writeJSON(res, 200, await connectGarmin({
+        userId: typeof payload.userId === "string" ? payload.userId : "",
+        email: typeof payload.email === "string" ? payload.email : "",
+        password: typeof payload.password === "string" ? payload.password : "",
+        mfaCode: typeof payload.mfaCode === "string" ? payload.mfaCode : undefined
+      }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/garmin/disconnect") {
+      const payload = JSON.parse(await readBody(req)) as { userId?: unknown };
+      writeJSON(res, 200, await disconnectGarmin(typeof payload.userId === "string" ? payload.userId : ""));
+      return;
+    }
+
+    if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/sync-status") {
+      writeJSON(res, 200, await getGarminSyncStatus(garminSyncStore, queryValue(req.url, "userId")));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/garmin/sync-plan") {
+      writeJSON(res, 200, await submitGarminSyncPlan(garminSyncStore, JSON.parse(await readBody(req))));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/garmin/retry-sync") {
+      const payload = JSON.parse(await readBody(req)) as { userId?: unknown };
+      writeJSON(res, 200, await retryGarminSync(garminSyncStore, typeof payload.userId === "string" ? payload.userId : ""));
       return;
     }
 
     if (req.method === "POST" && req.url === "/garmin/push-workouts") {
-      const payload = JSON.parse(await readBody(req)) as { workouts?: unknown };
+      const payload = JSON.parse(await readBody(req)) as { workouts?: unknown; userId?: unknown };
       if (!Array.isArray(payload?.workouts)) {
         writeJSON(res, 400, { error: "workouts array is required" });
         return;
       }
 
-      writeJSON(res, 200, await pushWorkouts(payload.workouts));
+      writeJSON(res, 200, await pushWorkouts(payload.workouts, fetch, { userId: typeof payload.userId === "string" ? payload.userId : undefined }));
       return;
     }
 
     if (req.method === "POST" && req.url === "/garmin/delete-workouts") {
-      const payload = JSON.parse(await readBody(req)) as { workoutIds?: unknown };
+      const payload = JSON.parse(await readBody(req)) as { workoutIds?: unknown; userId?: unknown };
       if (!Array.isArray(payload?.workoutIds)) {
         writeJSON(res, 400, { error: "workoutIds array is required" });
         return;
       }
 
-      writeJSON(res, 200, await deleteWorkouts(payload.workoutIds));
+      writeJSON(res, 200, await deleteWorkouts(payload.workoutIds, fetch, { userId: typeof payload.userId === "string" ? payload.userId : undefined }));
       return;
     }
 
@@ -242,7 +352,13 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const skill = await loadSkillBundle();
     const context = buildCoachContext(payload);
 
-    const generated = await generateWeeklyPlan(apiKey, model, skill, context);
+    const generated = await generateWeeklyPlan(
+      apiKey,
+      model,
+      skill,
+      context,
+      coachTelemetry(payload, model, "/generate-week-plan", "strength_initial", context)
+    );
 
     if (!generated.ok) {
       res.writeHead(generated.status, { "content-type": "application/json" }).end(generated.body);
@@ -252,10 +368,21 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const validation = validateWeeklyPlan(generated.plan, context);
 
     if (!validation.accepted) {
-      const repaired = await generateWeeklyPlan(apiKey, model, skill, context, {
-        messages: validation.messages,
-        previousPlan: generated.plan
-      });
+      await recordCoachValidationFailure(
+        coachTelemetry(payload, model, "/generate-week-plan", "strength_initial_validation", context),
+        validation.messages
+      );
+      const repaired = await generateWeeklyPlan(
+        apiKey,
+        model,
+        skill,
+        context,
+        coachTelemetry(payload, model, "/generate-week-plan", "strength_repair", context, true),
+        {
+          messages: validation.messages,
+          previousPlan: generated.plan
+        }
+      );
 
       if (!repaired.ok) {
         res.writeHead(repaired.status, { "content-type": "application/json" }).end(repaired.body);
@@ -268,6 +395,10 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
+      await recordCoachValidationFailure(
+        coachTelemetry(payload, model, "/generate-week-plan", "strength_repair_validation", context, true),
+        repairedValidation.messages
+      );
       writeJSON(res, 422, {
         error: "Generated plan failed technical validation after one repair attempt.",
         messages: repairedValidation.messages,
@@ -279,11 +410,20 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
 
     res.writeHead(200, { "content-type": "application/json" }).end(generated.outputText);
   } catch (error) {
+    if (error instanceof GarminSyncInputError) {
+      writeJSON(res, 400, { error: error.message });
+      return;
+    }
+    if (isClientInputError(error)) {
+      writeJSON(res, 400, { error: error.message });
+      return;
+    }
     writeJSON(res, 500, { error: error instanceof Error ? error.message : "Unknown proxy error" });
   }
 }).listen(port, () => {
   console.log(`Fitness coach proxy listening on port ${port}`);
 });
+startAutoPlanScheduler();
 
 type SkillBundle = {
   instructions: string;
@@ -323,15 +463,56 @@ type VerdictResult =
   | { ok: true; verdict: CoachVerdict }
   | { ok: false; status: number; body: string };
 
+type AutoPlanTriggerResponse = {
+  userId: string;
+  status: string;
+  action: string;
+  message: string;
+  source: AutoPlanSource | null;
+  lastGeneratedAt: string | null;
+  nextNightlyRunAt: string | null;
+  nextRetryAt: string | null;
+  planRevisionId: string | null;
+  generatedPlan: AutoPlanGeneratedPlan | null;
+  generated: boolean;
+  strengthWeek?: WeeklyPlan;
+  runningWeek?: RunningWeek;
+  combinedWeek?: {
+    summary: string;
+    safetyFlags: string[];
+    runningWeek: RunningWeek;
+    strengthWeek: WeeklyPlan;
+  };
+};
+
 const coachVerdictSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["headline", "summary", "latestChange", "recommendation", "shouldUpdatePlan", "contextState", "safetyFlags"],
+  required: [
+    "headline",
+    "summary",
+    "latestChange",
+    "recommendation",
+    "runningRead",
+    "strengthRead",
+    "nextStep",
+    "watchItems",
+    "shouldUpdatePlan",
+    "contextState",
+    "safetyFlags"
+  ],
   properties: {
     headline: { type: "string" },
     summary: { type: "string" },
     latestChange: { type: "string" },
     recommendation: { type: "string" },
+    runningRead: { type: "string" },
+    strengthRead: { type: "string" },
+    nextStep: { type: "string" },
+    watchItems: {
+      type: "array",
+      items: { type: "string" }
+    },
     shouldUpdatePlan: { type: "boolean" },
     contextState: {
       enum: ["building", "plateau", "overreaching", "recovery_needed", "insufficient_history"]
@@ -342,6 +523,283 @@ const coachVerdictSchema = {
     }
   }
 } satisfies Record<string, unknown>;
+
+async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTriggerResponse> {
+  const userId = cleanString(trigger.request.userId);
+  if (!userId) {
+    throw new Error("request.userId is required");
+  }
+
+  const decision = await autoPlanStore.updateUser(userId, (user) => {
+    return prepareAutoPlanTrigger(user, trigger, autoPlanStore.now());
+  });
+
+  if (decision.action !== "generate") {
+    const state = await autoPlanStore.read();
+    const status = toAutoPlanStatus(state.users[userId] ?? null, userId);
+    return {
+      ...status,
+      action: decision.action,
+      generated: false,
+      generatedPlan: decision.generatedPlan ?? status.generatedPlan
+    };
+  }
+
+  try {
+    const generated = await generateAutoPlan(trigger.request);
+    const plan = await autoPlanStore.updateUser(userId, (user) => {
+      return markAutoPlanGenerated(user, decision, generated);
+    });
+    const state = await autoPlanStore.read();
+    const status = toAutoPlanStatus(state.users[userId] ?? null, userId);
+    return {
+      ...status,
+      action: decision.action,
+      message: decision.message,
+      generated: true,
+      generatedPlan: plan,
+      strengthWeek: plan.strengthWeek,
+      runningWeek: plan.runningWeek,
+      combinedWeek: plan.combinedWeek
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Automatic planning failed.";
+    await autoPlanStore.updateUser(userId, (user) => {
+      markAutoPlanFailed(user, message, autoPlanStore.now());
+    });
+    throw error;
+  }
+}
+
+async function generateAutoPlan(
+  payload: CoachRequest
+): Promise<Omit<AutoPlanGeneratedPlan, "planRevisionId" | "generatedAt" | "localDate" | "source">> {
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not set");
+  }
+
+  const model = normalizeRequestedModel(payload.model);
+  if (!model) {
+    throw new Error("model is required");
+  }
+
+  const skill = await loadSkillBundle();
+  const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+
+  if (!payload.running) {
+    const generated = await generateWeeklyPlan(
+      apiKey,
+      model,
+      skill,
+      context,
+      coachTelemetry(payload, model, "/plan/trigger", "strength_initial", context)
+    );
+    if (!generated.ok) {
+      throw new Error(generated.body);
+    }
+
+    let strengthWeek = generated.plan;
+    const validation = validateWeeklyPlan(strengthWeek, context);
+    if (!validation.accepted) {
+      await recordCoachValidationFailure(
+        coachTelemetry(payload, model, "/plan/trigger", "strength_initial_validation", context),
+        validation.messages
+      );
+      const repaired = await generateWeeklyPlan(
+        apiKey,
+        model,
+        skill,
+        context,
+        coachTelemetry(payload, model, "/plan/trigger", "strength_repair", context, true),
+        {
+          messages: validation.messages,
+          previousPlan: strengthWeek
+        }
+      );
+      if (!repaired.ok) {
+        throw new Error(repaired.body);
+      }
+      const repairedValidation = validateWeeklyPlan(repaired.plan, context);
+      if (!repairedValidation.accepted) {
+        await recordCoachValidationFailure(
+          coachTelemetry(payload, model, "/plan/trigger", "strength_repair_validation", context, true),
+          repairedValidation.messages
+        );
+        throw new Error(`Generated plan failed technical validation after one repair attempt: ${repairedValidation.messages.join(" ")}`);
+      }
+      strengthWeek = repaired.plan;
+    }
+
+    return {
+      weekStart: payload.weekStart,
+      summary: strengthWeek.summary,
+      strengthWeek
+    };
+  }
+
+  if (Number.isNaN(Date.parse(payload.running.raceGoal?.raceDate))) {
+    throw new Error("running raceGoal.raceDate must be an ISO-8601 date");
+  }
+
+  const runningSkill = await loadRunningSkillBundle();
+  const generatedRunning = await generateRunningWeek(
+    apiKey,
+    model,
+    runningSkill,
+    context,
+    coachTelemetry(payload, model, "/plan/trigger", "running_initial", context)
+  );
+  if (!generatedRunning.ok) {
+    throw new Error(generatedRunning.body);
+  }
+
+  let runningWeek = generatedRunning.week;
+  const runningValidation = validateRunningWeek(runningWeek, context);
+  if (!runningValidation.accepted) {
+    await recordCoachValidationFailure(
+      coachTelemetry(payload, model, "/plan/trigger", "running_initial_validation", context),
+      runningValidation.messages
+    );
+    const repairedRunning = await generateRunningWeek(
+      apiKey,
+      model,
+      runningSkill,
+      context,
+      coachTelemetry(payload, model, "/plan/trigger", "running_repair", context, true),
+      {
+        messages: runningValidation.messages,
+        previousPlan: runningWeek
+      }
+    );
+    if (!repairedRunning.ok) {
+      throw new Error(repairedRunning.body);
+    }
+    const repairedRunningValidation = validateRunningWeek(repairedRunning.week, context);
+    if (!repairedRunningValidation.accepted) {
+      await recordCoachValidationFailure(
+        coachTelemetry(payload, model, "/plan/trigger", "running_repair_validation", context, true),
+        repairedRunningValidation.messages
+      );
+      throw new Error(`Generated running week failed validation after one repair attempt: ${repairedRunningValidation.messages.join(" ")}`);
+    }
+    runningWeek = repairedRunning.week;
+  }
+
+  const plannedRuns = runningWeek.sessions.map(({ dayOffset, kind, distanceKm, elevationMeters }) => ({
+    dayOffset,
+    kind,
+    distanceKm,
+    elevationMeters
+  }));
+  const generatedStrength = await generateWeeklyPlan(
+    apiKey,
+    model,
+    skill,
+    context,
+    coachTelemetry(payload, model, "/plan/trigger", "strength_initial", context),
+    undefined,
+    plannedRuns
+  );
+  if (!generatedStrength.ok) {
+    throw new Error(generatedStrength.body);
+  }
+
+  let strengthWeek = generatedStrength.plan;
+  const strengthMessages = [
+    ...validateWeeklyPlan(strengthWeek, context).messages,
+    ...validateCombinedWeek(runningWeek, strengthWeek)
+  ];
+  if (strengthMessages.length > 0) {
+    await recordCoachValidationFailure(
+      coachTelemetry(payload, model, "/plan/trigger", "strength_initial_validation", context),
+      strengthMessages
+    );
+    const repairedStrength = await generateWeeklyPlan(
+      apiKey,
+      model,
+      skill,
+      context,
+      coachTelemetry(payload, model, "/plan/trigger", "strength_repair", context, true),
+      { messages: strengthMessages, previousPlan: strengthWeek },
+      plannedRuns
+    );
+    if (!repairedStrength.ok) {
+      throw new Error(repairedStrength.body);
+    }
+    const repairedStrengthMessages = [
+      ...validateWeeklyPlan(repairedStrength.plan, context).messages,
+      ...validateCombinedWeek(runningWeek, repairedStrength.plan)
+    ];
+    if (repairedStrengthMessages.length > 0) {
+      await recordCoachValidationFailure(
+        coachTelemetry(payload, model, "/plan/trigger", "strength_repair_validation", context, true),
+        repairedStrengthMessages
+      );
+      throw new Error(`Generated plan failed technical validation after one repair attempt: ${repairedStrengthMessages.join(" ")}`);
+    }
+    strengthWeek = repairedStrength.plan;
+  }
+
+  const combinedWeek = {
+    summary: `${runningWeek.summary} ${strengthWeek.summary}`,
+    safetyFlags: [...new Set([...runningWeek.safetyFlags, ...strengthWeek.safetyFlags])],
+    runningWeek,
+    strengthWeek
+  };
+
+  return {
+    weekStart: payload.weekStart,
+    summary: combinedWeek.summary,
+    runningWeek,
+    strengthWeek,
+    combinedWeek
+  };
+}
+
+function parseAutoPlanTrigger(payload: Record<string, unknown>): AutoPlanTrigger {
+  const source = autoPlanSource(payload.source);
+  const request = payload.request;
+  if (!isRecord(request)) {
+    throw new Error("request object is required");
+  }
+  return {
+    source,
+    request: request as CoachRequest,
+    force: payload.force === true,
+    reason: cleanString(payload.reason),
+    timeZone: cleanString(payload.timeZone)
+  };
+}
+
+function startAutoPlanScheduler(): void {
+  if (process.env.AUTO_PLANNER_DISABLED === "1") {
+    return;
+  }
+  const intervalMs = Math.max(60_000, Number(process.env.AUTO_PLANNER_INTERVAL_MS ?? 15 * 60_000));
+  const timer = setInterval(() => {
+    void runDueNightlyAutoPlans();
+  }, intervalMs);
+  timer.unref();
+}
+
+async function runDueNightlyAutoPlans(): Promise<void> {
+  const dueUsers = await autoPlanStore.usersDueForNightly(autoPlanStore.now());
+  for (const user of dueUsers) {
+    if (!user.latestRequest || user.status === "generating") {
+      continue;
+    }
+    try {
+      await runAutoPlanTrigger({
+        source: "nightly",
+        request: user.latestRequest,
+        reason: "Nightly planning window.",
+        timeZone: user.timeZone
+      });
+    } catch (error) {
+      console.error(`Auto plan failed for ${user.userId}:`, error);
+    }
+  }
+}
 
 async function loadSkillBundle(): Promise<SkillBundle> {
   const [instructions, progressionPolicy, realWorldStandards, exerciseLibrary, weeklyPlanSchemaRaw] = await Promise.all([
@@ -377,11 +835,11 @@ async function loadRunningSkillBundle(): Promise<RunningSkillBundle> {
 
 // Attach Garmin wellness to the coach context. Any sidecar failure means the
 // coach simply plans without Garmin data — never block plan generation.
-async function enrichWithGarmin(context: CoachContext): Promise<CoachContext> {
+async function enrichWithGarmin(context: CoachContext, userId?: string): Promise<CoachContext> {
   try {
     // Enrichment only consumes status + wellness, and it sits on the coach
     // request path, so skip activities and keep the timeout budget tight.
-    const snapshot = await garminSnapshot(7, fetch, { includeActivities: false, timeoutMs: 10_000 });
+    const snapshot = await garminSnapshot(7, fetch, { includeActivities: false, timeoutMs: 10_000, userId });
     if (!snapshot.status.loggedIn || snapshot.wellness.length === 0) {
       return context;
     }
@@ -404,53 +862,46 @@ async function generateWeeklyPlan(
   model: string,
   skill: SkillBundle,
   context: CoachContext,
+  telemetry: OpenAIRequestTelemetry,
   repair?: RepairInput,
   plannedRuns?: PlannedRunSummary[]
 ): Promise<GenerateResult> {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: [
-            "You are executing the following Agent Skill. Follow it exactly.",
-            skill.instructions,
-            "Reference: progression-policy.md",
-            skill.progressionPolicy,
-            "Reference: real-world-standards.md",
-            skill.realWorldStandards,
-            "Reference: exercise-library.json",
-            skill.exerciseLibrary
-          ].join("\n\n")
-        },
-        {
-          role: "user",
-          content: JSON.stringify(buildCoachPromptPayload(context, repair, plannedRuns))
-        }
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "weekly_training_plan",
-          strict: true,
-          schema: skill.weeklyPlanSchema
-        }
+  const response = await fetchOpenAIResponse(apiKey, {
+    model,
+    input: [
+      {
+        role: "system",
+        content: [
+          "You are executing the following Agent Skill. Follow it exactly.",
+          skill.instructions,
+          "Reference: progression-policy.md",
+          skill.progressionPolicy,
+          "Reference: real-world-standards.md",
+          skill.realWorldStandards,
+          "Reference: exercise-library.json",
+          skill.exerciseLibrary
+        ].join("\n\n")
+      },
+      {
+        role: "user",
+        content: JSON.stringify(buildCoachPromptPayload(context, repair, plannedRuns))
       }
-    })
-  });
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "weekly_training_plan",
+        strict: true,
+        schema: skill.weeklyPlanSchema
+      }
+    }
+  }, telemetry);
 
   if (!response.ok) {
-    return { ok: false, status: response.status, body: await response.text() };
+    return { ok: false, status: response.status, body: response.body };
   }
 
-  const json = await response.json();
-  const outputText = extractOutputText(json);
+  const outputText = extractOutputText(response.json);
   return { ok: true, outputText, plan: JSON.parse(outputText) as WeeklyPlan };
 }
 
@@ -459,48 +910,41 @@ async function generateRunningWeek(
   model: string,
   skill: RunningSkillBundle,
   context: CoachContext,
+  telemetry: OpenAIRequestTelemetry,
   repair?: RunningRepairInput
 ): Promise<RunningGenerateResult> {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: [
-            "You are executing the following Agent Skill. Follow it exactly.",
-            skill.instructions,
-            "Reference: ultra-periodization.md",
-            skill.ultraPeriodization
-          ].join("\n\n")
-        },
-        {
-          role: "user",
-          content: JSON.stringify(buildRunningPromptPayload(context, repair))
-        }
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "running_week_plan",
-          strict: true,
-          schema: skill.runningWeekSchema
-        }
+  const response = await fetchOpenAIResponse(apiKey, {
+    model,
+    input: [
+      {
+        role: "system",
+        content: [
+          "You are executing the following Agent Skill. Follow it exactly.",
+          skill.instructions,
+          "Reference: ultra-periodization.md",
+          skill.ultraPeriodization
+        ].join("\n\n")
+      },
+      {
+        role: "user",
+        content: JSON.stringify(buildRunningPromptPayload(context, repair))
       }
-    })
-  });
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "running_week_plan",
+        strict: true,
+        schema: skill.runningWeekSchema
+      }
+    }
+  }, telemetry);
 
   if (!response.ok) {
-    return { ok: false, status: response.status, body: await response.text() };
+    return { ok: false, status: response.status, body: response.body };
   }
 
-  const json = await response.json();
-  const outputText = extractOutputText(json);
+  const outputText = extractOutputText(response.json);
   return { ok: true, outputText, week: JSON.parse(outputText) as RunningWeek };
 }
 
@@ -509,8 +953,8 @@ function buildRunningPromptPayload(context: CoachContext, repair?: RunningRepair
     coachContext: context,
     outputRules: {
       todayIsLocked: true,
-      selectedRunningDays: context.running?.runningDays ?? [],
-      allowedDayOffsets: context.running?.runningDayOffsets ?? [],
+      availableRunningDays: context.running?.runningDays ?? [],
+      availableDayOffsets: context.running?.runningDayOffsets ?? [],
       longRunDay: context.running?.longRunDay ?? null,
       longRunDayOffset: context.running?.longRunDayOffset ?? null
     }
@@ -531,74 +975,82 @@ function buildRunningPromptPayload(context: CoachContext, repair?: RunningRepair
   };
 }
 
-async function generateCoachVerdict(apiKey: string, model: string, context: CoachContext): Promise<VerdictResult> {
+async function generateCoachVerdict(
+  apiKey: string,
+  model: string,
+  context: CoachContext,
+  telemetry: OpenAIRequestTelemetry
+): Promise<VerdictResult> {
   // All figures the read may cite are computed here, in code — the model
   // writes prose around exact numbers, it never does arithmetic over logs.
   const trainingSignals = computeTrainingSignals(context);
   const isHybrid = Boolean(context.running);
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: [
-            "You are a human, athlete-facing training coach inside lockin.",
-            disciplineCoachSystemPrompt,
-            isHybrid
-              ? "Write like an experienced ultra-endurance coach who also programs strength: direct, calm, practical, and not technical. Running volume, the long run, descent exposure, and the race countdown lead the read; strength work is framed as serving the race (running economy, durability), never as a separate hobby."
-              : "Write like an experienced strength coach: direct, calm, practical, and not technical.",
-            "Return a short read on the athlete's current state. Do not create or rewrite the week plan.",
-            "Cite only numbers present in athleteSignals or coachContext, exactly as provided — never compute, estimate, or invent figures. Work at least one of the athlete's actual numbers into the summary.",
-            "Pick exactly ONE actionable change for the recommendation — the single highest-leverage lever right now. More than one ask dilutes all of them.",
-            "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work, gate today's intensity rather than rewriting the week.",
-            "If there are no completed training logs or runs, say that you only know the starting profile and goals.",
-            "If the latest session raises pain, very poor feel, overreaching, or progress concerns, recommend updating the week.",
-            "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, or internal systems."
-          ].join("\n")
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            coachContext: context,
-            athleteSignals: trainingSignals,
-            coachReferencePoints: isHybrid ? coachReferencePoints : undefined,
-            verdictRules: {
-              keepSummaryUnderWords: 65,
-              keepLatestChangeUnderWords: 45,
-              keepRecommendationUnderWords: 45,
-              noPlanMutation: true,
-              oneActionableChange: true,
-              citeOnlyProvidedNumbers: true,
-              shouldUpdatePlanWhenNoSessionsArePlanned: true,
-              coachTemperament: disciplineCoachTemperament,
-              flatGoalMetricsRequiringProgression: flatGoalMetricsRequiringProgression(context).map((metric) => metric.label)
-            }
-          })
-        }
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "coach_verdict",
-          strict: true,
-          schema: coachVerdictSchema
-        }
+  const response = await fetchOpenAIResponse(apiKey, {
+    model,
+    input: [
+      {
+        role: "system",
+        content: [
+          "You are a human, athlete-facing training coach inside lockin.",
+          disciplineCoachSystemPrompt,
+          isHybrid
+            ? "Write like an experienced ultra-endurance coach who also programs strength: direct, calm, practical, and not technical. Running volume, the long run, descent exposure, and the race countdown lead the read; strength work is framed as serving the race (running economy, durability), never as a separate hobby."
+            : "Write like an experienced strength coach: direct, calm, practical, and not technical.",
+          "Return a short read on the athlete's current state. This is shown directly to the athlete, not to a developer.",
+          "Separate running and strength clearly. runningRead is only running/endurance/race-readiness. strengthRead is only strength, mobility, pain, fatigue, or durability work. If one side has no real signal, say so plainly in athlete language.",
+          "Use nextStep for the one thing the athlete should do next. Do not tell the athlete to request, generate, refresh, or update a plan; lockin handles plan updates automatically.",
+          "Cite only numbers present in athleteSignals or coachContext, exactly as provided — never compute, estimate, or invent figures. Work at least one of the athlete's actual numbers into the summary.",
+          "Pick exactly ONE actionable next step — the single highest-leverage lever right now. More than one ask dilutes all of them.",
+          "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work, gate today's intensity rather than rewriting the week.",
+          "If there are no completed training logs or runs, say that you only know the starting profile and goals.",
+          "If the latest session raises pain, very poor feel, overreaching, or progress concerns, recommend updating the week.",
+          "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, internal systems, or variable names.",
+          "Never write snake_case, camelCase, raw field names, or code-like labels such as averageDeltaLast5, abovePlanBy2Count, maxPain, recent_pain_level_4_or_higher, or recent_effort_above_plan.",
+          "watchItems must contain short human phrases only, for example 'Pain reached 4/10 recently' or 'Effort has been higher than planned'. Do not put raw flags in watchItems.",
+          "Keep latestChange and recommendation as backward-compatible plain athlete text. latestChange should summarize the main recent signal; recommendation should match nextStep."
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          coachContext: context,
+          athleteSignals: trainingSignals,
+          coachReferencePoints: isHybrid ? coachReferencePoints : undefined,
+          verdictRules: {
+            keepSummaryUnderWords: 65,
+            keepRunningReadUnderWords: 38,
+            keepStrengthReadUnderWords: 38,
+            keepNextStepUnderWords: 32,
+            keepLatestChangeUnderWords: 38,
+            keepRecommendationUnderWords: 32,
+            noPlanMutation: true,
+            oneActionableChange: true,
+            citeOnlyProvidedNumbers: true,
+            athleteLanguageOnly: true,
+            noInternalMetricNames: true,
+            separateRunningAndStrength: true,
+            shouldUpdatePlanWhenNoSessionsArePlanned: true,
+            coachTemperament: disciplineCoachTemperament,
+            flatGoalMetricsRequiringProgression: flatGoalMetricsRequiringProgression(context).map((metric) => metric.label)
+          }
+        })
       }
-    })
-  });
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "coach_verdict",
+        strict: true,
+        schema: coachVerdictSchema
+      }
+    }
+  }, telemetry);
 
   if (!response.ok) {
-    return { ok: false, status: response.status, body: await response.text() };
+    return { ok: false, status: response.status, body: response.body };
   }
 
-  const json = await response.json();
-  const outputText = extractOutputText(json);
+  const outputText = extractOutputText(response.json);
   return { ok: true, verdict: JSON.parse(outputText) as CoachVerdict };
 }
 
@@ -653,12 +1105,74 @@ function normalizeCoachVerdict(verdict: CoachVerdict, context: CoachContext): Co
   const noPlannedSessions = context.adherence.planned === 0;
   const shouldUpdateForReadiness = context.readiness.state === "recovery_needed" || context.readiness.state === "overreaching";
   const shouldUpdateForFlatProgression = flatGoalMetricsRequiringProgression(context).length > 0;
+  const summary = athleteFacingText(verdict.summary);
+  const latestChange = athleteFacingText(verdict.latestChange);
+  const recommendation = athleteFacingText(verdict.recommendation);
+  const nextStep = athleteFacingText(verdict.nextStep || recommendation);
 
   return {
     ...verdict,
+    headline: athleteFacingText(verdict.headline),
+    summary,
+    latestChange,
+    recommendation,
+    runningRead: athleteFacingText(verdict.runningRead || latestChange),
+    strengthRead: athleteFacingText(verdict.strengthRead || recommendation),
+    nextStep,
+    watchItems: humanWatchItems(verdict.watchItems, [...context.readiness.riskFlags, ...verdict.safetyFlags]),
     contextState: context.readiness.state,
     shouldUpdatePlan: verdict.shouldUpdatePlan || noPlannedSessions || shouldUpdateForReadiness || shouldUpdateForFlatProgression
   };
+}
+
+function athleteFacingText(text: string | undefined): string {
+  if (!text) return "";
+  return text
+    .replaceAll("averageDeltaLast5", "recent effort trend")
+    .replaceAll("abovePlanBy2Count", "sessions harder than planned")
+    .replaceAll("maxPain", "highest pain")
+    .replaceAll("rpe", "RPE")
+    .replaceAll("RPE RPE", "RPE")
+    .replaceAll("recent_pain_level_4_or_higher", "pain reached 4/10 recently")
+    .replaceAll("recent_effort_above_plan", "effort has been higher than planned")
+    .replaceAll("_", " ")
+    .trim();
+}
+
+function humanWatchItems(items: string[] | undefined, flags: string[]): string[] {
+  const combined = [
+    ...(items ?? []).map(athleteFacingText),
+    ...flags.map(humanizeReadinessFlag)
+  ]
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set(combined)].slice(0, 3);
+}
+
+function humanizeReadinessFlag(flag: string): string {
+  switch (flag) {
+    case "recent_pain_level_4_or_higher":
+      return "Pain reached 4/10 recently";
+    case "recent_how_you_felt_very_weak":
+      return "Recent session feedback was very weak";
+    case "repeated_high_perceived_effort":
+      return "Several recent sessions were very hard";
+    case "recent_effort_above_plan":
+      return "Effort has been higher than planned";
+    case "last_full_month_pain_flag":
+      return "Pain has shown up across the month";
+    case "last_full_month_how_you_felt_very_weak":
+      return "Fatigue has been high this month";
+    case "low_last_full_month_training_count":
+      return "Training consistency was low last month";
+    case "sudden_monthly_volume_increase":
+      return "Training volume jumped recently";
+    case "insufficient_training_history":
+      return "Not enough recent training history yet";
+    default:
+      return athleteFacingText(flag)
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -681,6 +1195,59 @@ function parseSinceDays(rawURL: string): number {
   const raw = new URL(rawURL, "http://localhost").searchParams.get("sinceDays");
   const parsed = Number(raw);
   return raw !== null && raw.trim() !== "" && Number.isFinite(parsed) ? parsed : 7;
+}
+
+function queryValue(rawURL: string, name: string): string {
+  return new URL(rawURL, "http://localhost").searchParams.get(name)?.trim() ?? "";
+}
+
+function autoPlanSource(value: unknown): AutoPlanSource {
+  switch (cleanString(value)) {
+    case "manual": return "manual";
+    case "post_training": return "post_training";
+    case "app_active": return "app_active";
+    case "nightly": return "nightly";
+    default: throw new Error("source must be manual, post_training, app_active, or nightly");
+  }
+}
+
+function cleanString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function coachTelemetry(
+  payload: CoachRequest,
+  model: string,
+  route: string,
+  phase: string,
+  context: CoachContext,
+  repairAttempt = false
+): OpenAIRequestTelemetry {
+  return {
+    route,
+    phase,
+    model,
+    userId: payload.userId,
+    contextState: context.readiness.state,
+    hasRunning: Boolean(context.running),
+    hasGarmin: Boolean(context.garmin?.wellness.length),
+    repairAttempt
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isClientInputError(error: unknown): error is Error {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return [
+    "source must be",
+    "request object is required",
+    "request.userId is required"
+  ].some((message) => error.message.includes(message));
 }
 
 async function fetchAvailableModels(apiKey: string): Promise<string[]> {

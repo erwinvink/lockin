@@ -44,7 +44,7 @@ struct RootView: View {
 }
 
 #if DEBUG
-private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date = Date(), calendar: Calendar = .current) throws {
+func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date = Date(), calendar: Calendar = .current) throws {
     try wipeAllData(in: modelContext)
 
     let startOfToday = calendar.startOfDay(for: now)
@@ -55,7 +55,7 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
 
     let profile = UserProfile(
         createdAt: day(-15),
-        name: "Erwin",
+        name: LockinCurrentUser.displayName,
         targetDate: calendar.date(byAdding: .year, value: 1, to: now) ?? now,
         weeklySessions: 4,
         trainingDays: [.monday, .wednesday, .friday, .saturday],
@@ -288,11 +288,11 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
     ))
 
     let upcomingEasyRun = WorkoutSession(
-        scheduledDate: day(1, hour: 7),
+        scheduledDate: day(0, hour: 7),
         title: "Easy Run",
         weekIndex: 2,
         focus: .mixed,
-        status: .planned,
+        status: .completed,
         summary: "AI: Easy aerobic volume ahead of the weekend long run.",
         estimatedDurationMinutes: 75,
         discipline: .running,
@@ -305,8 +305,8 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
         runZone: "Z2"
     )
     modelContext.insert(upcomingEasyRun)
-    // Pending Garmin auto-match awaiting athlete confirmation: exercises the
-    // Today confirm card and locks in Progress excluding unconfirmed volume.
+    // Garmin auto-completed run: the app displays it as completed training
+    // history without asking the athlete to save run details.
     modelContext.insert(RunLog(
         sessionId: upcomingEasyRun.id,
         completedAt: day(1, hour: 8),
@@ -317,9 +317,9 @@ private func seedTwoWeekActivityPreview(in modelContext: ModelContext, now: Date
         averagePaceSecPerKm: 360,
         rpe: 0,
         feelScore: 3,
-        garminActivityId: "preview-pending-easy-run",
+        garminActivityId: "preview-easy-run",
         source: .garmin,
-        needsConfirmation: true
+        needsConfirmation: false
     ))
 
     let plan = CoachPlan(

@@ -1,136 +1,223 @@
 import Foundation
 import SwiftData
 
-/// Owns the push-planned-runs-to-watch flow and the retry stash of failed
-/// Garmin deletes, so Coach (auto-push after planning) and Profile (manual
-/// retry) share one implementation. `isPushing` is the cross-screen guard:
-/// a replan while a push is in flight would delete sessions whose
-/// garminWorkoutId has not landed yet, orphaning workouts on the watch.
+/// Owns the planned-run Garmin sync flow. The proxy is the durable source of
+/// truth for deletes, retries, and created Garmin IDs; the app submits its
+/// desired future runs and caches the returned status on matching sessions.
 @MainActor
-enum GarminPushCoordinator {
-    static let watchRetryNote = "Runs are planned but not all on your watch yet — retry from the Garmin row."
-    private static let pendingDeleteKey = "garminPendingDeleteIds"
+enum GarminSyncCoordinator {
+    static let watchRetryNote = "Runs are planned but not all on your watch yet. Retry from the Garmin row."
 
-    private(set) static var isPushing = false
+    private(set) static var isSyncing = false
 
-    /// Deletes stale Garmin workouts first (including ids stashed from earlier
-    /// failed deletes), then pushes every future planned run that is not on
-    /// the watch yet, and records the returned workout ids. All failures are
-    /// non-fatal — the plan is already saved and the Garmin row offers a
-    /// retry. Returns a short status note, or nil when there was nothing to do.
-    static func pushPlannedRuns(
+    /// Sends the desired future running plan to the proxy. The proxy deletes
+    /// stale workout ids first, creates only missing/replaced future runs, and
+    /// keeps failed work durable for retry.
+    static func syncPlannedRuns(
         endpoint: String,
+        userId: String,
+        planRevisionId: String,
         stalePushedIds: [String],
         in modelContext: ModelContext
     ) async -> String? {
         guard let client = try? LocalCoachClient(endpointString: endpoint) else { return watchRetryNote }
-        guard !isPushing else { return nil }
+        guard !isSyncing else { return nil }
 
-        isPushing = true
-        defer { isPushing = false }
-
-        var notes: [String] = []
-        // Stash before deleting so the ids survive a failed call or an app
-        // exit; the drain retries the whole stash and keeps only what failed.
-        stashPendingDeletes(stalePushedIds)
-        let staleCleared = await drainPendingDeletes(client: client)
-        if !staleCleared {
-            notes.append("Some replaced workouts may still sit on your watch.")
-        }
+        isSyncing = true
+        defer { isSyncing = false }
 
         do {
-            let workouts = garminPushWorkouts(from: try futurePlannedRunsAwaitingPush(in: modelContext))
-            guard !workouts.isEmpty else {
-                return notes.isEmpty ? nil : notes.joined(separator: " ")
+            let workouts = garminSyncWorkouts(from: try futurePlannedRunsForGarmin(in: modelContext))
+            guard !workouts.isEmpty || !stalePushedIds.isEmpty else {
+                return nil
             }
 
-            let response = try await client.pushWorkoutsToGarmin(workouts)
-            // A workout that uploaded but failed to schedule sits invisibly in
-            // the Garmin library; stash it for the best-effort delete below.
-            let unscheduledIds = response.results
-                .filter { !$0.scheduled }
-                .compactMap(\.garminWorkoutId)
-                .filter { !$0.isEmpty }
-            stashPendingDeletes(unscheduledIds)
-
-            // Re-fetch after the await: the pre-push session references may be
-            // stale by the time the response lands (same rule as AppShellView).
+            let response = try await client.syncGarminPlan(GarminSyncPlanRequest(
+                userId: userId,
+                planRevisionId: planRevisionId,
+                staleWorkoutIds: stalePushedIds,
+                workouts: workouts
+            ))
             let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
-            let scheduledCount = applyGarminPushResults(response.results, to: sessions)
+            _ = applyGarminSyncResults(response.workouts, to: sessions)
             try modelContext.save()
-
-            if !unscheduledIds.isEmpty {
-                _ = await drainPendingDeletes(client: client)
-            }
-
-            if scheduledCount == workouts.count, response.error == nil {
-                notes.append("\(scheduledCount) \(scheduledCount == 1 ? "run" : "runs") on your watch.")
-            } else {
-                notes.append(watchRetryNote)
-            }
+            return response.message
         } catch {
-            notes.append(watchRetryNote)
+            markFutureRunsForSyncRetry(in: modelContext, error: error.localizedDescription)
+            return watchRetryNote
         }
-        return notes.joined(separator: " ")
     }
 
-    /// Future planned runs that never made it onto the watch. Today's run is
+    static func retryFailedSync(
+        endpoint: String,
+        userId: String,
+        in modelContext: ModelContext
+    ) async -> String {
+        guard let client = try? LocalCoachClient(endpointString: endpoint) else { return watchRetryNote }
+        guard !isSyncing else { return "Garmin sync is already running." }
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        do {
+            let response = try await client.retryGarminSync(userId: userId)
+            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+            _ = applyGarminSyncResults(response.workouts, to: sessions)
+            try modelContext.save()
+            return response.message
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Future planned runs are the proxy's desired state. Today's run is
     /// excluded: it is locked during replans, so an existing watch workout
     /// stays valid, and pushing a new one mid-day would land too late anyway.
-    private static func futurePlannedRunsAwaitingPush(in modelContext: ModelContext) throws -> [WorkoutSession] {
+    private static func futurePlannedRunsForGarmin(in modelContext: ModelContext) throws -> [WorkoutSession] {
         let endOfToday = Calendar.current.dateInterval(of: .day, for: Date())?.end ?? Date()
         let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
         return sessions.filter {
             $0.discipline == .running &&
             $0.status == .planned &&
-            $0.garminWorkoutId.isEmpty &&
             $0.scheduledDate >= endOfToday
         }
     }
 
-    // MARK: Pending Garmin deletes
-
-    private static func loadPendingDeleteIds() -> [String] {
-        let json = UserDefaults.standard.string(forKey: pendingDeleteKey) ?? ""
-        return (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
-    }
-
-    private static func savePendingDeleteIds(_ ids: [String]) {
-        let json = (try? JSONEncoder().encode(ids))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        UserDefaults.standard.set(json, forKey: pendingDeleteKey)
-    }
-
-    /// Merges the ids into the retention stash, preserving order and dropping
-    /// duplicates.
-    private static func stashPendingDeletes(_ ids: [String]) {
-        guard !ids.isEmpty else { return }
-        var merged = loadPendingDeleteIds()
-        var seen = Set(merged)
-        for id in ids where seen.insert(id).inserted {
-            merged.append(id)
+    private static func markFutureRunsForSyncRetry(in modelContext: ModelContext, error: String) {
+        guard let sessions = try? futurePlannedRunsForGarmin(in: modelContext) else { return }
+        let now = Date()
+        for session in sessions where session.garminSyncStatus != .synced {
+            session.garminSyncStatus = .retrying
+            session.garminSyncError = error
+            session.garminSyncUpdatedAt = now
         }
-        savePendingDeleteIds(merged)
+        try? modelContext.save()
+    }
+}
+
+@MainActor
+enum AutoPlanCoordinator {
+    private(set) static var isTriggering = false
+
+    static func trigger(
+        endpoint: String,
+        source: AutoPlanTriggerSource,
+        reason: String,
+        force: Bool = false,
+        request: CoachPlanRequest,
+        profile: UserProfile,
+        in modelContext: ModelContext
+    ) async -> String? {
+        guard !isTriggering, !GarminSyncCoordinator.isSyncing else { return nil }
+        guard let client = try? LocalCoachClient(endpointString: endpoint) else { return nil }
+
+        isTriggering = true
+        defer { isTriggering = false }
+
+        do {
+            let response = try await client.triggerAutoPlan(AutoPlanTriggerRequest(
+                source: source,
+                reason: reason,
+                force: force,
+                timeZone: TimeZone.current.identifier,
+                request: request
+            ))
+            if let generatedPlan = response.generatedPlan, response.generated {
+                try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
+            }
+            return response.message
+        } catch {
+            return nil
+        }
     }
 
-    /// Tries to delete every stashed workout id and keeps only the failures
-    /// for the next push attempt. Returns true when the stash is empty
-    /// afterwards.
-    private static func drainPendingDeletes(client: LocalCoachClient) async -> Bool {
-        let ids = loadPendingDeleteIds()
-        guard !ids.isEmpty else { return true }
+    static func applyLatestServerPlan(
+        endpoint: String,
+        profile: UserProfile,
+        in modelContext: ModelContext
+    ) async -> String? {
+        guard !isTriggering, !GarminSyncCoordinator.isSyncing else { return nil }
+        guard let client = try? LocalCoachClient(endpointString: endpoint) else { return nil }
 
-        var remaining = ids
-        if let response = try? await client.deleteGarminWorkouts(ids) {
-            let deletedIds = Set(response.results.filter(\.deleted).map(\.workoutId))
-            remaining = ids.filter { !deletedIds.contains($0) }
+        isTriggering = true
+        defer { isTriggering = false }
+
+        do {
+            let status = try await client.fetchAutoPlanStatus(userId: profile.id.uuidString)
+            guard let generatedPlan = status.generatedPlan else { return status.message }
+            try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
+            return status.message
+        } catch {
+            return nil
         }
-        savePendingDeleteIds(remaining)
-        return remaining.isEmpty
+    }
+
+    private static func apply(
+        generatedPlan: AutoPlanGeneratedPlan,
+        endpoint: String,
+        profile: UserProfile,
+        in modelContext: ModelContext
+    ) async throws {
+        guard shouldApply(planRevisionId: generatedPlan.planRevisionId, userId: profile.id.uuidString) else { return }
+        var stalePushedIds: [String] = []
+
+        if let combinedWeek = generatedPlan.combinedWeek {
+            var strengthPlan = combinedWeek.strengthWeek.weeklyPlan(weekStart: generatedPlan.weekStart)
+            strengthPlan.summary = combinedWeek.safetyFlags.isEmpty
+                ? combinedWeek.summary
+                : combinedWeek.summary + " Watch: " + combinedWeek.safetyFlags.joined(separator: " ")
+            try saveAtomically(in: modelContext) {
+                try persist(plan: strengthPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+                stalePushedIds = try persist(runningWeek: combinedWeek.runningWeek, weekStart: generatedPlan.weekStart, in: modelContext, replacingFuturePlannedSessions: true)
+            }
+        } else if let strengthWeek = generatedPlan.strengthWeek {
+            let plan = strengthWeek.weeklyPlan(weekStart: generatedPlan.weekStart)
+            try saveAtomically(in: modelContext) {
+                try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+            }
+        } else {
+            return
+        }
+
+        markApplied(planRevisionId: generatedPlan.planRevisionId, userId: profile.id.uuidString)
+        if profile.remindersEnabled {
+            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+            await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: sessions, at: profile.reminderTime)
+        }
+        _ = await GarminSyncCoordinator.syncPlannedRuns(
+            endpoint: endpoint,
+            userId: profile.id.uuidString,
+            planRevisionId: generatedPlan.planRevisionId,
+            stalePushedIds: stalePushedIds,
+            in: modelContext
+        )
+    }
+
+    private static func saveAtomically(in modelContext: ModelContext, _ mutate: () throws -> Void) throws {
+        do {
+            try mutate()
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+    }
+
+    private static func shouldApply(planRevisionId: String, userId: String) -> Bool {
+        UserDefaults.standard.string(forKey: appliedRevisionKey(userId: userId)) != planRevisionId
+    }
+
+    private static func markApplied(planRevisionId: String, userId: String) {
+        UserDefaults.standard.set(planRevisionId, forKey: appliedRevisionKey(userId: userId))
+    }
+
+    private static func appliedRevisionKey(userId: String) -> String {
+        "autoPlanLastAppliedRevision.\(userId)"
     }
 }
 
 struct CoachPlanRequest: Codable, Equatable {
+    var userId: String
     var model: String
     var baseline: CoachBaseline
     var goals: CoachGoals
@@ -327,6 +414,10 @@ struct CoachVerdictResponse: Codable, Equatable {
     var summary: String
     var latestChange: String
     var recommendation: String
+    var runningRead: String?
+    var strengthRead: String?
+    var nextStep: String?
+    var watchItems: [String]?
     var shouldUpdatePlan: Bool
     var contextState: String
     var safetyFlags: [String]
@@ -340,8 +431,18 @@ struct CoachProxyHealthResponse: Codable, Equatable {
 
 struct GarminStatusResponse: Codable, Equatable {
     var ok: Bool
+    var userId: String?
     var loggedIn: Bool
+    var state: GarminConnectionState?
+    var connectedEmail: String?
     var lastError: String?
+}
+
+enum GarminConnectionState: String, Codable, Equatable {
+    case notConnected = "not_connected"
+    case credentialsRequired = "credentials_required"
+    case mfaRequired = "mfa_required"
+    case connected
 }
 
 extension GarminStatusResponse {
@@ -352,8 +453,22 @@ extension GarminStatusResponse {
         if loggedIn {
             return ok ? ("Connected", true) : ("Degraded", false)
         }
-        return ("Not logged in", false)
+        if state == .mfaRequired {
+            return ("MFA needed", false)
+        }
+        return ("Not connected", false)
     }
+}
+
+struct GarminConnectRequest: Codable, Equatable {
+    var userId: String
+    var email: String
+    var password: String
+    var mfaCode: String?
+}
+
+struct GarminDisconnectRequest: Codable, Equatable {
+    var userId: String
 }
 
 struct GarminWellnessDayResponse: Codable, Equatable {
@@ -435,6 +550,128 @@ struct GarminDeleteResponse: Codable, Equatable {
     var error: String? = nil
 }
 
+enum GarminPlanSyncStatus: String, Codable, Equatable {
+    case idle
+    case syncing
+    case synced
+    case retrying
+    case failed
+    case blockedOnDelete = "blocked_on_delete"
+}
+
+struct GarminSyncWorkout: Codable, Equatable {
+    var sessionId: String
+    var title: String
+    var date: String
+    var kind: String
+    var distanceKm: Double
+    var durationMinutes: Int
+    var target: GarminPushTarget
+    var notes: String
+    var existingGarminWorkoutId: String?
+}
+
+struct GarminSyncPlanRequest: Codable, Equatable {
+    var userId: String
+    var planRevisionId: String
+    var staleWorkoutIds: [String]
+    var workouts: [GarminSyncWorkout]
+}
+
+struct GarminRetrySyncRequest: Codable, Equatable {
+    var userId: String
+}
+
+struct GarminSyncWorkoutStatus: Codable, Equatable {
+    var sessionId: String
+    var status: GarminWorkoutSyncStatus
+    var garminWorkoutId: String?
+    var error: String?
+    var pushedAt: String?
+}
+
+struct GarminSyncPlanResponse: Codable, Equatable {
+    var userId: String
+    var planRevisionId: String?
+    var status: GarminPlanSyncStatus
+    var message: String
+    var workouts: [GarminSyncWorkoutStatus]
+    var pendingDeleteCount: Int
+    var failedDeleteCount: Int
+    var nextRetryAt: String?
+    var lastError: String?
+}
+
+enum AutoPlanTriggerSource: String, Codable, Equatable {
+    case manual
+    case postTraining = "post_training"
+    case appActive = "app_active"
+    case nightly
+}
+
+enum AutoPlanJobStatus: String, Codable, Equatable {
+    case idle
+    case queued
+    case generating
+    case generated
+    case skipped
+    case retrying
+    case failed
+}
+
+struct AutoPlanTriggerRequest: Codable, Equatable {
+    var source: AutoPlanTriggerSource
+    var reason: String
+    var force: Bool
+    var timeZone: String
+    var request: CoachPlanRequest
+}
+
+struct AutoPlanGeneratedPlan: Codable, Equatable {
+    var planRevisionId: String
+    var generatedAt: String
+    var localDate: String
+    var weekStart: Date
+    var source: AutoPlanTriggerSource
+    var summary: String
+    var strengthWeek: CoachPlanResponse?
+    var runningWeek: RunningWeekResponse?
+    var combinedWeek: CombinedWeekResponse?
+}
+
+struct AutoPlanStatusResponse: Codable, Equatable {
+    var userId: String
+    var status: AutoPlanJobStatus
+    var message: String
+    var source: AutoPlanTriggerSource?
+    var reason: String?
+    var timeZone: String
+    var lastTriggeredAt: String?
+    var lastGeneratedAt: String?
+    var nextNightlyRunAt: String?
+    var nextRetryAt: String?
+    var lastError: String?
+    var planRevisionId: String?
+    var generatedPlan: AutoPlanGeneratedPlan?
+}
+
+struct AutoPlanTriggerResponse: Codable, Equatable {
+    var userId: String
+    var status: AutoPlanJobStatus
+    var action: String
+    var message: String
+    var source: AutoPlanTriggerSource?
+    var lastGeneratedAt: String?
+    var nextNightlyRunAt: String?
+    var nextRetryAt: String?
+    var planRevisionId: String?
+    var generatedPlan: AutoPlanGeneratedPlan?
+    var generated: Bool
+    var strengthWeek: CoachPlanResponse?
+    var runningWeek: RunningWeekResponse?
+    var combinedWeek: CombinedWeekResponse?
+}
+
 /// Maps planned running sessions onto the sidecar's push contract. Strength
 /// and non-planned sessions never reach the watch. An unset target stays
 /// empty: build_workout maps a non pace/hr type to "no target" on the step.
@@ -465,6 +702,37 @@ func garminPushWorkouts(from sessions: [WorkoutSession], calendar: Calendar = .c
         }
 }
 
+/// Maps future planned running sessions onto the proxy's durable Garmin sync
+/// contract. Existing Garmin IDs are sent so the server can adopt already
+/// synced sessions instead of creating duplicates.
+func garminSyncWorkouts(from sessions: [WorkoutSession], calendar: Calendar = .current) -> [GarminSyncWorkout] {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = calendar
+    formatter.timeZone = calendar.timeZone
+    formatter.dateFormat = "yyyy-MM-dd"
+
+    return sessions
+        .filter { $0.discipline == .running && $0.status == .planned }
+        .map { session in
+            GarminSyncWorkout(
+                sessionId: session.id.uuidString,
+                title: session.title,
+                date: formatter.string(from: session.scheduledDate),
+                kind: session.runKindRaw,
+                distanceKm: session.plannedDistanceKm,
+                durationMinutes: session.estimatedDurationMinutes,
+                target: GarminPushTarget(
+                    type: session.runTargetTypeRaw,
+                    low: session.runTargetLow,
+                    high: session.runTargetHigh
+                ),
+                notes: session.runZone,
+                existingGarminWorkoutId: session.garminWorkoutId.isEmpty ? nil : session.garminWorkoutId
+            )
+        }
+}
+
 /// Stamps `garminWorkoutId` and `pushedToGarminAt` onto the sessions named by
 /// the scheduled push results. Failed items and session ids that match no
 /// session are ignored. Returns how many sessions were stamped.
@@ -478,6 +746,31 @@ func applyGarminPushResults(_ results: [GarminPushResultItem], to sessions: [Wor
         applied += 1
     }
     return applied
+}
+
+/// Applies the durable proxy sync status to matching sessions. Synced items
+/// receive their Garmin ID and push timestamp; failed/retrying items keep their
+/// error for the UI.
+@discardableResult
+func applyGarminSyncResults(_ results: [GarminSyncWorkoutStatus], to sessions: [WorkoutSession], at date: Date = Date()) -> Int {
+    var applied = 0
+    for result in results {
+        guard let session = sessions.first(where: { $0.id.uuidString == result.sessionId }) else { continue }
+        session.garminSyncStatus = result.status
+        session.garminSyncError = result.error ?? ""
+        session.garminSyncUpdatedAt = date
+        if result.status == .synced {
+            session.garminWorkoutId = result.garminWorkoutId ?? session.garminWorkoutId
+            session.pushedToGarminAt = parseGarminSyncDate(result.pushedAt) ?? date
+        }
+        applied += 1
+    }
+    return applied
+}
+
+private func parseGarminSyncDate(_ value: String?) -> Date? {
+    guard let value, !value.isEmpty else { return nil }
+    return ISO8601DateFormatter().date(from: value)
 }
 
 struct CoachSessionResponse: Codable, Equatable {
@@ -576,6 +869,7 @@ enum CoachClientError: Error, LocalizedError {
     case transportFailed(URL, URLError)
     case invalidResponse
     case invalidStatus(Int, String?)
+    case missingGarminRoute(URL)
     case validationFailed([String])
 
     var errorDescription: String? {
@@ -612,6 +906,12 @@ enum CoachClientError: Error, LocalizedError {
             } else {
                 "The hosted coach proxy returned HTTP \(status)."
             }
+        case .missingGarminRoute(let endpoint):
+            """
+            The hosted coach proxy is running, but it does not expose \(endpoint.path) yet.
+
+            Redeploy the coach proxy with the Garmin routes, then make sure GARMIN_SERVICE_URL points to the Garmin service.
+            """
         case .validationFailed(let messages): messages.joined(separator: "\n")
         }
     }
@@ -1084,9 +1384,7 @@ func makeCoachRequest(
                 .flatMap { profile.runningDays.contains($0) ? $0 : nil }
                 .flatMap { TrainingWeekday.dayOffsets(for: [$0], weeklySessions: 1, weekStart: weekStart).first }
                 .flatMap { (1...6).contains($0) ? $0 : nil },
-            recentRuns: runLogs
-                .filter { !$0.needsConfirmation }
-                .sorted { $0.completedAt < $1.completedAt }
+            recentRuns: confirmedGarminRunLogs(from: runLogs)
                 .suffix(30)
                 .map {
                     CoachRunSummary(
@@ -1105,6 +1403,7 @@ func makeCoachRequest(
     }
 
     return CoachPlanRequest(
+        userId: profile.id.uuidString,
         model: CoachModelCatalog.normalized(modelID),
         baseline: CoachBaseline(
             pullUps: baseline.pullUps,
@@ -1373,8 +1672,8 @@ struct LocalCoachClient {
         return try JSONDecoder.coachDecoder.decode(CoachModelsResponse.self, from: data)
     }
 
-    func fetchGarminStatus() async throws -> GarminStatusResponse {
-        guard let statusEndpoint = Self.garminStatusEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+    func fetchAutoPlanStatus(userId: String) async throws -> AutoPlanStatusResponse {
+        guard let statusEndpoint = Self.autoPlanStatusEndpoint(from: endpoint, userId: userId) else { throw CoachClientError.invalidURL }
         var urlRequest = URLRequest(url: statusEndpoint)
         urlRequest.timeoutInterval = 15
 
@@ -1394,11 +1693,116 @@ struct LocalCoachClient {
             throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
         }
 
+        return try JSONDecoder.coachDecoder.decode(AutoPlanStatusResponse.self, from: data)
+    }
+
+    func triggerAutoPlan(_ request: AutoPlanTriggerRequest) async throws -> AutoPlanTriggerResponse {
+        guard let triggerEndpoint = Self.autoPlanTriggerEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: triggerEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = request.force ? 300 : 240
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(triggerEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(triggerEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(AutoPlanTriggerResponse.self, from: data)
+    }
+
+    func fetchGarminStatus(userId: String? = nil) async throws -> GarminStatusResponse {
+        guard let statusEndpoint = Self.garminStatusEndpoint(from: endpoint, userId: userId) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: statusEndpoint)
+        urlRequest.timeoutInterval = 15
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(statusEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(statusEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw proxyStatusError(http, data: data, endpoint: statusEndpoint, isGarminRoute: true)
+        }
+
         return try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: data)
     }
 
-    func fetchGarminSnapshot(sinceDays: Int = 7) async throws -> GarminSnapshotResponse {
-        guard let snapshotEndpoint = Self.garminSnapshotEndpoint(from: endpoint, sinceDays: sinceDays) else {
+    func connectGarmin(_ request: GarminConnectRequest) async throws -> GarminStatusResponse {
+        guard let connectEndpoint = Self.garminConnectEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: connectEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 75
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(connectEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(connectEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw proxyStatusError(http, data: data, endpoint: connectEndpoint, isGarminRoute: true)
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: data)
+    }
+
+    func disconnectGarmin(userId: String) async throws -> GarminStatusResponse {
+        guard let disconnectEndpoint = Self.garminDisconnectEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: disconnectEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 30
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(GarminDisconnectRequest(userId: userId))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(disconnectEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(disconnectEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw proxyStatusError(http, data: data, endpoint: disconnectEndpoint, isGarminRoute: true)
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminStatusResponse.self, from: data)
+    }
+
+    func fetchGarminSnapshot(sinceDays: Int = 7, userId: String? = nil) async throws -> GarminSnapshotResponse {
+        guard let snapshotEndpoint = Self.garminSnapshotEndpoint(from: endpoint, sinceDays: sinceDays, userId: userId) else {
             throw CoachClientError.invalidURL
         }
         var urlRequest = URLRequest(url: snapshotEndpoint)
@@ -1423,6 +1827,84 @@ struct LocalCoachClient {
         }
 
         return try JSONDecoder.coachDecoder.decode(GarminSnapshotResponse.self, from: data)
+    }
+
+    func fetchGarminSyncStatus(userId: String) async throws -> GarminSyncPlanResponse {
+        guard let syncStatusEndpoint = Self.garminSyncStatusEndpoint(from: endpoint, userId: userId) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: syncStatusEndpoint)
+        urlRequest.timeoutInterval = 15
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(syncStatusEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(syncStatusEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminSyncPlanResponse.self, from: data)
+    }
+
+    func syncGarminPlan(_ request: GarminSyncPlanRequest) async throws -> GarminSyncPlanResponse {
+        guard let syncEndpoint = Self.garminSyncPlanEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: syncEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 120
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(syncEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(syncEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminSyncPlanResponse.self, from: data)
+    }
+
+    func retryGarminSync(userId: String) async throws -> GarminSyncPlanResponse {
+        guard let retryEndpoint = Self.garminRetrySyncEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: retryEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 120
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(GarminRetrySyncRequest(userId: userId))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(retryEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(retryEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(GarminSyncPlanResponse.self, from: data)
     }
 
     func pushWorkoutsToGarmin(_ workouts: [GarminPushWorkout]) async throws -> GarminPushResponse {
@@ -1551,17 +2033,66 @@ struct LocalCoachClient {
         return components.url
     }
 
-    private static func garminStatusEndpoint(from endpoint: URL) -> URL? {
+    private static func autoPlanStatusEndpoint(from endpoint: URL, userId: String) -> URL? {
         guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
-        components.path = "/garmin/status"
+        components.path = "/plan/status"
+        components.queryItems = [URLQueryItem(name: "userId", value: userId)]
+        return components.url
+    }
+
+    private static func autoPlanTriggerEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/plan/trigger"
         components.query = nil
         return components.url
     }
 
-    private static func garminSnapshotEndpoint(from endpoint: URL, sinceDays: Int) -> URL? {
+    private static func garminStatusEndpoint(from endpoint: URL, userId: String?) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/status"
+        components.queryItems = garminUserQueryItems(userId: userId)
+        return components.url
+    }
+
+    private static func garminConnectEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/connect"
+        components.query = nil
+        return components.url
+    }
+
+    private static func garminDisconnectEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/disconnect"
+        components.query = nil
+        return components.url
+    }
+
+    private static func garminSnapshotEndpoint(from endpoint: URL, sinceDays: Int, userId: String?) -> URL? {
         guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
         components.path = "/garmin/snapshot"
-        components.queryItems = [URLQueryItem(name: "sinceDays", value: "\(sinceDays)")]
+        components.queryItems = [URLQueryItem(name: "sinceDays", value: "\(sinceDays)")] + garminUserQueryItems(userId: userId)
+        return components.url
+    }
+
+    private static func garminSyncStatusEndpoint(from endpoint: URL, userId: String) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/sync-status"
+        components.queryItems = [URLQueryItem(name: "userId", value: userId)]
+        return components.url
+    }
+
+    private static func garminSyncPlanEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/sync-plan"
+        components.query = nil
+        return components.url
+    }
+
+    private static func garminRetrySyncEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/garmin/retry-sync"
+        components.query = nil
         return components.url
     }
 
@@ -1577,6 +2108,18 @@ struct LocalCoachClient {
         components.path = "/garmin/delete-workouts"
         components.query = nil
         return components.url
+    }
+
+    private static func garminUserQueryItems(userId: String?) -> [URLQueryItem] {
+        let trimmed = userId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? [] : [URLQueryItem(name: "userId", value: trimmed)]
+    }
+
+    private func proxyStatusError(_ response: HTTPURLResponse, data: Data, endpoint: URL, isGarminRoute: Bool = false) -> CoachClientError {
+        if isGarminRoute, response.statusCode == 404 {
+            return .missingGarminRoute(endpoint)
+        }
+        return .invalidStatus(response.statusCode, proxyErrorMessage(from: data))
     }
 
     private func proxyErrorMessage(from data: Data) -> String? {

@@ -44,14 +44,20 @@ struct ProgressView: View {
                 if raceGoals.first != nil || !runLogs.isEmpty {
                     RunningSection(runLogs: runLogs, sessions: sessions)
                 }
-                ConsistencyLedger(rank: rank, missedTrainingCount: missedTrainingCount)
-                strengthGoals
+                coreProgress
             }
         }
     }
 
-    private var strengthGoals: some View {
+    private var coreProgress: some View {
         VStack(alignment: .leading, spacing: 18) {
+            ConsistencyLedger(rank: rank, missedTrainingCount: missedTrainingCount)
+            strengthGoals
+        }
+    }
+
+    private var strengthGoals: some View {
+        VStack(alignment: .leading, spacing: 12) {
             SectionHeader("Strength goals")
             GoalProgressRow(title: "Pull-ups", current: latestPullUps, goal: profile.goalPullUps, benchmark: "Benchmark: 20 reps")
             GoalProgressRow(title: "Push-ups", current: latestPushUps, goal: profile.goalPushUps, benchmark: "Benchmark: 50 reps")
@@ -253,9 +259,9 @@ private struct RunningSection: View {
 
     private var calendar: Calendar { Calendar.current }
 
-    // Only confirmed runs count toward volume; pending Garmin matches are excluded.
+    // Garmin-completed runs count toward volume immediately; feedback can land later.
     private var confirmedLogs: [RunLog] {
-        runLogs.filter { !$0.needsConfirmation }
+        confirmedGarminRunLogs(from: runLogs)
     }
 
     // Calendar weeks (Garmin convention), intentionally not the coach's rolling plan window.
@@ -286,7 +292,7 @@ private struct RunningSection: View {
         var id: Date { weekStart }
     }
 
-    /// Eight calendar weeks ending in the current one — actual confirmed
+    /// Eight calendar weeks ending in the current one — actual Garmin
     /// volume next to what the plan asked for.
     private var weeklyVolumes: [WeekVolume] {
         guard let thisWeek = thisWeekInterval else { return [] }
@@ -401,13 +407,13 @@ private struct ConsistencyLedger: View {
             Hairline()
             HStack(spacing: 0) {
                 MetricCell(model: MetricCellModel(label: "STREAK", value: "\(rank.streak)", detail: "sessions"))
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 8)
                 Rectangle()
                     .fill(AppTheme.divider)
-                    .frame(width: 1, height: 34)
+                    .frame(width: 1, height: 30)
                 MetricCell(model: MetricCellModel(label: "BEST", value: "\(rank.displayedBestStreak)"))
                     .padding(.leading, 14)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 8)
             }
             Hairline()
             HStack(alignment: .firstTextBaseline) {
@@ -418,7 +424,7 @@ private struct ConsistencyLedger: View {
                     .foregroundStyle(missedTrainingCount > 0 ? AppTheme.warning : AppTheme.text)
                     .contentTransition(.numericText())
             }
-            .padding(.vertical, 12)
+            .padding(.vertical, 8)
             .accessibilityElement(children: .combine)
             Hairline()
         }

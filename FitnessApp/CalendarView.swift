@@ -69,7 +69,8 @@ struct CalendarView: View {
     private func weekVolumeText(for week: HistoryWeek) -> String? {
         let calendar = Calendar.current
         guard let interval = calendar.dateInterval(of: .weekOfYear, for: week.weekStart) else { return nil }
-        let confirmed = runLogs.filter { !$0.needsConfirmation && interval.start <= $0.completedAt && $0.completedAt < interval.end }
+        let confirmed = confirmedGarminRunLogs(from: runLogs)
+            .filter { interval.start <= $0.completedAt && $0.completedAt < interval.end }
         let km = confirmed.reduce(0) { $0 + $1.distanceKm }
         guard km > 0 else { return nil }
         return runDistanceText(km: km)

@@ -3,7 +3,7 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Environment(\.modelContext) private var modelContext
-    @State private var name = "Erwin"
+    @State private var name = LockinCurrentUser.displayName
     @State private var pullUps = 5
     @State private var pushUps = 20
     @State private var plankSeconds = 60
@@ -86,7 +86,7 @@ struct OnboardingView: View {
 
     private func completeOnboarding() {
         let profile = UserProfile(
-            name: name.isEmpty ? "Athlete" : name,
+            name: LockinCurrentUser.normalizedProfileName(name),
             targetDate: targetDate,
             weeklySessions: selectedTrainingDays.count,
             trainingDays: selectedTrainingDays,
@@ -188,10 +188,10 @@ private struct RaceGoalCard: View {
                 IntegerField(title: "Elevation gain", value: $raceElevationGainM, range: 0...30_000, suffix: "m+")
                 TrainingDaysPicker(
                     selectedDays: $runningDays,
-                    title: "Running days",
+                    title: "Available running days",
                     minDays: 1,
                     maxDays: 7,
-                    caption: "Pick 1 to 7 days. The coach schedules runs only on those days."
+                    caption: "Pick the days you can run. The coach may leave rest days open while you build."
                 )
                 if !orderedRunningDays.isEmpty {
                     HStack {
