@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateCombinedWeek } from "./validate-combined-week";
-import type { EffortLabel, PlannedEffort, RunKind, RunningWeek, WeeklyPlan } from "./types";
+import { fixedRunningLoadSupportsStrengthMaintenance, validateCombinedWeek } from "./validate-combined-week";
+import type { CoachContext, EffortLabel, PlannedEffort, RunKind, RunningWeek, WeeklyPlan } from "./types";
 
 const hardRunKinds: RunKind[] = ["long", "tempo", "intervals", "hills"];
 
@@ -28,6 +28,16 @@ test("flags a max_output strength session stacked on a hard run day", () => {
   assert.equal(messages.length, 1);
   assert.ok(messages[0].includes("max_output"));
   assert.ok(messages[0].includes("Lower the effort, or move it to another selected training day."));
+});
+
+test("flags hard strength stacked on a long run day", () => {
+  const messages = validateCombinedWeek(
+    runningWeek([run("Long trail run", 5, "long")]),
+    strengthWeek([strengthSession("Hard pull day", 5, "hard")])
+  );
+
+  assert.equal(messages.length, 1);
+  assert.ok(messages[0].includes("hard effort"));
 });
 
 test("accepts hard strength on an easy run day", () => {
@@ -67,6 +77,35 @@ test("collects one message per stacked strength session", () => {
   assert.equal(messages.length, 2);
   assert.ok(messages[0].includes("Heavy pull day"));
   assert.ok(messages[1].includes("Pull-up test"));
+});
+
+test("rejects a combined week that occupies all six future offsets", () => {
+  const running = runningWeek([
+    run("Easy one", 1, "easy"),
+    run("Tempo", 2, "tempo"),
+    run("Easy three", 3, "easy"),
+    run("Long run", 4, "long"),
+    run("Recovery", 5, "recovery")
+  ]);
+  const strength = strengthWeek([strengthSession("Light core", 6, "light")]);
+
+  const messages = validateCombinedWeek(running, strength);
+
+  assert.ok(messages.some((message) => message.includes("complete rest day")));
+});
+
+test("recognizes fixed running load that genuinely supports strength maintenance", () => {
+  const context = { running: { baselineWeeklyKm: 30 } } as CoachContext;
+  const twoHardRuns = runningWeek([run("Tempo", 2, "tempo"), run("Long run", 5, "long")]);
+  const baselineWeek = runningWeek([
+    { ...run("Long run", 5, "long"), distanceKm: 20 },
+    { ...run("Easy run", 2, "easy"), distanceKm: 10 }
+  ]);
+  const lightWeek = runningWeek([{ ...run("Long run", 5, "long"), distanceKm: 10 }]);
+
+  assert.equal(fixedRunningLoadSupportsStrengthMaintenance(twoHardRuns, context), true);
+  assert.equal(fixedRunningLoadSupportsStrengthMaintenance(baselineWeek, context), true);
+  assert.equal(fixedRunningLoadSupportsStrengthMaintenance(lightWeek, context), false);
 });
 
 function runningWeek(sessions: RunningWeek["sessions"]): RunningWeek {

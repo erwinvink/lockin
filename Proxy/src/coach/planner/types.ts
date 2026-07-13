@@ -152,6 +152,7 @@ export type CoachContext = {
     completed: number;
     partial?: number;
     missed: number;
+    missedLast14Days?: number;
     deload: number;
     pending?: number;
     adherenceScorePct?: number | null;
@@ -169,6 +170,11 @@ export type CoachContext = {
       pushUps: PlannedGoalTrend;
       plankSeconds: PlannedGoalTrend;
     };
+    recentGoalPerformance?: {
+      pullUps: RecentGoalPerformance;
+      pushUps: RecentGoalPerformance;
+      plankSeconds: RecentGoalPerformance;
+    };
   };
   readiness: {
     state: ContextState;
@@ -183,6 +189,17 @@ export type PlannedGoalTrend = {
   latestVolume: number | null;
   flatCount: number;
   latestDate: string | null;
+};
+
+export type RecentGoalPerformance = {
+  latestLoggedBest: number | null;
+  prescribedTarget: number | null;
+  prescribedSets: number | null;
+  delta: number | null;
+  clean: boolean | null;
+  consecutiveCleanCompletionsAtStandard: number;
+  completedAt: string | null;
+  latestTestDate: string | null;
 };
 
 export type WeeklyPlan = {

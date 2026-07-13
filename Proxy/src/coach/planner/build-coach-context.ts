@@ -1,5 +1,13 @@
 import { addMonths, startOfMonthUTC, summarizeMonth, summarizeTrend } from "./summarize-training-history";
-import type { CoachContext, CoachRequest, ContextState, PlannedExercisePrescription, PlannedGoalTrend, TrainingLog } from "./types";
+import type {
+  CoachContext,
+  CoachRequest,
+  ContextState,
+  PlannedExercisePrescription,
+  PlannedGoalTrend,
+  RecentGoalPerformance,
+  TrainingLog
+} from "./types";
 
 export function buildCoachContext(request: CoachRequest, now = new Date()): CoachContext {
   const sortedLogs = [...request.trainingLogs].sort(
@@ -54,7 +62,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       }
     },
     adherence,
-    plannedWork: summarizePlannedWork(request.plannedSessions, request.weekStart),
+    plannedWork: summarizePlannedWork(request.plannedSessions, sortedLogs, request.weekStart),
     readiness: {
       state,
       riskFlags
@@ -101,7 +109,10 @@ function collectRiskFlags(
     flags.push("low_last_full_month_training_count");
   }
 
-  if (previousFullMonth.logCount > 0 && lastFullMonth.logCount > previousFullMonth.logCount * 1.5) {
+  if (
+    previousFullMonth.logCount >= expectedMonthlySessions * 0.6 &&
+    lastFullMonth.logCount > previousFullMonth.logCount * 1.5
+  ) {
     flags.push("sudden_monthly_volume_increase");
   }
 
@@ -124,6 +135,11 @@ function summarizeAdherence(request: CoachRequest, now: Date): CoachContext["adh
   const partial = dueSessions.filter((session) => session.status === "partial").length;
   const deload = dueSessions.filter((session) => session.status === "deload").length;
   const missed = dueSessions.filter((session) => session.status === "missed").length;
+  const recentCutoff = nowTime - 14 * 24 * 60 * 60 * 1000;
+  const missedLast14Days = dueSessions.filter((session) => {
+    const scheduled = new Date(session.scheduledDate).getTime();
+    return session.status === "missed" && scheduled >= recentCutoff;
+  }).length;
   const pending = dueSessions.filter((session) => session.status === "planned").length;
   const adherenceScorePct = dueSessions.length > 0
     ? Math.round(((completed + deload + partial * 0.5) / dueSessions.length) * 100)
@@ -136,13 +152,18 @@ function summarizeAdherence(request: CoachRequest, now: Date): CoachContext["adh
     completed,
     partial,
     missed,
+    missedLast14Days,
     deload,
     pending,
     adherenceScorePct
   };
 }
 
-function summarizePlannedWork(plannedSessions: CoachRequest["plannedSessions"], weekStart: string): CoachContext["plannedWork"] {
+function summarizePlannedWork(
+  plannedSessions: CoachRequest["plannedSessions"],
+  logs: TrainingLog[],
+  weekStart: string
+): CoachContext["plannedWork"] {
   const startTime = new Date(weekStart).getTime();
   const endOfToday = startTime + 24 * 60 * 60 * 1000;
   const todaySessions = plannedSessions
@@ -181,8 +202,114 @@ function summarizePlannedWork(plannedSessions: CoachRequest["plannedSessions"], 
       pullUps: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "pullUps")),
       pushUps: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "pushUps")),
       plankSeconds: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "plankSeconds"))
+    },
+    recentGoalPerformance: {
+      pullUps: summarizeRecentGoalPerformance("pullUps", plannedSessions, logs, startTime),
+      pushUps: summarizeRecentGoalPerformance("pushUps", plannedSessions, logs, startTime),
+      plankSeconds: summarizeRecentGoalPerformance("plankSeconds", plannedSessions, logs, startTime)
     }
   };
+}
+
+function summarizeRecentGoalPerformance(
+  metric: "pullUps" | "pushUps" | "plankSeconds",
+  plannedSessions: CoachRequest["plannedSessions"],
+  logs: TrainingLog[],
+  startTime: number
+): RecentGoalPerformance {
+  const sessionsById = new Map(plannedSessions.map((session) => [session.id, session]));
+  const matches = logs
+    .filter((log) => log[loggedFlagForMetric(metric)])
+    .flatMap((log) => {
+      const session = sessionsById.get(log.sessionId);
+      const prescription = latestGoalPrescription(session?.exercises ?? [], metric);
+      if (!prescription) return [];
+
+      const actualRPE = normalizeRPE(log.actualRPE) ?? normalizeRPE(log.rpe);
+      const plannedRPE = normalizeRPE(log.plannedRPE);
+      const clean =
+        typeof actualRPE === "number" &&
+        typeof plannedRPE === "number" &&
+        log.painLevel < 4 &&
+        log.fatigueLevel < 9 &&
+        actualRPE <= plannedRPE + 1;
+      const latestLoggedBest = log[metric];
+
+      return [{
+        completedAt: log.completedAt,
+        latestLoggedBest,
+        prescribedTarget: prescription.target,
+        prescribedSets: prescription.sets,
+        delta: latestLoggedBest - prescription.target,
+        clean
+      }];
+    })
+    .filter((match) => Number.isFinite(Date.parse(match.completedAt)))
+    .sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt));
+
+  const latest = matches[0];
+  let consecutiveCleanCompletionsAtStandard = 0;
+  if (latest) {
+    for (const match of matches) {
+      if (
+        match.prescribedTarget !== latest.prescribedTarget ||
+        !match.clean ||
+        match.latestLoggedBest < match.prescribedTarget
+      ) {
+        break;
+      }
+      consecutiveCleanCompletionsAtStandard += 1;
+    }
+  }
+
+  return {
+    latestLoggedBest: latest?.latestLoggedBest ?? null,
+    prescribedTarget: latest?.prescribedTarget ?? null,
+    prescribedSets: latest?.prescribedSets ?? null,
+    delta: latest?.delta ?? null,
+    clean: latest?.clean ?? null,
+    consecutiveCleanCompletionsAtStandard,
+    completedAt: latest?.completedAt ?? null,
+    latestTestDate: latestTestDate(metric, plannedSessions, startTime)
+  };
+}
+
+function latestGoalPrescription(
+  exercises: PlannedExercisePrescription[],
+  metric: "pullUps" | "pushUps" | "plankSeconds"
+): { target: number; sets: number } | null {
+  const candidates = exercises
+    .filter((exercise) => isGoalWorkPrescription(exercise) && goalMetricForExercise(exercise.exercise) === metric)
+    .map((exercise) => ({
+      target: metric === "plankSeconds" ? exercise.targetSeconds : exercise.targetReps,
+      sets: exercise.sets
+    }))
+    .filter((exercise) => exercise.target > 0 && exercise.sets > 0)
+    .sort((a, b) => b.target - a.target || b.sets - a.sets);
+  return candidates[0] ?? null;
+}
+
+function latestTestDate(
+  metric: "pullUps" | "pushUps" | "plankSeconds",
+  plannedSessions: CoachRequest["plannedSessions"],
+  startTime: number
+): string | null {
+  return plannedSessions
+    .filter((session) => Date.parse(session.scheduledDate) < startTime)
+    .filter((session) => (session.exercises ?? []).some((exercise) =>
+      goalMetricForExercise(exercise.exercise) === metric && exercise.plannedEffortStimulus === "test"
+    ))
+    .map((session) => session.scheduledDate)
+    .filter((date) => Number.isFinite(Date.parse(date)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+}
+
+function loggedFlagForMetric(
+  metric: "pullUps" | "pushUps" | "plankSeconds"
+): "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds" {
+  if (metric === "pullUps") return "loggedPullUps";
+  if (metric === "pushUps") return "loggedPushUps";
+  return "loggedPlankSeconds";
 }
 
 function isGoalWorkPrescription(exercise: PlannedExercisePrescription): boolean {
@@ -236,7 +363,6 @@ function classifyState(
 ): ContextState {
   if (riskFlags.some((flag) => flag.includes("pain") || flag.includes("how_you_felt_very_weak"))) return "recovery_needed";
   if (
-    riskFlags.includes("sudden_monthly_volume_increase") ||
     riskFlags.includes("repeated_high_perceived_effort") ||
     riskFlags.includes("recent_effort_above_plan")
   ) {

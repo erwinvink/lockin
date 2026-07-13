@@ -11,7 +11,10 @@ import {
 import { coachReferencePoints, computeTrainingSignals } from "./coach/planner/compute-training-signals";
 import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
 import { validateRunningWeek } from "./coach/planner/validate-running-week";
-import { validateCombinedWeek } from "./coach/planner/validate-combined-week";
+import {
+  fixedRunningLoadSupportsStrengthMaintenance,
+  validateCombinedWeek
+} from "./coach/planner/validate-combined-week";
 import { evaluateCoachRead } from "./coach/planner/evaluate-coach-read";
 import { normalizeCoachVerdict } from "./coach/planner/normalize-coach-verdict";
 import type { CoachContext, CoachEvaluation, CoachRequest, CoachSnapshot, CoachVerdict, RunningWeek, WeeklyPlan } from "./coach/planner/types";
@@ -21,6 +24,7 @@ import {
   markAutoPlanFailed,
   markAutoPlanGenerated,
   prepareAutoPlanTrigger,
+  refreshRequestForNightly,
   toAutoPlanStatus,
   type AutoPlanGeneratedPlan,
   type AutoPlanSource,
@@ -240,8 +244,11 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       let strengthPlan = generatedStrength.plan;
+      const strengthValidationOptions = {
+        allowProgressionHoldForRunning: fixedRunningLoadSupportsStrengthMaintenance(runningWeek, context)
+      };
       const strengthMessages = [
-        ...validateWeeklyPlan(strengthPlan, context).messages,
+        ...validateWeeklyPlan(strengthPlan, context, strengthValidationOptions).messages,
         ...validateCombinedWeek(runningWeek, strengthPlan)
       ];
 
@@ -266,7 +273,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         }
 
         const repairedStrengthMessages = [
-          ...validateWeeklyPlan(repairedStrength.plan, context).messages,
+          ...validateWeeklyPlan(repairedStrength.plan, context, strengthValidationOptions).messages,
           ...validateCombinedWeek(runningWeek, repairedStrength.plan)
         ];
 
@@ -734,8 +741,11 @@ async function generateAutoPlan(
   }
 
   let strengthWeek = generatedStrength.plan;
+  const strengthValidationOptions = {
+    allowProgressionHoldForRunning: fixedRunningLoadSupportsStrengthMaintenance(runningWeek, context)
+  };
   const strengthMessages = [
-    ...validateWeeklyPlan(strengthWeek, context).messages,
+    ...validateWeeklyPlan(strengthWeek, context, strengthValidationOptions).messages,
     ...validateCombinedWeek(runningWeek, strengthWeek)
   ];
   if (strengthMessages.length > 0) {
@@ -756,7 +766,7 @@ async function generateAutoPlan(
       throw new Error(repairedStrength.body);
     }
     const repairedStrengthMessages = [
-      ...validateWeeklyPlan(repairedStrength.plan, context).messages,
+      ...validateWeeklyPlan(repairedStrength.plan, context, strengthValidationOptions).messages,
       ...validateCombinedWeek(runningWeek, repairedStrength.plan)
     ];
     if (repairedStrengthMessages.length > 0) {
@@ -812,7 +822,8 @@ function startAutoPlanScheduler(): void {
 }
 
 async function runDueNightlyAutoPlans(): Promise<void> {
-  const dueUsers = await autoPlanStore.usersDueForNightly(autoPlanStore.now());
+  const now = autoPlanStore.now();
+  const dueUsers = await autoPlanStore.usersDueForNightly(now);
   for (const user of dueUsers) {
     if (!user.latestRequest || user.status === "generating") {
       continue;
@@ -820,7 +831,7 @@ async function runDueNightlyAutoPlans(): Promise<void> {
     try {
       await runAutoPlanTrigger({
         source: "nightly",
-        request: user.latestRequest,
+        request: refreshRequestForNightly(user.latestRequest, now, user.timeZone),
         reason: "Nightly planning window.",
         timeZone: user.timeZone
       });
@@ -1112,16 +1123,18 @@ function buildCoachPromptPayload(
       "Every session and exercise must include plannedEffort. These labels are shown in the app before training, so light must mean intentionally light, hard must mean real goal stimulus, and max_output must only be used for a deliberate test.",
     coachTemperament: disciplineCoachTemperament,
     progression:
-      "Use coachContext.plannedWork.recentGoalTargets. If clean recent training has repeated the same pull-up, push-up, or plank target, the next normal plan must visibly progress that metric by increasing reps, hold time, sets, or another single stress variable unless safetyFlags explain why not.",
+      "Use coachContext.plannedWork.recentGoalPerformance as the progression source of truth. Clean target+2 performance earns immediate +1 rep for pull-ups or push-ups and +5-10 seconds for plank; otherwise the second consecutive clean completion at or above the same standard earns progression. Never increase sets and reps or hold time together. Safety text alone cannot bypass earned progression.",
+    phase:
+      "Prefix summary with exactly one adaptive phase: Build:, Offload:, Restore:, Maintenance:, or Assessment:. Explain separately why pull-ups, push-ups, and plank progressed, held, or reduced. Do not force a four-week calendar wave.",
     scheduling: hasSelectedTrainingDays
-      ? "Use allowedDayOffsets as availability, not a quota. Schedule no more than maxFutureStrengthSessions strength sessions, and schedule fewer when recovery, running load, safety, or a week already in progress makes that better. Treat all other offsets as rest days. If allowedDayOffsets is empty, return zero strength sessions and explain the current week is already underway. Never schedule dayOffset 0 because today is locked."
-      : "Schedule no more than maxFutureStrengthSessions strength sessions across dayOffset 1 through 6. Schedule fewer when recovery or safety requires it. Never schedule dayOffset 0 because today is locked."
+      ? "Use allowedDayOffsets as availability, not a quota. Schedule no more than maxFutureStrengthSessions strength sessions, and schedule fewer when recovery, running load, safety, or a week already in progress makes that better. Leave at least one of offsets 1 through 6 unused by both running and strength. If allowedDayOffsets is empty, return zero strength sessions and explain the current week is already underway. Never schedule dayOffset 0 because today is locked."
+      : "Schedule no more than maxFutureStrengthSessions strength sessions across dayOffset 1 through 6. Schedule fewer when recovery or safety requires it, and leave at least one complete rest day. Never schedule dayOffset 0 because today is locked."
   };
 
   if (plannedRuns) {
     outputRules.thisWeeksPlannedRuns = plannedRuns;
     outputRules.runCoordination =
-      "thisWeeksPlannedRuns are fixed. Manage total weekly fatigue. Never schedule very_hard or max_output strength on a hard run day (long, tempo, intervals, hills).";
+      "thisWeeksPlannedRuns are fixed and running has priority. Never schedule hard, very_hard, or max_output strength on a long, tempo, interval, hill, or race-run day. The union of run and strength offsets must leave one of offsets 1 through 6 completely unused.";
   }
 
   const basePayload = {

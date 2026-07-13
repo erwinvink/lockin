@@ -88,6 +88,132 @@ test("summarizes planned-vs-actual RPE calibration", () => {
   assert.equal(context.history.rpeCalibration.latestSummary, "RPE - Planned 7 | Actual 4");
 });
 
+test("matches a clean push-up best of 20 to the prescribed 17", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [plannedGoalSession("push-17", "2026-07-10T08:00:00Z", "completed", "pushUp", 3, 17)],
+    trainingLogs: [trainingLog("2026-07-10T09:00:00Z", {
+      sessionId: "push-17",
+      pushUps: 20,
+      loggedPullUps: false,
+      loggedPushUps: true,
+      loggedPlankSeconds: false,
+      plannedRPE: 7,
+      actualRPE: 8,
+      rpe: 8,
+      painLevel: 0,
+      fatigueLevel: 5
+    })]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T12:00:00Z"));
+
+  assert.deepEqual(context.plannedWork.recentGoalPerformance?.pushUps, {
+    latestLoggedBest: 20,
+    prescribedTarget: 17,
+    prescribedSets: 3,
+    delta: 3,
+    clean: true,
+    consecutiveCleanCompletionsAtStandard: 1,
+    completedAt: "2026-07-10T09:00:00Z",
+    latestTestDate: null
+  });
+});
+
+test("requires two clean completions when performance only meets the standard", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [
+      plannedGoalSession("push-a", "2026-07-08T08:00:00Z", "completed", "pushUp", 3, 17),
+      plannedGoalSession("push-b", "2026-07-10T08:00:00Z", "completed", "pushUp", 3, 17)
+    ],
+    trainingLogs: [
+      trainingLog("2026-07-08T09:00:00Z", {
+        sessionId: "push-a", pushUps: 17, loggedPullUps: false, loggedPlankSeconds: false, plannedRPE: 7, rpe: 7
+      }),
+      trainingLog("2026-07-10T09:00:00Z", {
+        sessionId: "push-b", pushUps: 17, loggedPullUps: false, loggedPlankSeconds: false, plannedRPE: 7, rpe: 7
+      })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(context.plannedWork.recentGoalPerformance?.pushUps.delta, 0);
+  assert.equal(context.plannedWork.recentGoalPerformance?.pushUps.consecutiveCleanCompletionsAtStandard, 2);
+});
+
+test("records the latest past assessment date per goal", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [
+      plannedGoalSession("old-test", "2026-05-01T08:00:00Z", "completed", "pullUp", 1, 8, "test"),
+      plannedGoalSession("new-test", "2026-06-15T08:00:00Z", "completed", "pullUp", 1, 9, "test"),
+      plannedGoalSession("future-test", "2026-07-20T08:00:00Z", "planned", "pullUp", 1, 10, "test")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(context.plannedWork.recentGoalPerformance?.pullUps.latestTestDate, "2026-06-15T08:00:00Z");
+});
+
+test("does not mark painful or excessive-effort performance as clean progression", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [plannedGoalSession("push-hard", "2026-07-10T08:00:00Z", "completed", "pushUp", 3, 17)],
+    trainingLogs: [trainingLog("2026-07-10T09:00:00Z", {
+      sessionId: "push-hard",
+      pushUps: 20,
+      loggedPullUps: false,
+      loggedPlankSeconds: false,
+      plannedRPE: 7,
+      rpe: 9,
+      painLevel: 4
+    })]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(context.plannedWork.recentGoalPerformance?.pushUps.delta, 3);
+  assert.equal(context.plannedWork.recentGoalPerformance?.pushUps.clean, false);
+  assert.equal(context.plannedWork.recentGoalPerformance?.pushUps.consecutiveCleanCompletionsAtStandard, 0);
+});
+
+test("does not classify a partial onboarding month comparison as overreaching", () => {
+  const mayLogs = Array.from({ length: 5 }, (_, index) => trainingLog(`2026-05-${String(27 + index).padStart(2, "0")}T10:00:00Z`));
+  const juneLogs = Array.from({ length: 12 }, (_, index) => trainingLog(`2026-06-${String(1 + index).padStart(2, "0")}T10:00:00Z`));
+
+  const context = buildCoachContext(baseRequest({ trainingLogs: [...mayLogs, ...juneLogs] }), new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(context.readiness.state, "building");
+  assert.ok(!context.readiness.riskFlags.includes("sudden_monthly_volume_increase"));
+});
+
+test("keeps a real volume increase as a watch flag and overreaches on repeated excessive effort", () => {
+  const mayLogs = Array.from({ length: 10 }, (_, index) => trainingLog(`2026-05-${String(1 + index).padStart(2, "0")}T10:00:00Z`));
+  const juneLogs = Array.from({ length: 16 }, (_, index) => trainingLog(`2026-06-${String(1 + index).padStart(2, "0")}T10:00:00Z`, {
+    plannedRPE: index >= 14 ? 5 : 7,
+    rpe: index >= 14 ? 8 : 7
+  }));
+
+  const context = buildCoachContext(baseRequest({ trainingLogs: [...mayLogs, ...juneLogs] }), new Date("2026-07-13T12:00:00Z"));
+
+  assert.ok(context.readiness.riskFlags.includes("sudden_monthly_volume_increase"));
+  assert.ok(context.readiness.riskFlags.includes("recent_effort_above_plan"));
+  assert.equal(context.readiness.state, "overreaching");
+});
+
+test("keeps a volume increase without negative recovery evidence in building", () => {
+  const mayLogs = Array.from({ length: 10 }, (_, index) => trainingLog(`2026-05-${String(1 + index).padStart(2, "0")}T10:00:00Z`));
+  const juneLogs = Array.from({ length: 16 }, (_, index) => trainingLog(`2026-06-${String(1 + index).padStart(2, "0")}T10:00:00Z`));
+
+  const context = buildCoachContext(baseRequest({ trainingLogs: [...mayLogs, ...juneLogs] }), new Date("2026-07-13T12:00:00Z"));
+
+  assert.ok(context.readiness.riskFlags.includes("sudden_monthly_volume_increase"));
+  assert.equal(context.readiness.state, "building");
+});
+
 test("flags repeated actual effort above plan as overreaching", () => {
   const request = baseRequest({
     trainingLogs: [
@@ -169,7 +295,24 @@ test("excludes future sessions from adherence scoring", () => {
   assert.equal(context.adherence.future, 2);
   assert.equal(context.adherence.completed, 1);
   assert.equal(context.adherence.missed, 1);
+  assert.equal(context.adherence.missedLast14Days, 1);
   assert.equal(context.adherence.adherenceScorePct, 50);
+});
+
+test("separates old misses from repeated misses in the latest 14 days", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [
+      plannedSession("old-miss", "2026-06-01T08:00:00Z", "missed"),
+      plannedSession("recent-miss-a", "2026-07-05T08:00:00Z", "missed"),
+      plannedSession("recent-miss-b", "2026-07-10T08:00:00Z", "missed")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(context.adherence.missed, 3);
+  assert.equal(context.adherence.missedLast14Days, 2);
 });
 
 test("rounds partial weeks to race up", () => {
@@ -318,6 +461,28 @@ function plannedSession(id: string, scheduledDate: string, status: string): Coac
     focus: "mixed",
     status,
     exercises: []
+  };
+}
+
+function plannedGoalSession(
+  id: string,
+  scheduledDate: string,
+  status: string,
+  exercise: "pullUp" | "pushUp" | "plank",
+  sets: number,
+  target: number,
+  stimulus: "volume" | "strength" | "test" = "strength"
+): CoachRequest["plannedSessions"][number] {
+  return {
+    ...plannedSession(id, scheduledDate, status),
+    exercises: [{
+      exercise,
+      sets,
+      targetReps: exercise === "plank" ? 0 : target,
+      targetSeconds: exercise === "plank" ? target : 0,
+      plannedEffortLabel: stimulus === "test" ? "max_output" : "hard",
+      plannedEffortStimulus: stimulus
+    }]
   };
 }
 

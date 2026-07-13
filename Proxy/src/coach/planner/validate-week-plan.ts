@@ -8,7 +8,12 @@ type ValidationResult = {
 
 type GoalWorkSummary = {
   target: number;
+  sets: number;
   volume: number;
+};
+
+export type WeeklyPlanValidationOptions = {
+  allowProgressionHoldForRunning?: boolean;
 };
 
 const contextStates = new Set<ContextState>([
@@ -34,8 +39,13 @@ const exerciseKinds = new Set<ExerciseKind>([
 ]);
 const loggingFields = new Set(["pullUps", "pushUps", "plankSeconds"]);
 const runningTitlePattern = /\b(?:easy|long|recovery|tempo|interval)\s+run\b|\brunning\b|\brun\b|\bjog(?:ging)?\b|\bintervals\b/i;
+const phaseSummaryPattern = /^(?:Build|Offload|Restore|Maintenance|Assessment):/;
 
-export function validateWeeklyPlan(plan: unknown, context: CoachContext): ValidationResult {
+export function validateWeeklyPlan(
+  plan: unknown,
+  context: CoachContext,
+  options: WeeklyPlanValidationOptions = {}
+): ValidationResult {
   const messages: string[] = [];
 
   if (!isRecord(plan)) {
@@ -44,10 +54,14 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
 
   if (typeof plan.summary !== "string") {
     messages.push("Plan summary is missing or not a string.");
+  } else if (!phaseSummaryPattern.test(plan.summary.trim())) {
+    messages.push("Plan summary must start with Build:, Offload:, Restore:, Maintenance:, or Assessment:.");
   }
 
   if (typeof plan.contextState !== "string" || !contextStates.has(plan.contextState as ContextState)) {
     messages.push("Plan contextState is missing or unknown.");
+  } else if (plan.contextState !== context.readiness.state) {
+    messages.push(`Plan contextState must match computed readiness ${context.readiness.state}.`);
   }
 
   if (!Array.isArray(plan.safetyFlags) || !plan.safetyFlags.every((flag) => typeof flag === "string")) {
@@ -104,7 +118,7 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     const sessionEffort = validatePlannedEffort(session.plannedEffort, `Session ${sessionIndex + 1} plannedEffort`, messages);
     if (sessionEffort) {
       sessionEffortLabels.push(sessionEffort.label);
-      validateEffortPolicy(sessionEffort, `Session ${sessionIndex + 1}`, plan.contextState, messages);
+      validateEffortPolicy(sessionEffort, `Session ${sessionIndex + 1}`, context.readiness.state, messages);
     }
 
     const estimatedDurationMinutes = session.estimatedDurationMinutes;
@@ -191,13 +205,19 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
         messages
       );
       if (exerciseEffort) {
-        validateEffortPolicy(exerciseEffort, `Session ${sessionIndex + 1} exercise`, plan.contextState, messages);
+        validateEffortPolicy(exerciseEffort, `Session ${sessionIndex + 1} exercise`, context.readiness.state, messages);
         collectUsefulGoalWork(exercise, exerciseEffort, usefulGoalWork);
       }
     }
   }
 
-  validateWeekEffortPolicy(plan.contextState, plan.safetyFlags, context, sessionEffortLabels, usefulGoalWork, messages);
+  validateWeekEffortPolicy(
+    context,
+    sessionEffortLabels,
+    usefulGoalWork,
+    options.allowProgressionHoldForRunning === true,
+    messages
+  );
 
   return { accepted: messages.length === 0, messages };
 }
@@ -285,19 +305,17 @@ function validateEffortPolicy(
 }
 
 function validateWeekEffortPolicy(
-  contextState: unknown,
-  safetyFlags: unknown,
   context: CoachContext,
   sessionEffortLabels: EffortLabel[],
   usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
+  allowProgressionHoldForRunning: boolean,
   messages: string[]
 ) {
   const normalProgressionStates = new Set(["building", "plateau", "insufficient_history"]);
-  const hasSafetyFlags = Array.isArray(safetyFlags) && safetyFlags.length > 0;
-  if (!normalProgressionStates.has(String(contextState)) || hasSafetyFlags) return;
+  if (!normalProgressionStates.has(context.readiness.state)) return;
 
   if (sessionEffortLabels.length > 0 && sessionEffortLabels.every((label) => label === "light")) {
-    messages.push("Normal progression weeks cannot be all light unless safetyFlags explain why.");
+    messages.push("Normal progression weeks cannot be all light without computed recovery or maintenance evidence.");
   }
 
   const floors: Array<["pullUps" | "pushUps" | "plankSeconds", number, string]> = [
@@ -316,12 +334,29 @@ function validateWeekEffortPolicy(
     }
   }
 
-  for (const { metric, label, latestTarget, latestVolume } of flatGoalMetricsRequiringProgression(context)) {
+  if (allowProgressionHoldForRunning) return;
+
+  for (const { metric, label, latestTarget } of flatGoalMetricsRequiringProgression(context)) {
     const prescribed = usefulGoalWork[metric];
-    if (!prescribed || (prescribed.target <= latestTarget && prescribed.volume <= latestVolume)) {
+    if (!prescribed || prescribed.target <= latestTarget) {
       messages.push(
-        `Normal progression ${label} work repeats the recent flat prescription. Increase reps, hold time, sets, or add safetyFlags with a clear reason.`
+        `Clean matched performance earned ${label} progression. Increase the prescribed target; safetyFlags alone cannot bypass it.`
       );
+      continue;
+    }
+
+    const maximumIncrease = metric === "plankSeconds" ? 10 : 1;
+    const minimumIncrease = metric === "plankSeconds" ? 5 : 1;
+    const increase = prescribed.target - latestTarget;
+    if (increase < minimumIncrease || increase > maximumIncrease) {
+      messages.push(
+        `${label} progression must be ${metric === "plankSeconds" ? "5-10 seconds" : "exactly 1 repetition"}; got +${increase}.`
+      );
+    }
+
+    const previousSets = context.plannedWork.recentGoalPerformance?.[metric]?.prescribedSets;
+    if (previousSets !== null && previousSets !== undefined && prescribed.sets > previousSets) {
+      messages.push(`${label} progression cannot increase sets and the target in the same step.`);
     }
   }
 }
@@ -339,11 +374,11 @@ function collectUsefulGoalWork(
   const seconds = typeof exercise.seconds === "number" && Number.isInteger(exercise.seconds) ? exercise.seconds : 0;
 
   if (exerciseKind === "pullUp") {
-    recordGoalWork(usefulGoalWork, "pullUps", reps, reps * sets);
+    recordGoalWork(usefulGoalWork, "pullUps", reps, sets);
   } else if (exerciseKind === "pushUp") {
-    recordGoalWork(usefulGoalWork, "pushUps", reps, reps * sets);
+    recordGoalWork(usefulGoalWork, "pushUps", reps, sets);
   } else if (exerciseKind === "plank") {
-    recordGoalWork(usefulGoalWork, "plankSeconds", seconds, seconds * sets);
+    recordGoalWork(usefulGoalWork, "plankSeconds", seconds, sets);
   }
 }
 
@@ -351,11 +386,10 @@ function recordGoalWork(
   usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
   metric: "pullUps" | "pushUps" | "plankSeconds",
   target: number,
-  volume: number
+  sets: number
 ) {
   const previous = usefulGoalWork[metric];
-  usefulGoalWork[metric] = {
-    target: Math.max(previous?.target ?? 0, target),
-    volume: Math.max(previous?.volume ?? 0, volume)
-  };
+  if (!previous || target > previous.target || (target === previous.target && sets > previous.sets)) {
+    usefulGoalWork[metric] = { target, sets, volume: target * sets };
+  }
 }

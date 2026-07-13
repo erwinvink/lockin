@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { buildCoachContext } from "./planner/build-coach-context";
 import type { CoachRequest, RunningWeek, WeeklyPlan } from "./planner/types";
 
 export type AutoPlanSource = "manual" | "post_training" | "app_active" | "nightly";
@@ -303,7 +304,7 @@ function decideAutoPlan(
     if (user.lastPostTrainingGeneratedLocalDate === input.localDate) {
       return { ...base, action: "skip", message: "Post-training planning already ran today." };
     }
-    if (!postTrainingSignalsNeedPlan(user.latestRequest)) {
+    if (!postTrainingSignalsNeedPlan(user.latestRequest, input.now)) {
       return { ...base, action: "skip", message: "Coach read updated; the rest of the week can stay as planned." };
     }
     return { ...base, action: "generate", message: "Latest training changed enough to recheck the future plan." };
@@ -326,12 +327,12 @@ function decideAutoPlan(
   return { ...base, action: "skip", message: "No automatic planning work is due." };
 }
 
-function postTrainingSignalsNeedPlan(request: CoachRequest | null): boolean {
+function postTrainingSignalsNeedPlan(request: CoachRequest | null, now: Date): boolean {
   if (!request) {
     return false;
   }
   const futurePlanned = request.plannedSessions.filter((session) => {
-    return session.status === "planned" && Date.parse(session.scheduledDate) > Date.parse(request.weekStart);
+    return session.status === "planned" && Date.parse(session.scheduledDate) > now.getTime();
   });
   if (futurePlanned.length === 0) {
     return true;
@@ -347,6 +348,19 @@ function postTrainingSignalsNeedPlan(request: CoachRequest | null): boolean {
     if (typeof latestLog.rpeDelta === "number" && Math.abs(latestLog.rpeDelta) >= 2) {
       return true;
     }
+    const actualRPE = latestLog.actualRPE ?? latestLog.rpe;
+    if (typeof latestLog.plannedRPE === "number" && actualRPE > latestLog.plannedRPE + 1) {
+      return true;
+    }
+  }
+
+  const matchedPerformance = Object.values(buildCoachContext(request, now).plannedWork.recentGoalPerformance ?? {});
+  if (matchedPerformance.some((performance) => {
+    if (performance.completedAt !== latestLog?.completedAt || performance.delta === null) return false;
+    if (performance.delta !== 0) return true;
+    return performance.clean === true && performance.consecutiveCleanCompletionsAtStandard >= 2;
+  })) {
+    return true;
   }
 
   const latestRun = [...(request.running?.recentRuns ?? [])]
@@ -376,7 +390,15 @@ function trainingDigest(request: CoachRequest): Record<string, unknown> {
       rpe: log.rpe,
       painLevel: log.painLevel,
       fatigueLevel: log.fatigueLevel,
-      rpeDelta: log.rpeDelta
+      plannedRPE: log.plannedRPE,
+      actualRPE: log.actualRPE,
+      rpeDelta: log.rpeDelta,
+      pullUps: log.pullUps,
+      pushUps: log.pushUps,
+      plankSeconds: log.plankSeconds,
+      loggedPullUps: log.loggedPullUps,
+      loggedPushUps: log.loggedPushUps,
+      loggedPlankSeconds: log.loggedPlankSeconds
     })),
     runs: request.running?.recentRuns.map((run) => ({
       completedAt: run.completedAt,
@@ -385,6 +407,51 @@ function trainingDigest(request: CoachRequest): Record<string, unknown> {
       feelScore: run.feelScore
     })) ?? []
   };
+}
+
+export function refreshRequestForNightly(
+  request: CoachRequest,
+  now: Date,
+  timeZone: string
+): CoachRequest {
+  const normalizedZone = normalizedTimeZone(timeZone);
+  const parts = localDateParts(now, normalizedZone);
+  const localStart = zonedDateTimeToUTC(parts.year, parts.month, parts.day, 0, 0, normalizedZone);
+  const strengthOffsets = futureOffsetsForWeekdays(request.trainingDays ?? [], now, normalizedZone);
+  const runningOffsets = futureOffsetsForWeekdays(request.running?.runningDays ?? [], now, normalizedZone);
+  const longRunDayOffset = request.running?.longRunDay
+    ? futureOffsetsForWeekdays([request.running.longRunDay], now, normalizedZone)[0]
+    : undefined;
+
+  return {
+    ...request,
+    weekStart: localStart.toISOString(),
+    trainingDayOffsets: strengthOffsets,
+    plannedSessions: request.plannedSessions.filter((session) => {
+      const scheduled = Date.parse(session.scheduledDate);
+      return session.status !== "planned" || !Number.isFinite(scheduled) || scheduled >= localStart.getTime();
+    }),
+    running: request.running
+      ? {
+          ...request.running,
+          runningDayOffsets: runningOffsets,
+          longRunDayOffset
+        }
+      : undefined
+  };
+}
+
+function futureOffsetsForWeekdays(days: string[], now: Date, timeZone: string): number[] {
+  const weekdayOrder = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const todayName = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "long" }).format(now).toLowerCase();
+  const todayIndex = weekdayOrder.indexOf(todayName);
+  if (todayIndex < 0) return [];
+
+  return [...new Set(days.map((day) => weekdayOrder.indexOf(cleanString(day).toLowerCase())))]
+    .filter((dayIndex) => dayIndex >= 0)
+    .map((dayIndex) => (dayIndex - todayIndex + 7) % 7)
+    .filter((offset) => offset >= 1 && offset <= 6)
+    .sort((a, b) => a - b);
 }
 
 function emptyUser(userId: string, now: string): AutoPlanUserState {

@@ -151,6 +151,40 @@ test("rejects daily running for a starter base even when six days are available"
   assert.ok(result.messages.some((message) => message.includes("Starter running weeks")));
 });
 
+test("rejects six running days even for an established high-volume athlete", () => {
+  const context = contextWith({
+    baselineWeeklyKm: 80,
+    longestRecentRunKm: 35,
+    runningDays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
+    runningDayOffsets: [1, 2, 3, 4, 5, 6],
+    longRunDay: "saturday",
+    longRunDayOffset: 6,
+    recentRuns: Array.from({ length: 16 }, (_, index) => ({
+      completedAt: new Date(Date.UTC(2026, 3, index + 1, 8)).toISOString(),
+      distanceKm: 10,
+      movingSeconds: 3600,
+      elevationGainM: 100
+    }))
+  });
+  const week: RunningWeek = {
+    summary: "Six-day week.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy one", 1, "easy", 10),
+      run("Tempo", 2, "tempo", 12),
+      run("Easy three", 3, "easy", 10),
+      run("Easy four", 4, "easy", 10),
+      run("Recovery", 5, "recovery", 8),
+      run("Long run", 6, "long", 30)
+    ]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("complete rest day")));
+});
+
 test("accepts a three-run starter week from six available days", () => {
   const context = contextWith({
     baselineWeeklyKm: 0,

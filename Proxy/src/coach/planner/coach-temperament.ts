@@ -43,23 +43,35 @@ export function flatGoalMetricsRequiringProgression(context: CoachContext): Flat
   ];
 
   return checks.flatMap(([metric, label]) => {
-    const trend = context.plannedWork.recentGoalTargets[metric];
-    if (trend.flatCount < 2 || trend.latestTarget === null || trend.latestVolume === null) return [];
-    return [{ metric, label, latestTarget: trend.latestTarget, latestVolume: trend.latestVolume }];
+    const performance = context.plannedWork.recentGoalPerformance?.[metric];
+    if (
+      !performance?.clean ||
+      performance.prescribedTarget === null ||
+      performance.prescribedSets === null ||
+      performance.delta === null
+    ) {
+      return [];
+    }
+    const earnedImmediately = performance.delta >= 2;
+    const earnedByRepeat =
+      performance.latestLoggedBest !== null &&
+      performance.latestLoggedBest >= performance.prescribedTarget &&
+      performance.consecutiveCleanCompletionsAtStandard >= 2;
+    if (!earnedImmediately && !earnedByRepeat) return [];
+    return [{
+      metric,
+      label,
+      latestTarget: performance.prescribedTarget,
+      latestVolume: performance.prescribedTarget * performance.prescribedSets
+    }];
   });
 }
 
 export function hasCleanProgressionSignal(context: CoachContext): boolean {
   if (!normalProgressionStates.has(context.readiness.state)) return false;
-  if (context.adherence.missed > 0 || context.adherence.deload > 0) return false;
-
-  const recentLogs = context.history.last5Logs.filter(
-    (log) => log.loggedPullUps || log.loggedPushUps || log.loggedPlankSeconds
-  );
-  if (recentLogs.length < 2) return false;
-  if (recentLogs.some((log) => log.painLevel >= 4 || log.fatigueLevel >= 9)) return false;
-  if (recentLogs.filter((log) => log.rpe >= 9).length >= 2) return false;
-  if (context.history.rpeCalibration.abovePlanBy2Count >= 2) return false;
-
-  return true;
+  if ((context.adherence.missedLast14Days ?? 0) >= 2) return false;
+  return Object.values(context.plannedWork.recentGoalPerformance ?? {}).some((performance) => {
+    if (!performance.clean || performance.prescribedTarget === null || performance.delta === null) return false;
+    return performance.delta >= 2 || performance.consecutiveCleanCompletionsAtStandard >= 2;
+  });
 }

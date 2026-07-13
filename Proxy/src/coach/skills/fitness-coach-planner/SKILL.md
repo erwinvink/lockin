@@ -22,7 +22,9 @@ Use the deterministic `coachContext` built by the proxy planner code before the 
 - profile baseline, goals, notes, equipment, selected training days, future day offsets, week start, and target date
 - last 5 logs with planned vs actual perceived effort, pain, how-you-felt signal, notes, and logged goal metrics
 - current partial month, last full month, previous full month, two-month trend, and best recent tests
-- adherence counts and `plannedWork.recentGoalTargets` from saved goal-exercise prescriptions
+- adherence counts, including misses in the most recent 14 days
+- `plannedWork.recentGoalPerformance`, which matches each logged goal result to that session's saved prescription and supplies the logged best, target, delta, clean-signal decision, repeat count at the same standard, and latest assessment date
+- `plannedWork.recentGoalTargets` as supporting prescription history
 - readiness state and risk flags
 
 Do not infer these summaries from raw logs inside the model response.
@@ -45,21 +47,29 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 5. Treat selected future training-day offsets as availability, not a quota. Use only those offsets, schedule no more sessions than the weekly target, and schedule fewer when recovery, running load, safety, or a week already in progress makes that the better plan.
 6. Include planned effort for every session and exercise.
 7. Include pull, push, and core exposure when a pull-up bar is available; respect missing equipment.
-8. Progress clean flat goal prescriptions from `plannedWork.recentGoalTargets` unless safety flags justify holding steady.
-9. Write `summary`, `purpose`, `progressionRationale`, and `safetyNotes` in the disciplined coach temperament.
-10. Mark logging fields only for goal exercises actually trained or tested in that session.
-11. Return JSON only, matching `weekly-plan.schema.json`.
+8. Choose an adaptive phase: `Build`, `Offload`, `Restore`, `Maintenance`, or `Assessment`. Do not force a four-week calendar wave.
+9. Decide pull-ups, push-ups, and plank separately from `plannedWork.recentGoalPerformance`. A clean result at least 2 reps above a pull-up or push-up target earns immediate +1-rep progression on selected sets. A clean plank result at least 2 seconds above its target earns +5-10 seconds. Otherwise require two consecutive clean completions at or above the same standard before progressing. Never increase sets and reps or hold time together.
+10. Prefix `summary` with the phase, for example `Build:`, and state why pull-ups, push-ups, and plank each progressed, held, or reduced. Repeat the relevant reason in session `progressionRationale`.
+11. Mark logging fields only for goal exercises actually trained or tested in that session.
+12. Return JSON only, matching `weekly-plan.schema.json`.
 
 ## Hard Rules
 
 - No catch-up volume after missed sessions.
+- A missed session does not erase earned progression. Only repeated misses in the most recent 14 days may reduce frequency or complexity.
 - No forced catch-up sessions just because selected future day offsets are available.
 - If no future training-day offsets remain, return an empty `sessions` array and explain that the current week is already underway; do not create today work.
 - No hard, very hard, max, or failure-intensity work during `recovery_needed`.
 - No max output unless `stimulus` is `test`.
 - No pull-up-bar exercise without a pull-up bar.
-- No all-light normal week unless safety flags explain it.
-- No repeated static plan when recent readiness is clean and saved prescriptions are flat.
+- A calendar-month volume flag by itself never justifies an all-light, flat, or offload week.
+- Use `Offload` only for pain, severe fatigue, repeated excessive effort, or declining performance, with 40-60% less hard volume. Use `Restore` for the first safe step after offload.
+- Use `Maintenance` when fixed running load genuinely blocks a safe strength increase. Running is the priority when recovery conflicts.
+- No hard strength on a long, tempo, interval, hill, or race-run day.
+- Leave at least one offset from 1 through 6 unused by both running and strength.
+- Use `Assessment` only with clean readiness, at least 28 days since the latest goal test, and normally on a 4-6 week cadence.
+- No all-light normal week without computed recovery evidence.
+- No repeated static plan after the matched performance evidence earns progression. An arbitrary safety string is not a reason to hold.
 - No congratulating stagnation: either progress the standard or name the safety reason for holding.
 - Never diagnose pain or injury; adjust training and explain the safety reason.
 

@@ -16,6 +16,10 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
     messages.push("Running week must contain at least one run when future running days are available.");
   }
 
+  if (new Set(week.sessions.map((session) => session.dayOffset).filter((offset) => offset >= 1 && offset <= 6)).size === 6) {
+    messages.push("Running cannot occupy all six future offsets; leave at least one complete rest day for combined recovery.");
+  }
+
   if (running && hasSelectedDays) {
     const frequency = runFrequencyPolicy(running, allowed.length);
     const canReduceFrequency =
@@ -116,8 +120,6 @@ function runFrequencyPolicy(running: NonNullable<CoachContext["running"]>, avail
   const longestRecentRunKm = running.longestRecentRunKm || 0;
   const lowStartingBase = recentRunCount < 3 && baselineWeeklyKm <= 20 && longestRecentRunKm <= 8;
   const establishedBase = baselineWeeklyKm >= 35 || longestRecentRunKm >= 16 || recentRunCount >= 8;
-  const highFrequencyBase = baselineWeeklyKm >= 55 || longestRecentRunKm >= 24 || recentRunCount >= 15;
-
   if (lowStartingBase) {
     const maxRuns = Math.min(availableDays, 3);
     return {
@@ -133,16 +135,13 @@ function runFrequencyPolicy(running: NonNullable<CoachContext["running"]>, avail
       : establishedBase && availableDays >= 4
         ? 4
         : 3;
-  const maxRuns =
-    availableDays >= 6 && !highFrequencyBase
-      ? 5
-      : availableDays;
+  const maxRuns = Math.min(5, availableDays);
 
   return {
     minRuns,
     maxRuns,
     maxReason:
-      `Six-run weeks need demonstrated high-frequency or high-volume history; this context supports at most ${maxRuns} runs.`
+      `The combined plan needs one complete rest day; this context supports at most ${maxRuns} runs.`
   };
 }
 

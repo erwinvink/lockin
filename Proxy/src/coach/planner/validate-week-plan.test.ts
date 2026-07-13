@@ -45,7 +45,7 @@ const baseContext: CoachContext = {
       plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
     }
   },
-  readiness: { state: "insufficient_history", riskFlags: [] }
+  readiness: { state: "building", riskFlags: [] }
 };
 
 test("accepts a balanced four-session plan with mixed exposure", () => {
@@ -62,6 +62,26 @@ test("rejects strength sessions with running titles", () => {
 
   assert.equal(result.accepted, false);
   assert.ok(result.messages.some((message) => message.includes("looks like a running session")));
+});
+
+test("requires a visible adaptive phase in the summary", () => {
+  const plan = balancedPlan();
+  plan.summary = "A useful week without a phase.";
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("must start with Build")));
+});
+
+test("cannot bypass computed readiness with a model-selected context state", () => {
+  const plan = balancedPlan();
+  plan.contextState = "overreaching";
+
+  const result = validateWeeklyPlan(plan, baseContext);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("must match computed readiness")));
 });
 
 test("rejects all-light normal weeks without safety explanation", () => {
@@ -100,61 +120,77 @@ test("rejects hard goal work below the useful stimulus floor", () => {
   assert.ok(result.messages.some((message) => message.includes("push-up goal work is below")));
 });
 
-test("rejects static pull and push prescriptions after clean flat recent work", () => {
+test("rejects static pull and push prescriptions after matched performance earns progression", () => {
   const plan = balancedPlan();
-  const context: CoachContext = {
-    ...baseContext,
-    history: {
-      ...baseContext.history,
-      last5Logs: cleanRecentLogs(),
-      rpeCalibration: {
-        recentPlannedLogCount: 2,
-        averageDeltaLast5: -1,
-        abovePlanBy2Count: 0,
-        belowPlanBy2Count: 1,
-        latestSummary: "RPE - Planned 7 | Actual 6"
-      }
-    },
-    adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
-    plannedWork: {
-      todaySessions: [],
-      recentGoalTargets: {
-        pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
-        pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
-        plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
-      }
-    }
-  };
+  const context = earnedProgressionContext();
 
   const result = validateWeeklyPlan(plan, context);
 
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("pull-up work repeats")));
-  assert.ok(result.messages.some((message) => message.includes("push-up work repeats")));
+  assert.ok(result.messages.some((message) => message.includes("earned pull-up progression")));
+  assert.ok(result.messages.some((message) => message.includes("earned push-up progression")));
 });
 
-test("accepts flat recent targets when the new plan progresses volume", () => {
+test("accepts small earned rep progressions", () => {
   const plan = balancedPlan();
   plan.sessions[1].exercises[0] = { ...plan.sessions[1].exercises[0], reps: 4 };
-  plan.sessions[0].exercises[1] = { ...plan.sessions[0].exercises[1], sets: 4 };
-  const context: CoachContext = {
-    ...baseContext,
-    history: {
-      ...baseContext.history,
-      last5Logs: cleanRecentLogs()
-    },
-    adherence: { planned: 6, completed: 6, missed: 0, deload: 0 },
-    plannedWork: {
-      todaySessions: [],
-      recentGoalTargets: {
-        pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
-        pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
-        plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
-      }
-    }
-  };
+  plan.sessions[0].exercises[1] = { ...plan.sessions[0].exercises[1], reps: 11 };
 
-  const result = validateWeeklyPlan(plan, context);
+  const result = validateWeeklyPlan(plan, earnedProgressionContext());
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("one exact clean completion holds while the second requires progression", () => {
+  const plan = balancedPlan();
+  const firstExposure = earnedProgressionContext();
+  firstExposure.plannedWork.recentGoalPerformance!.pullUps = goalPerformance({
+    logged: 3, target: 3, sets: 4, delta: 0, consecutive: 1
+  });
+  firstExposure.plannedWork.recentGoalPerformance!.pushUps = goalPerformance({});
+
+  assert.deepEqual(validateWeeklyPlan(plan, firstExposure), { accepted: true, messages: [] });
+
+  firstExposure.plannedWork.recentGoalPerformance!.pullUps.consecutiveCleanCompletionsAtStandard = 2;
+  const secondResult = validateWeeklyPlan(plan, firstExposure);
+  assert.equal(secondResult.accepted, false);
+  assert.ok(secondResult.messages.some((message) => message.includes("earned pull-up progression")));
+});
+
+test("painful or excessive-effort performance does not force progression", () => {
+  const context = earnedProgressionContext();
+  context.plannedWork.recentGoalPerformance!.pullUps.clean = false;
+  context.plannedWork.recentGoalPerformance!.pushUps.clean = false;
+
+  assert.deepEqual(validateWeeklyPlan(balancedPlan(), context), { accepted: true, messages: [] });
+});
+
+test("an arbitrary safety string cannot bypass earned progression", () => {
+  const plan = balancedPlan();
+  plan.safetyFlags = ["Take care."];
+
+  const result = validateWeeklyPlan(plan, earnedProgressionContext());
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("safetyFlags alone cannot bypass")));
+});
+
+test("rejects oversized progression and increasing sets with reps", () => {
+  const plan = balancedPlan();
+  plan.sessions[1].exercises[0] = { ...plan.sessions[1].exercises[0], reps: 5, sets: 5 };
+  plan.sessions[0].exercises[1] = { ...plan.sessions[0].exercises[1], reps: 11 };
+
+  const result = validateWeeklyPlan(plan, earnedProgressionContext());
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("exactly 1 repetition")));
+  assert.ok(result.messages.some((message) => message.includes("cannot increase sets")));
+});
+
+test("allows maintenance when deterministic fixed running load supports it", () => {
+  const result = validateWeeklyPlan(balancedPlan(), earnedProgressionContext(), {
+    allowProgressionHoldForRunning: true
+  });
 
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
@@ -282,8 +318,8 @@ test("rejects non-renderable exercise values", () => {
 
 function balancedPlan(): WeeklyPlan {
   return {
-    summary: "Balanced AI week",
-    contextState: "insufficient_history",
+    summary: "Build: balanced AI week",
+    contextState: "building",
     safetyFlags: [],
     sessions: [
       mixedSession("Full-body base", 1),
@@ -370,37 +406,37 @@ function emptyMonth(month: string, isPartial: boolean): CoachContext["history"][
   };
 }
 
-function cleanRecentLogs(): CoachContext["history"]["last5Logs"] {
-  return [
-    {
-      id: "log-1",
-      sessionId: "session-1",
-      completedAt: "2026-05-05T00:00:00Z",
-      pullUps: 5,
-      pushUps: 20,
-      plankSeconds: 60,
-      loggedPullUps: true,
-      loggedPushUps: true,
-      loggedPlankSeconds: true,
-      rpe: 6,
-      painLevel: 0,
-      fatigueLevel: 5,
-      notes: ""
+function earnedProgressionContext(): CoachContext {
+  return {
+    ...baseContext,
+    adherence: { planned: 6, completed: 6, missed: 0, missedLast14Days: 0, deload: 0 },
+    plannedWork: {
+      ...baseContext.plannedWork,
+      recentGoalPerformance: {
+        pullUps: goalPerformance({ logged: 5, target: 3, sets: 4, delta: 2, consecutive: 1 }),
+        pushUps: goalPerformance({ logged: 10, target: 10, sets: 3, delta: 0, consecutive: 2 }),
+        plankSeconds: goalPerformance({})
+      }
     },
-    {
-      id: "log-2",
-      sessionId: "session-2",
-      completedAt: "2026-05-08T00:00:00Z",
-      pullUps: 5,
-      pushUps: 20,
-      plankSeconds: 60,
-      loggedPullUps: true,
-      loggedPushUps: true,
-      loggedPlankSeconds: true,
-      rpe: 6,
-      painLevel: 0,
-      fatigueLevel: 5,
-      notes: ""
-    }
-  ];
+    readiness: { state: "building", riskFlags: [] }
+  };
+}
+
+function goalPerformance(options: {
+  logged?: number;
+  target?: number;
+  sets?: number;
+  delta?: number;
+  consecutive?: number;
+}): NonNullable<CoachContext["plannedWork"]["recentGoalPerformance"]>["pullUps"] {
+  return {
+    latestLoggedBest: options.logged ?? null,
+    prescribedTarget: options.target ?? null,
+    prescribedSets: options.sets ?? null,
+    delta: options.delta ?? null,
+    clean: options.logged === undefined ? null : true,
+    consecutiveCleanCompletionsAtStandard: options.consecutive ?? 0,
+    completedAt: options.logged === undefined ? null : "2026-05-08T00:00:00Z",
+    latestTestDate: null
+  };
 }
