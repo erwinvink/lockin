@@ -31,3 +31,7 @@ GarminService/.env
 .env
 .env.*
 !.env.example
+
+# Local assistant settings and physical-device data snapshots
+.claude/
+tmp-phone-store-*/

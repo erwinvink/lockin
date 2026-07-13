@@ -489,6 +489,28 @@ struct CoachProxyHealthResponse: Codable, Equatable {
     var defaultModel: String
 }
 
+struct CoachChatTurnRequest: Codable, Equatable {
+    var role: String
+    var text: String
+    var createdAt: Date?
+}
+
+struct CoachChatRequest: Codable, Equatable {
+    var request: CoachPlanRequest
+    var messages: [CoachChatTurnRequest]
+}
+
+struct CoachChatResponse: Codable, Equatable {
+    var answer: String
+    var evidence: [String]
+    var followUpPrompts: [String]
+    var memorySummary: String
+    var contextState: String
+    var answerKind: String
+    var usedModel: Bool
+    var generatedAt: Date
+}
+
 struct GarminStatusResponse: Codable, Equatable {
     var ok: Bool
     var userId: String?
@@ -930,6 +952,7 @@ enum CoachClientError: Error, LocalizedError {
     case invalidResponse
     case invalidStatus(Int, String?)
     case missingGarminRoute(URL)
+    case missingCoachChatRoute(URL)
     case validationFailed([String])
 
     var errorDescription: String? {
@@ -972,6 +995,20 @@ enum CoachClientError: Error, LocalizedError {
 
             Redeploy the coach proxy with the Garmin routes, then make sure GARMIN_SERVICE_URL points to the Garmin service.
             """
+        case .missingCoachChatRoute(let endpoint):
+            if LocalCoachClient.isPrivateDevelopmentHost(endpoint.host()?.lowercased() ?? "") {
+                """
+                The local coach proxy is reachable at \(endpoint.absoluteString), but it does not expose coach chat yet.
+
+                Restart it from this workspace with: cd Proxy && npm run dev.
+                """
+            } else {
+                """
+                The hosted coach proxy is running, but it does not expose \(endpoint.path) yet.
+
+                For a Debug build on your iPhone, rebuild with COACH_PROXY_ENDPOINT set to your Mac's LAN proxy URL. For production, redeploy the hosted proxy with the coach chat route.
+                """
+            }
         case .validationFailed(let messages): messages.joined(separator: "\n")
         }
     }
@@ -1020,15 +1057,20 @@ struct CoachPlanValidator {
             weeklySessions: selectedDays.count,
             weekStart: weekStart
         ).filter { (1...6).contains($0) }
-        let expectedSessionCount = hasExplicitTrainingDays ? explicitDayOffsets.count : preferences.weeklySessions
+        let maximumSessionCount = hasExplicitTrainingDays ? explicitDayOffsets.count : preferences.weeklySessions
         let allowedDayOffsets = hasExplicitTrainingDays ? Set(explicitDayOffsets) : []
+        let hasSafetyFlags = !response.safetyFlags.isEmpty
 
         if !validContextStates.contains(response.contextState) {
             messages.append("AI plan has an unknown context state.")
         }
 
-        if response.sessions.count != expectedSessionCount {
-            messages.append("AI plan must contain exactly \(expectedSessionCount) sessions.")
+        if response.sessions.count > maximumSessionCount {
+            messages.append("AI plan must contain no more than \(maximumSessionCount) future sessions.")
+        }
+
+        if maximumSessionCount > 0, response.sessions.isEmpty, !hasSafetyFlags {
+            messages.append("AI plan has no future strength sessions, so safety flags must explain why.")
         }
 
         var previousDayOffset = -1
@@ -1547,27 +1589,27 @@ func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -
 
 struct LocalCoachClient {
     static let hostedEndpointString = "https://lockin.elevenfactor.com/generate-week-plan"
+    private static let bundledProxyEndpointKey = "CoachProxyEndpoint"
     // The endpoint is configuration, not app state: it is never stored on the
     // device and never shown or editable in the app. Debug Simulator builds
     // talk to the proxy on the developer's machine. A Debug build installed on
-    // a physical iPhone defaults to production because 127.0.0.1 would mean the
-    // phone itself; set COACH_PROXY_ENDPOINT to a Mac LAN IP when deliberately
-    // testing against a local proxy. Release builds (TestFlight, App Store)
-    // compile the local path out entirely and stay pinned to the hosted proxy.
+    // a physical iPhone can embed COACH_PROXY_ENDPOINT at build time to point
+    // to a Mac LAN IP. Release builds (TestFlight, App Store) compile the
+    // local path out entirely and stay pinned to the hosted proxy.
     #if DEBUG
     static let defaultEndpointString = resolvedDevelopmentEndpoint()
     static let allowsLocalEndpointsByDefault = true
 
     static func resolvedDevelopmentEndpoint(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        isSimulator: Bool = isRunningInSimulator
+        isSimulator: Bool = isRunningInSimulator,
+        bundledEndpoint: String? = Bundle.main.object(forInfoDictionaryKey: bundledProxyEndpointKey) as? String
     ) -> String {
-        let override = environment["COACH_PROXY_ENDPOINT"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let override, !override.isEmpty {
-            if !isSimulator, isLoopbackEndpoint(override) {
-                return hostedEndpointString
-            }
+        if let override = validatedDevelopmentEndpoint(environment["COACH_PROXY_ENDPOINT"], isSimulator: isSimulator) {
             return override
+        }
+        if let bundledEndpoint = validatedDevelopmentEndpoint(bundledEndpoint, isSimulator: isSimulator) {
+            return bundledEndpoint
         }
         return isSimulator ? "http://127.0.0.1:8787/generate-week-plan" : hostedEndpointString
     }
@@ -1699,6 +1741,36 @@ struct LocalCoachClient {
         }
 
         return try JSONDecoder.coachDecoder.decode(CoachVerdictResponse.self, from: data)
+    }
+
+    func sendCoachChat(_ request: CoachChatRequest) async throws -> CoachChatResponse {
+        guard let chatEndpoint = Self.chatEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
+        var urlRequest = URLRequest(url: chatEndpoint)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 45
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch let error as URLError {
+            if error.isLocalProxyConnectionFailure {
+                throw CoachClientError.proxyUnavailable(chatEndpoint, error)
+            }
+            throw CoachClientError.transportFailed(chatEndpoint, error)
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw CoachClientError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 404 {
+                throw CoachClientError.missingCoachChatRoute(chatEndpoint)
+            }
+            throw CoachClientError.invalidStatus(http.statusCode, proxyErrorMessage(from: data))
+        }
+
+        return try JSONDecoder.coachDecoder.decode(CoachChatResponse.self, from: data)
     }
 
     func fetchProxyHealth() async throws -> CoachProxyHealthResponse {
@@ -2089,6 +2161,16 @@ struct LocalCoachClient {
         return host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 
+    private static func validatedDevelopmentEndpoint(_ value: String?, isSimulator: Bool) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("$(") else { return nil }
+        if !isSimulator, isLoopbackEndpoint(trimmed) {
+            return nil
+        }
+        return trimmed
+    }
+
     private static func generateWeekEndpoint(from endpoint: URL) -> URL? {
         guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
         components.path = "/generate-week"
@@ -2099,6 +2181,13 @@ struct LocalCoachClient {
     private static func verdictEndpoint(from endpoint: URL) -> URL? {
         guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
         components.path = "/coach-verdict"
+        components.query = nil
+        return components.url
+    }
+
+    private static func chatEndpoint(from endpoint: URL) -> URL? {
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/coach-chat"
         components.query = nil
         return components.url
     }

@@ -15,6 +15,7 @@ enum ModelContainerFactory {
             CoachPlan.self,
             CoachDecision.self,
             CoachVerdict.self,
+            CoachChatMessage.self,
             RaceGoal.self,
             RunLog.self,
             GarminDailySnapshot.self

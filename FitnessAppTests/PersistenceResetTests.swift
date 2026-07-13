@@ -183,6 +183,84 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertFalse(prescriptions.contains { $0.sessionId == planned.id })
     }
 
+    func testPersistAIPlanKeepsTodayPlannedSessionBeforeTrainingIsDone() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        let todayPlanned = WorkoutSession(
+            scheduledDate: today,
+            title: "Today planned",
+            weekIndex: 0,
+            focus: .pull,
+            summary: "AI: Keep until the athlete has trained"
+        )
+        modelContext.insert(todayPlanned)
+        try modelContext.save()
+
+        let aiPlan = CoachPlanResponse.balancedFixture().weeklyPlan(weekStart: today)
+        try persist(plan: aiPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertTrue(sessions.contains { $0.id == todayPlanned.id })
+    }
+
+    func testPersistAIPlanRemovesStaleTodayPlannedSessionAfterTrainingIsDone() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        let completedRun = WorkoutSession(
+            scheduledDate: today,
+            title: "Completed run",
+            weekIndex: 0,
+            focus: .mixed,
+            status: .completed,
+            summary: "AI: Done",
+            discipline: .running
+        )
+        let stalePlanned = WorkoutSession(
+            scheduledDate: today,
+            title: "Stale extra training",
+            weekIndex: 0,
+            focus: .push,
+            summary: "AI: Should be cleared"
+        )
+        let staleBlock = WorkoutBlock(sessionId: stalePlanned.id, orderIndex: 0, name: "Old", detail: "Old")
+        let stalePrescription = SetPrescription(
+            sessionId: stalePlanned.id,
+            blockId: staleBlock.id,
+            orderIndex: 0,
+            exercise: .pushUp,
+            sets: 1,
+            targetReps: 1,
+            restSeconds: 30,
+            intensity: "Easy"
+        )
+
+        modelContext.insert(completedRun)
+        modelContext.insert(stalePlanned)
+        modelContext.insert(staleBlock)
+        modelContext.insert(stalePrescription)
+        try modelContext.save()
+
+        let aiPlan = CoachPlanResponse.balancedFixture().weeklyPlan(weekStart: today)
+        try persist(plan: aiPlan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        let blocks = try modelContext.fetch(FetchDescriptor<WorkoutBlock>())
+        let prescriptions = try modelContext.fetch(FetchDescriptor<SetPrescription>())
+
+        XCTAssertTrue(sessions.contains { $0.id == completedRun.id })
+        XCTAssertFalse(sessions.contains { $0.id == stalePlanned.id })
+        XCTAssertFalse(blocks.contains { $0.sessionId == stalePlanned.id })
+        XCTAssertFalse(prescriptions.contains { $0.sessionId == stalePlanned.id })
+    }
+
     func testDeleteNonAIPlannedSessionsKeepsAIAndHistory() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
@@ -395,7 +473,7 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(yesterdayStrength.status, .missed, "Strength sessions are still missed at start of the next day")
     }
 
-    func testRunningSessionWithRunLogIsNeverAutoMissed() throws {
+    func testSameDayGarminRunLogIsNotBlindlyMarkedMissed() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
         var calendar = Calendar(identifier: .gregorian)
@@ -437,11 +515,184 @@ final class PersistenceResetTests: XCTestCase {
         )
 
         XCTAssertEqual(processed, 0)
-        XCTAssertEqual(pendingLoggedRun.status, .planned, "A legacy pending Garmin row is still real run history")
-        XCTAssertEqual(confirmedLoggedRun.status, .planned, "Any run log shields the session from the missed sweep")
+        XCTAssertEqual(pendingLoggedRun.status, .planned, "Foreground reconciliation owns the transition; the missed sweep must not penalize real Garmin history")
+        XCTAssertEqual(confirmedLoggedRun.status, .planned, "A same-day Garmin log shields the session from the blind missed sweep")
         XCTAssertEqual(rank.penaltyPoints, 0)
         XCTAssertEqual(rank.consistencyScore, 30)
         XCTAssertEqual(rank.streak, 4)
+    }
+
+    func testReconcileAttachedGarminRunLogMarksLegacyPlannedRunPartialExactlyOnce() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 27, hour: 8)))
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let plannedRun = plannedRunFixture(
+            scheduledDate: calendar.startOfDay(for: runDay),
+            distanceKm: 15,
+            title: "Saturday long hilly aerobic run"
+        )
+        let legacyLog = RunLog(
+            sessionId: plannedRun.id,
+            completedAt: runDay,
+            distanceKm: 8.65,
+            movingSeconds: 3_601,
+            garminActivityId: "23392909489",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        modelContext.insert(rank)
+        modelContext.insert(plannedRun)
+        modelContext.insert(legacyLog)
+        try modelContext.save()
+
+        let first = try reconcileAttachedGarminRunLogs(
+            sessions: [plannedRun],
+            runLogs: [legacyLog],
+            ranks: [rank],
+            in: modelContext,
+            calendar: calendar
+        )
+        let second = try reconcileAttachedGarminRunLogs(
+            sessions: [plannedRun],
+            runLogs: [legacyLog],
+            ranks: [rank],
+            in: modelContext,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(first.partialRuns, 1)
+        XCTAssertEqual(first.changedCount, 1)
+        XCTAssertEqual(second.changedCount, 0, "A reconciled session must not be scored twice on the next foreground refresh")
+        XCTAssertEqual(plannedRun.status, .partial)
+        XCTAssertEqual(plannedRun.scoreImpact, 6)
+        XCTAssertEqual(legacyLog.sessionId, plannedRun.id)
+        XCTAssertFalse(legacyLog.needsConfirmation)
+        XCTAssertEqual(rank.consistencyScore, 36)
+        XCTAssertEqual(rank.streak, 4)
+    }
+
+    func testReconcileAttachedGarminRunLogsRequiresExactSessionAndCalendarDay() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 27, hour: 8)))
+        let nextDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: runDay))
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 15)
+        let anotherSessionLog = RunLog(
+            sessionId: UUID(),
+            completedAt: runDay,
+            distanceKm: 15,
+            garminActivityId: "different-session",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        let wrongDayLog = RunLog(
+            sessionId: plannedRun.id,
+            completedAt: nextDay,
+            distanceKm: 15,
+            garminActivityId: "wrong-day",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        modelContext.insert(rank)
+        modelContext.insert(plannedRun)
+        modelContext.insert(anotherSessionLog)
+        modelContext.insert(wrongDayLog)
+        try modelContext.save()
+
+        let result = try reconcileAttachedGarminRunLogs(
+            sessions: [plannedRun],
+            runLogs: [anotherSessionLog, wrongDayLog],
+            ranks: [rank],
+            in: modelContext,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result.changedCount, 0)
+        XCTAssertEqual(plannedRun.status, .planned)
+        XCTAssertTrue(anotherSessionLog.needsConfirmation)
+        XCTAssertTrue(wrongDayLog.needsConfirmation)
+        XCTAssertEqual(rank.consistencyScore, 30)
+    }
+
+    func testWrongDayGarminLogDoesNotShieldOverduePlannedRun() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 7, hour: 8)))
+        let nextDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: runDay))
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 15)
+        let wrongDayLog = RunLog(
+            sessionId: plannedRun.id,
+            completedAt: nextDay,
+            distanceKm: 15,
+            garminActivityId: "wrong-day",
+            source: .garmin,
+            needsConfirmation: true
+        )
+
+        let overdue = overduePlannedSessions(
+            from: [plannedRun],
+            runLogs: [wrongDayLog],
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(overdue.map(\.id), [plannedRun.id])
+    }
+
+    func testReconcileAttachedTinyGarminRunDetachesItSoOldPlanCanBecomeMissed() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 12)))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 7, hour: 8)))
+        let profile = UserProfile(targetDate: now, weeklySessions: 4, equipment: [.pullUpBar], baselinePullUps: 3, baselinePushUps: 12, baselinePlankSeconds: 45)
+        let rank = RankState(consistencyScore: 30, streak: 4, bestStreak: 4)
+        let plannedRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 15)
+        let tinyLog = RunLog(
+            sessionId: plannedRun.id,
+            completedAt: runDay,
+            distanceKm: 2,
+            garminActivityId: "tiny-legacy-run",
+            source: .garmin,
+            needsConfirmation: true
+        )
+        modelContext.insert(profile)
+        modelContext.insert(rank)
+        modelContext.insert(plannedRun)
+        modelContext.insert(tinyLog)
+        try modelContext.save()
+
+        let reconciliation = try reconcileAttachedGarminRunLogs(
+            sessions: [plannedRun],
+            runLogs: [tinyLog],
+            ranks: [rank],
+            in: modelContext,
+            calendar: calendar
+        )
+        let missed = try markOverduePlannedSessionsMissed(
+            from: [plannedRun],
+            runLogs: [tinyLog],
+            logs: [],
+            profile: profile,
+            ranks: [rank],
+            in: modelContext,
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(reconciliation.detachedLogs, 1)
+        XCTAssertEqual(tinyLog.sessionId, RunLog.unattachedSessionId)
+        XCTAssertFalse(tinyLog.needsConfirmation)
+        XCTAssertEqual(missed, 1)
+        XCTAssertEqual(plannedRun.status, .missed)
     }
 
     func testLegacyManualRunLogDoesNotBlockGarminSourceOfTruth() throws {
@@ -856,7 +1107,9 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertTrue(sessions.contains { $0.id == completedTodayRun.id }, "Completed sessions must never be deleted")
         XCTAssertFalse(sessions.contains { $0.id == futurePlannedRun.id }, "Future planned running sessions are replaced")
         XCTAssertTrue(sessions.contains { $0.id == futurePlannedStrength.id }, "Running re-persist must not delete strength sessions")
-        XCTAssertEqual(sessions.count, 3 + week.sessions.count, "Exactly one stale session should be replaced")
+        let refreshedRunTitles = Set(sessions.filter { ["Easy aerobic run", "Hill strides", "Hilly long run"].contains($0.title) }.map(\.title))
+        XCTAssertEqual(refreshedRunTitles, ["Hilly long run"], "Refreshes must not add newly generated sessions for today or earlier")
+        XCTAssertEqual(sessions.count, 4, "Exactly one stale future session should be replaced by one future generated run")
     }
 
     func testPersistStrengthPlanKeepsPlannedRunningSessions() throws {
@@ -919,6 +1172,45 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertTrue(sessions.contains { $0.id == plannedToday.id }, "A planned session scheduled today is locked and must survive a replan")
     }
 
+    func testPersistStrengthPlanDoesNotAddGeneratedSessionScheduledTodayDuringRefresh() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: today))
+        let block = WorkoutBlockPlan(
+            name: "AI Coach Plan",
+            detail: "Keep the refresh future-only.",
+            sets: [
+                ExerciseSetPlan(
+                    exercise: .pullUp,
+                    sets: 3,
+                    reps: 3,
+                    seconds: 0,
+                    restSeconds: 90,
+                    intensity: "Moderate"
+                )
+            ]
+        )
+        let plan = WeeklyPlan(
+            weekStart: today,
+            weekIndex: 0,
+            sessions: [
+                TrainingSessionPlan(date: today, title: "Generated today strength", focus: .mixed, weekIndex: 0, summary: "AI: Today should stay locked.", blocks: [block]),
+                TrainingSessionPlan(date: tomorrow, title: "Generated tomorrow strength", focus: .mixed, weekIndex: 0, summary: "AI: Future work is allowed.", blocks: [block])
+            ],
+            summary: "Refresh plan",
+            shouldTest: false
+        )
+
+        try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertFalse(sessions.contains { $0.title == "Generated today strength" })
+        XCTAssertTrue(sessions.contains { $0.title == "Generated tomorrow strength" })
+    }
+
     func testPersistRunningWeekKeepsPlannedRunningSessionScheduledToday() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
@@ -955,6 +1247,30 @@ final class PersistenceResetTests: XCTestCase {
         let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
         XCTAssertTrue(sessions.contains { $0.id == plannedTodayRun.id }, "A planned run scheduled today is locked and must survive a replan")
         XCTAssertFalse(sessions.contains { $0.id == plannedTomorrowRun.id }, "Planned runs scheduled after today are still replaced")
+    }
+
+    func testPersistRunningWeekDoesNotAddGeneratedRunScheduledTodayDuringRefresh() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+
+        let week = RunningWeekResponse(
+            summary: "Refresh running week",
+            safetyFlags: [],
+            sessions: [
+                .runFixture(title: "Generated today run", dayOffset: 1, kind: "easy"),
+                .runFixture(title: "Generated future run", dayOffset: 2, kind: "hills")
+            ]
+        )
+
+        try persist(runningWeek: week, weekStart: yesterday, in: modelContext, replacingFuturePlannedSessions: true)
+        try modelContext.save()
+
+        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertFalse(sessions.contains { $0.title == "Generated today run" })
+        XCTAssertTrue(sessions.contains { $0.title == "Generated future run" })
     }
 
     func testPersistRunningWeekReturnsGarminWorkoutIdsOfDeletedPushedRuns() throws {
@@ -1390,6 +1706,47 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(logs.first?.sessionId, longRun.id, "The closest planned distance wins")
         XCTAssertEqual(shortRun.status, .planned)
         XCTAssertEqual(longRun.status, .completed)
+    }
+
+    func testMatchGarminActivitiesPrefersSyncedGarminWorkoutOverUnpushedDuplicate() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let runDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 30, hour: 9)))
+        let hillRun = WorkoutSession(
+            scheduledDate: runDay,
+            title: "Controlled hill session with smooth descents",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: Hill work.",
+            discipline: .running,
+            runKind: .hills,
+            plannedDistanceKm: 5.5,
+            plannedElevationM: 130,
+            garminWorkoutId: "1613865865",
+            pushedToGarminAt: runDay,
+            garminSyncStatus: .synced
+        )
+        let duplicateEasyRun = plannedRunFixture(scheduledDate: runDay, distanceKm: 4.8, title: "Easy aerobic run")
+        modelContext.insert(hillRun)
+        modelContext.insert(duplicateEasyRun)
+        try modelContext.save()
+
+        let matched = try matchGarminActivities(
+            [garminActivityFixture(startTime: "2026-06-30 15:01:07", distanceKm: 5.09, elevationGainM: 151)],
+            sessions: [duplicateEasyRun, hillRun],
+            existingRunLogs: [],
+            in: modelContext,
+            calendar: calendar
+        )
+        try modelContext.save()
+
+        XCTAssertEqual(matched.completedRuns, 1)
+        let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
+        XCTAssertEqual(logs.first?.sessionId, hillRun.id, "The synced Garmin workout beats a closer unpushed duplicate")
+        XCTAssertEqual(hillRun.status, .completed)
+        XCTAssertEqual(duplicateEasyRun.status, .planned)
     }
 
     func testUnmatchedGarminActivityImportsAsStandaloneConfirmedRun() throws {

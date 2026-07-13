@@ -317,6 +317,37 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
     }
 
+    func testCoachChatAnswersSixConnectedQuestionsWithSeededTrainingData() throws {
+        #if targetEnvironment(simulator)
+        guard localCoachProxyIsReachable() else {
+            throw XCTSkip("Start the local proxy at \(coachProxyHealthURL()?.absoluteString ?? "http://127.0.0.1:8787/health") to verify coach chat end to end.")
+        }
+        #endif
+
+        let app = XCUIApplication()
+        app.launchArguments = ["UITesting", "SeedTwoWeeksActivity", "RunCoachChatScript"]
+        app.launchEnvironment["COACH_PROXY_ENDPOINT"] = coachProxyEndpoint()
+        app.launch()
+
+        app.tabBars.buttons["Coach"].tap()
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        tapWhenReady(app.buttons["Chat"], in: app)
+        XCTAssertTrue(app.textFields["coach-chat-input"].waitForExistence(timeout: 5))
+
+        let status = app.staticTexts["coach-chat-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        let sixTurnsComplete = NSPredicate(format: "label == %@", "12 messages")
+        expectation(for: sixTurnsComplete, evaluatedWith: status)
+        waitForExpectations(timeout: 30)
+
+        assertChatContains(app, "Keep going")
+        assertChatContains(app, "one more honest")
+        assertChatContains(app, "recent pain up to 4/10")
+        assertChatContains(app, "Earlier you asked about your long-term schedule, your biggest improvement point, and fatigue")
+        assertChatContains(app, "against the 80% standard")
+        assertChatContains(app, "Keep shoulders warm before pull work")
+    }
+
     func testProfileDebugSeedButtonLoadsDemoHistory() {
         let app = launchFreshApp()
         onboardDefault(app)
@@ -365,5 +396,106 @@ final class FitnessAppUITests: XCTestCase {
         }
         XCTAssertTrue(element.isHittable)
         element.tap()
+    }
+
+    private func askCoach(_ app: XCUIApplication, _ question: String, expect expectedText: String) {
+        let input = app.textFields["coach-chat-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.tap()
+        input.typeText(question)
+        let sendButton = app.buttons["coach-chat-send-button"]
+        XCTAssertTrue(sendButton.waitForExistence(timeout: 5))
+        usleep(150_000)
+        sendButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(textContaining(app, expectedText).waitForExistence(timeout: 15))
+        waitForCoachTypingToFinish(app)
+    }
+
+    private func textContaining(_ app: XCUIApplication, _ text: String) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", text)).firstMatch
+    }
+
+    private func elementContaining(_ app: XCUIApplication, _ text: String) -> XCUIElement {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", text))
+            .firstMatch
+    }
+
+    private func assertChatContains(
+        _ app: XCUIApplication,
+        _ text: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let element = elementContaining(app, text)
+        if element.waitForExistence(timeout: 2) {
+            return
+        }
+
+        let scrollView = app.scrollViews["coach-chat-scroll"]
+        for _ in 0..<5 {
+            if scrollView.exists {
+                scrollView.swipeUp()
+            } else {
+                app.swipeUp()
+            }
+            if element.waitForExistence(timeout: 1) {
+                return
+            }
+        }
+
+        XCTFail("Expected coach chat to contain: \(text)", file: file, line: line)
+    }
+
+    private func waitForCoachTypingToFinish(_ app: XCUIApplication) {
+        let typing = app.descendants(matching: .any)["coach-chat-typing"]
+        if typing.exists {
+            let gone = NSPredicate(format: "exists == false")
+            expectation(for: gone, evaluatedWith: typing)
+            waitForExpectations(timeout: 5)
+        }
+        usleep(150_000)
+    }
+
+    private func localCoachProxyIsReachable() -> Bool {
+        guard let url = coachProxyHealthURL() else { return false }
+        let expectation = XCTestExpectation(description: "local coach proxy health")
+        var reachable = false
+        URLSession.shared.dataTask(with: url) { _, response, _ in
+            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                reachable = true
+            }
+            expectation.fulfill()
+        }.resume()
+        _ = XCTWaiter.wait(for: [expectation], timeout: 2)
+        return reachable
+    }
+
+    private func coachProxyHealthURL() -> URL? {
+        var rawValue = coachProxyEndpoint()
+        if !rawValue.contains("://") {
+            rawValue = "http://\(rawValue)"
+        }
+        guard var components = URLComponents(string: rawValue) else { return nil }
+        components.path = "/health"
+        components.query = nil
+        return components.url
+    }
+
+    private func coachProxyEndpoint() -> String {
+        if let endpoint = usableProxyEndpoint(ProcessInfo.processInfo.environment["COACH_PROXY_ENDPOINT"]) {
+            return endpoint
+        }
+        if let endpoint = usableProxyEndpoint(Bundle(for: type(of: self)).object(forInfoDictionaryKey: "CoachProxyEndpoint") as? String) {
+            return endpoint
+        }
+        return "http://127.0.0.1:8787/generate-week-plan"
+    }
+
+    private func usableProxyEndpoint(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("$(") else { return nil }
+        return trimmed
     }
 }

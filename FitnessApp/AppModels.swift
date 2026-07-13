@@ -1033,6 +1033,64 @@ func humanReadableCoachPlanDecision(_ action: String) -> String {
     }
 }
 
+enum CoachChatRole: String, Codable {
+    case user
+    case coach
+}
+
+enum CoachChatMessageStatus: String, Codable {
+    case sending
+    case sent
+    case failed
+}
+
+@Model
+final class CoachChatMessage {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var roleRaw: String = CoachChatRole.user.rawValue
+    var text: String = ""
+    var statusRaw: String = CoachChatMessageStatus.sent.rawValue
+    var evidenceRaw: String = ""
+    var memorySummary: String = ""
+    var answerKind: String = ""
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = Date(),
+        role: CoachChatRole,
+        text: String,
+        status: CoachChatMessageStatus = .sent,
+        evidence: [String] = [],
+        memorySummary: String = "",
+        answerKind: String = ""
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.roleRaw = role.rawValue
+        self.text = text
+        self.statusRaw = status.rawValue
+        self.evidenceRaw = evidence.joined(separator: "|")
+        self.memorySummary = memorySummary
+        self.answerKind = answerKind
+    }
+
+    var role: CoachChatRole {
+        get { CoachChatRole(rawValue: roleRaw) ?? .user }
+        set { roleRaw = newValue.rawValue }
+    }
+
+    var status: CoachChatMessageStatus {
+        get { CoachChatMessageStatus(rawValue: statusRaw) ?? .sent }
+        set { statusRaw = newValue.rawValue }
+    }
+
+    var evidence: [String] {
+        get { evidenceRaw.split(separator: "|").map(String.init) }
+        set { evidenceRaw = newValue.joined(separator: "|") }
+    }
+}
+
 @Model
 final class RaceGoal {
     var id: UUID = UUID()

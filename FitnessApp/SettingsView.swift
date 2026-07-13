@@ -15,7 +15,7 @@ struct SettingsView: View {
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
-    #if DEBUG
+    #if DEBUG && targetEnvironment(simulator)
     @State private var isShowingSeedConfirmation = false
     @State private var seedMessage: String?
     @State private var seedError: String?
@@ -47,7 +47,7 @@ struct SettingsView: View {
                     onReminderToggle: saveReminderPreference,
                     onReminderTimeChange: saveReminderTime
                 )
-                #if DEBUG
+                #if DEBUG && targetEnvironment(simulator)
                 DemoHistorySeedCard(
                     seedMessage: seedMessage,
                     seedError: seedError,
@@ -69,7 +69,7 @@ struct SettingsView: View {
             } message: {
                 Text("This removes every measurement, workout, log, streak, and coach record from the app.")
             }
-            #if DEBUG
+            #if DEBUG && targetEnvironment(simulator)
             .alert("Replace with demo history?", isPresented: $isShowingSeedConfirmation) {
                 Button("Cancel", role: .cancel) {}
                 Button("Seed demo history", role: .destructive, action: seedDemoHistory)
@@ -198,7 +198,7 @@ struct SettingsView: View {
         }
     }
 
-    #if DEBUG
+    #if DEBUG && targetEnvironment(simulator)
     private func seedDemoHistory() {
         do {
             WorkoutNotificationScheduler().clearWorkoutReminders()
@@ -855,7 +855,7 @@ private struct ResetCard: View {
     }
 }
 
-#if DEBUG
+#if DEBUG && targetEnvironment(simulator)
 private struct DemoHistorySeedCard: View {
     var seedMessage: String?
     var seedError: String?

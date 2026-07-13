@@ -39,6 +39,25 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertTrue(message.contains("GARMIN_SERVICE_URL"))
     }
 
+    func testMissingCoachChatRouteErrorExplainsHostedRedeployOrDebugEndpoint() throws {
+        let endpoint = try XCTUnwrap(URL(string: "https://lockin.elevenfactor.com/coach-chat"))
+        let error = CoachClientError.missingCoachChatRoute(endpoint)
+        let message = error.localizedDescription
+
+        XCTAssertTrue(message.contains("/coach-chat"))
+        XCTAssertTrue(message.contains("COACH_PROXY_ENDPOINT"))
+        XCTAssertTrue(message.contains("redeploy"))
+    }
+
+    func testMissingCoachChatRouteErrorExplainsLocalProxyRestart() throws {
+        let endpoint = try XCTUnwrap(URL(string: "http://192.168.1.20:8787/coach-chat"))
+        let error = CoachClientError.missingCoachChatRoute(endpoint)
+        let message = error.localizedDescription
+
+        XCTAssertTrue(message.contains("local coach proxy"))
+        XCTAssertTrue(message.contains("npm run dev"))
+    }
+
     func testSimulatorDevelopmentEndpointFallsBackToLoopbackProxy() {
         XCTAssertEqual(
             LocalCoachClient.resolvedDevelopmentEndpoint(environment: [:], isSimulator: true),
@@ -58,6 +77,47 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(
             LocalCoachClient.resolvedDevelopmentEndpoint(environment: ["COACH_PROXY_ENDPOINT": "   "], isSimulator: false),
             LocalCoachClient.hostedEndpointString
+        )
+    }
+
+    func testPhysicalDeviceDevelopmentEndpointHonorsBundledLanEndpoint() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(
+                environment: [:],
+                isSimulator: false,
+                bundledEndpoint: "http://192.168.1.20:8787/generate-week-plan"
+            ),
+            "http://192.168.1.20:8787/generate-week-plan"
+        )
+    }
+
+    func testPhysicalDeviceDevelopmentEndpointIgnoresBundledLoopbackEndpoint() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(
+                environment: [:],
+                isSimulator: false,
+                bundledEndpoint: "http://127.0.0.1:8787/generate-week-plan"
+            ),
+            LocalCoachClient.hostedEndpointString
+        )
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(
+                environment: [:],
+                isSimulator: false,
+                bundledEndpoint: "$(COACH_PROXY_ENDPOINT)"
+            ),
+            LocalCoachClient.hostedEndpointString
+        )
+    }
+
+    func testDevelopmentEndpointEnvironmentOverrideWinsOverBundledEndpoint() {
+        XCTAssertEqual(
+            LocalCoachClient.resolvedDevelopmentEndpoint(
+                environment: ["COACH_PROXY_ENDPOINT": "http://192.168.1.30:8787"],
+                isSimulator: false,
+                bundledEndpoint: "http://192.168.1.20:8787"
+            ),
+            "http://192.168.1.30:8787"
         )
     }
 
@@ -507,6 +567,71 @@ final class CoachValidationTests: XCTestCase {
 
         XCTAssertEqual(result.status, .rejected)
         XCTAssertTrue(result.messages.contains { $0.contains("rest day") })
+    }
+
+    func testAcceptsAIPlanWithFewerSessionsThanSelectedFutureTrainingDays() throws {
+        let weekStart = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 7)))
+        var response = CoachPlanResponse.balancedFixture()
+        response.sessions = [
+            CoachPlanResponse.mixedFixture(title: "Monday", dayOffset: 1),
+            CoachPlanResponse.mixedFixture(title: "Wednesday", dayOffset: 3)
+        ]
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                trainingDays: [.monday, .wednesday, .friday, .saturday],
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: weekStart
+        )
+
+        XCTAssertEqual(result.status, .accepted)
+        XCTAssertTrue(result.messages.isEmpty)
+    }
+
+    func testRejectsAIPlanWithMoreSessionsThanSelectedFutureTrainingDays() throws {
+        let weekStart = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 7)))
+        let response = CoachPlanResponse.balancedFixture()
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 2,
+                trainingDays: [.friday, .saturday],
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: weekStart
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.messages.contains { $0.contains("no more than 2 future sessions") })
+    }
+
+    func testAcceptsEmptyAIPlanWhenNoSelectedFutureTrainingDaysRemain() throws {
+        let saturday = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 4)))
+        var response = CoachPlanResponse.balancedFixture()
+        response.sessions = []
+
+        let result = CoachPlanValidator().validate(
+            response: response,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 1,
+                trainingDays: [.saturday],
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: saturday
+        )
+
+        XCTAssertEqual(result.status, .accepted)
+        XCTAssertTrue(result.messages.isEmpty)
     }
 
     func testAcceptsAIPlanWithoutLocalMovementBalancePolicy() {

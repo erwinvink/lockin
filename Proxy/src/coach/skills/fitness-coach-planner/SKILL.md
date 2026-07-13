@@ -40,9 +40,9 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 
 1. Read `coachContext`, references, and any repair request.
 2. Use the provided readiness state unless the context clearly contradicts it.
-3. Generate exactly the requested future sessions.
+3. Generate only future sessions that are still useful inside the current rolling week.
 4. Schedule only `dayOffset` values from `1` through `6`, strictly increasing. Never schedule `dayOffset: 0`.
-5. If selected future training-day offsets are provided, use only those offsets and one session per selected future training day.
+5. Treat selected future training-day offsets as availability, not a quota. Use only those offsets, schedule no more sessions than the weekly target, and schedule fewer when recovery, running load, safety, or a week already in progress makes that the better plan.
 6. Include planned effort for every session and exercise.
 7. Include pull, push, and core exposure when a pull-up bar is available; respect missing equipment.
 8. Progress clean flat goal prescriptions from `plannedWork.recentGoalTargets` unless safety flags justify holding steady.
@@ -53,6 +53,8 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 ## Hard Rules
 
 - No catch-up volume after missed sessions.
+- No forced catch-up sessions just because selected future day offsets are available.
+- If no future training-day offsets remain, return an empty `sessions` array and explain that the current week is already underway; do not create today work.
 - No hard, very hard, max, or failure-intensity work during `recovery_needed`.
 - No max output unless `stimulus` is `test`.
 - No pull-up-bar exercise without a pull-up bar.

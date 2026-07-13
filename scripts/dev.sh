@@ -26,9 +26,14 @@ export GARMIN_SERVICE_URL="http://127.0.0.1:8788"
 
 # Already running (e.g. in another terminal)? Say so instead of crashing.
 if curl -s -m 2 http://127.0.0.1:8787/health > /dev/null 2>&1; then
-  echo "The local backend is already running — nothing to do."
+  echo "The local proxy is already running."
   echo "Proxy:  $(curl -s -m 2 http://127.0.0.1:8787/health)"
   echo "Garmin: $(curl -s -m 2 http://127.0.0.1:8787/garmin/status)"
+  if ! curl -s -m 2 http://127.0.0.1:8788/status > /dev/null 2>&1; then
+    echo "Garmin sidecar is not reachable on :8788."
+    echo "Starting Garmin sidecar only; keep this process running while the existing proxy is active."
+    cd "$GARMIN_DIR" && exec .venv/bin/python -m uvicorn main:app --port 8788
+  fi
   exit 0
 fi
 

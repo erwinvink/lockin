@@ -77,8 +77,9 @@ func trainingStreakSnapshot(
 /// Planned sessions that should be marked missed. Strength sessions are
 /// overdue as soon as their scheduled day has passed. Running sessions get
 /// one grace day so an evening run can still arrive via the overnight Garmin
-/// sync before the session counts as missed, and a running session with any
-/// RunLog is never overdue because Garmin has already provided activity data.
+/// sync before the session counts as missed. A real Garmin RunLog on the
+/// session's scheduled calendar day keeps it out of the missed sweep because
+/// Garmin has already provided activity data for that workout.
 func overduePlannedSessions(
     from sessions: [WorkoutSession],
     runLogs: [RunLog],
@@ -87,12 +88,18 @@ func overduePlannedSessions(
 ) -> [WorkoutSession] {
     let startOfToday = calendar.startOfDay(for: now)
     let runningGraceCutoff = calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday
-    let loggedSessionIds = Set(runLogs.filter { $0.source == .garmin }.map(\.sessionId))
+    let garminLogsBySessionId = Dictionary(
+        grouping: runLogs.filter { $0.source == .garmin && !isReplaceablePreviewRunLog($0) },
+        by: \.sessionId
+    )
     return sessions
         .filter { session in
             guard session.status == .planned else { return false }
             if session.discipline == .running {
-                guard !loggedSessionIds.contains(session.id) else { return false }
+                let hasSameDayGarminLog = (garminLogsBySessionId[session.id] ?? []).contains {
+                    calendar.isDate($0.completedAt, inSameDayAs: session.scheduledDate)
+                }
+                guard !hasSameDayGarminLog else { return false }
                 return session.scheduledDate < runningGraceCutoff
             }
             return session.scheduledDate < startOfToday
@@ -319,6 +326,84 @@ struct GarminActivityIngest: Equatable {
     var importedRuns = 0
 }
 
+struct GarminAttachedLogReconciliation: Equatable {
+    var completedRuns = 0
+    var partialRuns = 0
+    var detachedLogs = 0
+
+    var changedCount: Int {
+        completedRuns + partialRuns + detachedLogs
+    }
+}
+
+/// Repairs legacy Garmin rows that were attached to a planned or missed run
+/// before automatic completion existed. The relationship itself is trusted
+/// only when both the exact session id and local calendar day agree. That keeps
+/// duplicate activity ids attached to another replanned session out of scope.
+///
+/// The strongest same-day log becomes the session's completion source. Any
+/// extra same-day logs remain real Garmin history but are detached, matching
+/// the current ingest rule that one planned session can claim only one run.
+@discardableResult
+func reconcileAttachedGarminRunLogs(
+    sessions: [WorkoutSession],
+    runLogs: [RunLog],
+    ranks: [RankState],
+    in modelContext: ModelContext,
+    calendar: Calendar = .current
+) throws -> GarminAttachedLogReconciliation {
+    let logsBySessionId = Dictionary(
+        grouping: runLogs.filter {
+            $0.source == .garmin &&
+            $0.sessionId != RunLog.unattachedSessionId &&
+            !isReplaceablePreviewRunLog($0)
+        },
+        by: \.sessionId
+    )
+    var availableRanks = ranks
+    var result = GarminAttachedLogReconciliation()
+
+    for session in sessions.sorted(by: { $0.scheduledDate < $1.scheduledDate }) {
+        guard session.discipline == .running else { continue }
+        guard session.status == .planned || session.status == .missed else { continue }
+        let sameDayLogs = (logsBySessionId[session.id] ?? []).filter {
+            calendar.isDate($0.completedAt, inSameDayAs: session.scheduledDate)
+        }
+        guard let strongestLog = sameDayLogs.max(by: { $0.distanceKm < $1.distanceKm }) else { continue }
+
+        if garminRunCompletionStatus(for: session, actualDistanceKm: strongestLog.distanceKm) != nil,
+           availableRanks.isEmpty {
+            let rank = RankState()
+            modelContext.insert(rank)
+            availableRanks = [rank]
+        }
+
+        let completionStatus = try completeRunFromGarmin(
+            session: session,
+            log: strongestLog,
+            ranks: availableRanks,
+            in: modelContext
+        )
+
+        switch completionStatus {
+        case .some(.completed):
+            result.completedRuns += 1
+        case .some(.partial):
+            result.partialRuns += 1
+        default:
+            break
+        }
+
+        for log in sameDayLogs where completionStatus == nil || log.id != strongestLog.id {
+            log.sessionId = RunLog.unattachedSessionId
+            log.needsConfirmation = false
+            result.detachedLogs += 1
+        }
+    }
+
+    return result
+}
+
 /// Ingests synced Garmin running activities. An activity landing on the same
 /// calendar day as a planned — or already auto-missed — running session
 /// becomes the session's source-of-truth completion or partial completion
@@ -335,6 +420,14 @@ func matchGarminActivities(
     in modelContext: ModelContext,
     calendar: Calendar = .current
 ) throws -> GarminActivityIngest {
+    let ranks = try modelContext.fetch(FetchDescriptor<RankState>())
+    let reconciliation = try reconcileAttachedGarminRunLogs(
+        sessions: sessions,
+        runLogs: existingRunLogs,
+        ranks: ranks,
+        in: modelContext,
+        calendar: calendar
+    )
     let existingGarminRunLogs = existingRunLogs.filter { $0.source == .garmin }
     var existingLogsByActivityId: [String: RunLog] = [:]
     for log in existingGarminRunLogs where !log.garminActivityId.isEmpty {
@@ -352,6 +445,8 @@ func matchGarminActivities(
             .map(\.sessionId)
     )
     var ingest = GarminActivityIngest()
+    ingest.completedRuns = reconciliation.completedRuns
+    ingest.partialRuns = reconciliation.partialRuns
 
     for activity in activities {
         // The proxy only forwards running activities; this is a defensive check.
@@ -370,8 +465,16 @@ func matchGarminActivities(
             calendar.isDate($0.scheduledDate, inSameDayAs: startTime) &&
             garminRunCompletionStatus(for: $0, actualDistanceKm: activity.distanceKm) != nil
         }
-        let session = candidates.min(by: {
-            abs($0.plannedDistanceKm - activity.distanceKm) < abs($1.plannedDistanceKm - activity.distanceKm)
+        let session = candidates.min(by: { lhs, rhs in
+            let lhsSynced = isSyncedGarminPlannedRun(lhs)
+            let rhsSynced = isSyncedGarminPlannedRun(rhs)
+            if lhsSynced != rhsSynced { return lhsSynced }
+
+            let lhsDistanceDelta = abs(lhs.plannedDistanceKm - activity.distanceKm)
+            let rhsDistanceDelta = abs(rhs.plannedDistanceKm - activity.distanceKm)
+            if lhsDistanceDelta != rhsDistanceDelta { return lhsDistanceDelta < rhsDistanceDelta }
+
+            return lhs.scheduledDate < rhs.scheduledDate
         })
 
         if existingLog != nil && session == nil {
@@ -420,6 +523,10 @@ func matchGarminActivities(
 
 private func isReplaceablePreviewRunLog(_ log: RunLog) -> Bool {
     log.garminActivityId.hasPrefix("preview-")
+}
+
+private func isSyncedGarminPlannedRun(_ session: WorkoutSession) -> Bool {
+    session.garminSyncStatus == .synced || !session.garminWorkoutId.isEmpty || session.pushedToGarminAt != nil
 }
 
 func confirmedGarminRunLogs(from logs: [RunLog]) -> [RunLog] {
@@ -579,6 +686,11 @@ func persist(
 
     let sessionPlans = maxSessions.map { Array(plan.sessions.prefix($0)) } ?? plan.sessions
     for sessionPlan in sessionPlans {
+        guard shouldPersistGeneratedSession(
+            scheduledDate: sessionPlan.date,
+            replacingFuturePlannedSessions: replacingFuturePlannedSessions
+        ) else { continue }
+
         let estimatedDurationMinutes = sessionPlan.estimatedDurationMinutes > 0
             ? sessionPlan.estimatedDurationMinutes
             : estimatedWorkoutDurationMinutes(for: sessionPlan.blocks)
@@ -635,6 +747,12 @@ func persist(
     let start = calendar.startOfDay(for: weekStart)
     for run in runningWeek.sessions {
         let date = calendar.date(byAdding: .day, value: run.dayOffset, to: start) ?? start
+        guard shouldPersistGeneratedSession(
+            scheduledDate: date,
+            replacingFuturePlannedSessions: replacingFuturePlannedSessions,
+            calendar: calendar
+        ) else { continue }
+
         let session = WorkoutSession(
             scheduledDate: date,
             title: run.title,
@@ -654,6 +772,17 @@ func persist(
         modelContext.insert(session)
     }
     return stalePushedGarminIds
+}
+
+private func shouldPersistGeneratedSession(
+    scheduledDate: Date,
+    replacingFuturePlannedSessions: Bool,
+    calendar: Calendar = .current
+) -> Bool {
+    guard replacingFuturePlannedSessions else { return true }
+    let today = calendar.startOfDay(for: Date())
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+    return calendar.startOfDay(for: scheduledDate) >= tomorrow
 }
 
 @discardableResult
@@ -689,13 +818,18 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
     let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
     let today = calendar.startOfDay(for: Date())
     let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-
     let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+    let hasCompletedTrainingToday = sessions.contains { session in
+        calendar.isDate(session.scheduledDate, inSameDayAs: today) &&
+        (session.status == .completed || session.status == .partial || session.status == .deload)
+    }
+    let replacementCutoff = hasCompletedTrainingToday ? today : tomorrow
+
     let sessionsToDelete = sessions.filter {
         $0.status == .planned &&
         $0.scheduledDate >= start &&
         $0.scheduledDate < end &&
-        $0.scheduledDate >= tomorrow &&
+        $0.scheduledDate >= replacementCutoff &&
         (discipline == nil || $0.discipline == discipline)
     }
 
@@ -721,6 +855,7 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
 }
 
 func wipeAllData(in modelContext: ModelContext) throws {
+    try deleteAll(CoachChatMessage.self, in: modelContext)
     try deleteAll(CoachVerdict.self, in: modelContext)
     try deleteAll(CoachDecision.self, in: modelContext)
     try deleteAll(CoachPlan.self, in: modelContext)

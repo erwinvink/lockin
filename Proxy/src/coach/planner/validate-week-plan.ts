@@ -58,11 +58,19 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     return { accepted: false, messages: ["Plan sessions is missing or not an array."] };
   }
 
+  const hasSelectedTrainingDays = context.profile.trainingDays.length > 0;
   const allowedTrainingOffsets = new Set(context.profile.trainingDayOffsets);
-  const expectedSessionCount = allowedTrainingOffsets.size > 0 ? allowedTrainingOffsets.size : context.profile.weeklySessions;
+  const maximumSessionCount = hasSelectedTrainingDays
+    ? Math.min(context.profile.weeklySessions, allowedTrainingOffsets.size)
+    : context.profile.weeklySessions;
+  const hasSafetyFlags = Array.isArray(plan.safetyFlags) && plan.safetyFlags.length > 0;
 
-  if (plan.sessions.length !== expectedSessionCount) {
-    messages.push(`Expected ${expectedSessionCount} sessions, got ${plan.sessions.length}.`);
+  if (plan.sessions.length > maximumSessionCount) {
+    messages.push(`Expected no more than ${maximumSessionCount} future sessions, got ${plan.sessions.length}.`);
+  }
+
+  if (maximumSessionCount > 0 && plan.sessions.length === 0 && !hasSafetyFlags) {
+    messages.push("Plan includes no future strength sessions, so safetyFlags must explain why.");
   }
 
   let previousDayOffset = -1;
@@ -133,7 +141,7 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     }
 
     if (typeof dayOffset === "number" && Number.isInteger(dayOffset)) {
-      if (allowedTrainingOffsets.size > 0 && dayOffset >= 1 && dayOffset <= 6 && !allowedTrainingOffsets.has(dayOffset)) {
+      if (hasSelectedTrainingDays && dayOffset >= 1 && dayOffset <= 6 && !allowedTrainingOffsets.has(dayOffset)) {
         messages.push(`Session ${sessionIndex + 1} dayOffset ${dayOffset} is not one of the selected future training days.`);
       }
       if (dayOffset <= previousDayOffset) {

@@ -57,6 +57,19 @@ struct AppShellView: View {
         let retainedSessions = sessions.filter { $0.status != .planned || $0.summary.hasPrefix("AI:") }
         _ = try? deleteNonAIPlannedSessions(from: sessions, in: modelContext)
         let runLogs = (try? modelContext.fetch(FetchDescriptor<RunLog>())) ?? []
+        do {
+            let reconciliation = try reconcileAttachedGarminRunLogs(
+                sessions: retainedSessions,
+                runLogs: runLogs,
+                ranks: ranks,
+                in: modelContext
+            )
+            if reconciliation.changedCount > 0 {
+                try modelContext.save()
+            }
+        } catch {
+            modelContext.rollback()
+        }
         _ = try? markOverduePlannedSessionsMissed(
             from: retainedSessions,
             runLogs: runLogs,

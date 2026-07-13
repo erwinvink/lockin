@@ -13,6 +13,7 @@ import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
 import { validateRunningWeek } from "./coach/planner/validate-running-week";
 import { validateCombinedWeek } from "./coach/planner/validate-combined-week";
 import { evaluateCoachRead } from "./coach/planner/evaluate-coach-read";
+import { normalizeCoachVerdict } from "./coach/planner/normalize-coach-verdict";
 import type { CoachContext, CoachEvaluation, CoachRequest, CoachSnapshot, CoachVerdict, RunningWeek, WeeklyPlan } from "./coach/planner/types";
 import type { TrainingSignals } from "./coach/planner/compute-training-signals";
 import {
@@ -25,6 +26,7 @@ import {
   type AutoPlanSource,
   type AutoPlanTrigger
 } from "./coach/auto-plan";
+import { buildCoachChatResponse, normalizeCoachChatMessages, type CoachChatMessage } from "./coach/chat";
 import { connectGarmin, deleteWorkouts, disconnectGarmin, garminSnapshot, garminStatus, pushWorkouts } from "./garmin/garmin-client";
 import { GarminSyncInputError, getGarminSyncStatus, retryGarminSync, submitGarminSyncPlan } from "./garmin/garmin-sync";
 import { GarminSyncStore } from "./garmin/garmin-sync-store";
@@ -117,6 +119,22 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       writeJSON(res, 200, normalizeCoachVerdict(generated.verdict, context, evaluation));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/coach-chat") {
+      const chatPayload = parseCoachChatPayload(JSON.parse(await readBody(req)));
+      const payload = chatPayload.request;
+
+      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const trainingSignals = computeTrainingSignals(context);
+      const evaluation = evaluateCoachRead(context, trainingSignals);
+      writeJSON(res, 200, buildCoachChatResponse({
+        messages: chatPayload.messages,
+        context,
+        signals: trainingSignals,
+        evaluation
+      }));
       return;
     }
 
@@ -1017,7 +1035,7 @@ async function generateCoachVerdict(
           "Pick exactly ONE actionable next step — the single highest-leverage lever right now. More than one ask dilutes all of them.",
           "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work and coachContext.plannedWork.todaySessions is not empty, gate today's intensity rather than rewriting the week. When todaySessions is empty, say there is no training today and make nextStep about rest, syncing data, or the next planned session.",
           "If there are no completed training logs or runs, say that you only know the starting profile and goals.",
-          "If the latest session raises pain, very poor feel, overreaching, or progress concerns, recommend updating the week.",
+          "If coachEvaluation says the week should update because of pain, very poor feel, overreaching, or progress concerns, explain the training reason without telling the athlete to request, generate, refresh, or update a plan.",
           "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, internal systems, or variable names.",
           "Never write snake_case, camelCase, raw field names, or code-like labels such as averageDeltaLast5, abovePlanBy2Count, maxPain, recent_pain_level_4_or_higher, or recent_effort_above_plan.",
           "watchItems must contain short human phrases only, for example 'Pain reached 4/10 recently' or 'Effort has been higher than planned'. Do not put raw flags in watchItems.",
@@ -1081,20 +1099,23 @@ function buildCoachPromptPayload(
   repair?: RepairInput,
   plannedRuns?: PlannedRunSummary[]
 ): Record<string, unknown> {
-  const hasSelectedOffsets = context.profile.trainingDayOffsets.length > 0;
+  const hasSelectedTrainingDays = context.profile.trainingDays.length > 0;
+  const maxFutureStrengthSessions = hasSelectedTrainingDays
+    ? Math.min(context.profile.weeklySessions, context.profile.trainingDayOffsets.length)
+    : context.profile.weeklySessions;
   const outputRules: Record<string, unknown> = {
     todayIsLocked: true,
     selectedTrainingDays: context.profile.trainingDays,
     allowedDayOffsets: context.profile.trainingDayOffsets,
-    selectedFutureTrainingDayCount: hasSelectedOffsets ? context.profile.trainingDayOffsets.length : null,
+    maxFutureStrengthSessions,
     plannedEffort:
       "Every session and exercise must include plannedEffort. These labels are shown in the app before training, so light must mean intentionally light, hard must mean real goal stimulus, and max_output must only be used for a deliberate test.",
     coachTemperament: disciplineCoachTemperament,
     progression:
       "Use coachContext.plannedWork.recentGoalTargets. If clean recent training has repeated the same pull-up, push-up, or plank target, the next normal plan must visibly progress that metric by increasing reps, hold time, sets, or another single stress variable unless safetyFlags explain why not.",
-    scheduling: hasSelectedOffsets
-      ? "Schedule exactly one strength session on each selected future training day. Use only allowedDayOffsets and treat all other offsets as rest days. Never schedule dayOffset 0 because today is locked."
-      : "Schedule exactly the requested number of strength sessions across dayOffset 1 through 6. Never schedule dayOffset 0 because today is locked."
+    scheduling: hasSelectedTrainingDays
+      ? "Use allowedDayOffsets as availability, not a quota. Schedule no more than maxFutureStrengthSessions strength sessions, and schedule fewer when recovery, running load, safety, or a week already in progress makes that better. Treat all other offsets as rest days. If allowedDayOffsets is empty, return zero strength sessions and explain the current week is already underway. Never schedule dayOffset 0 because today is locked."
+      : "Schedule no more than maxFutureStrengthSessions strength sessions across dayOffset 1 through 6. Schedule fewer when recovery or safety requires it. Never schedule dayOffset 0 because today is locked."
   };
 
   if (plannedRuns) {
@@ -1123,91 +1144,6 @@ function buildCoachPromptPayload(
   };
 }
 
-function normalizeCoachVerdict(
-  verdict: CoachVerdict,
-  context: CoachContext,
-  evaluation: CoachEvaluation & { snapshot: CoachSnapshot }
-): CoachVerdict {
-  const noPlannedSessions = context.adherence.planned === 0;
-  const shouldUpdateForReadiness = context.readiness.state === "recovery_needed" || context.readiness.state === "overreaching";
-  const shouldUpdateForFlatProgression = flatGoalMetricsRequiringProgression(context).length > 0;
-  const summary = athleteFacingText(verdict.summary);
-  const latestChange = athleteFacingText(verdict.latestChange);
-  const recommendation = athleteFacingText(verdict.recommendation);
-  const nextStep = athleteFacingText(verdict.nextStep || recommendation);
-
-  return {
-    ...verdict,
-    headline: athleteFacingText(verdict.headline),
-    summary,
-    latestChange,
-    recommendation,
-    runningRead: athleteFacingText(verdict.runningRead || latestChange),
-    strengthRead: athleteFacingText(verdict.strengthRead || recommendation),
-    nextStep: athleteFacingText(evaluation.nextAction || nextStep),
-    watchItems: humanWatchItems(verdict.watchItems, [...context.readiness.riskFlags, ...verdict.safetyFlags]),
-    contextState: context.readiness.state,
-    shouldUpdatePlan:
-      evaluation.planDecision.shouldUpdatePlan ||
-      verdict.shouldUpdatePlan ||
-      noPlannedSessions ||
-      shouldUpdateForReadiness ||
-      shouldUpdateForFlatProgression,
-    evaluation,
-    snapshot: evaluation.snapshot
-  };
-}
-
-function athleteFacingText(text: string | undefined): string {
-  if (!text) return "";
-  return text
-    .replaceAll("averageDeltaLast5", "recent effort trend")
-    .replaceAll("abovePlanBy2Count", "sessions harder than planned")
-    .replaceAll("maxPain", "highest pain")
-    .replaceAll("rpe", "RPE")
-    .replaceAll("RPE RPE", "RPE")
-    .replaceAll("recent_pain_level_4_or_higher", "pain reached 4/10 recently")
-    .replaceAll("recent_effort_above_plan", "effort has been higher than planned")
-    .replaceAll("_", " ")
-    .trim();
-}
-
-function humanWatchItems(items: string[] | undefined, flags: string[]): string[] {
-  const combined = [
-    ...(items ?? []).map(athleteFacingText),
-    ...flags.map(humanizeReadinessFlag)
-  ]
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return [...new Set(combined)].slice(0, 3);
-}
-
-function humanizeReadinessFlag(flag: string): string {
-  switch (flag) {
-    case "recent_pain_level_4_or_higher":
-      return "Pain reached 4/10 recently";
-    case "recent_how_you_felt_very_weak":
-      return "Recent session feedback was very weak";
-    case "repeated_high_perceived_effort":
-      return "Several recent sessions were very hard";
-    case "recent_effort_above_plan":
-      return "Effort has been higher than planned";
-    case "last_full_month_pain_flag":
-      return "Pain has shown up across the month";
-    case "last_full_month_how_you_felt_very_weak":
-      return "Fatigue has been high this month";
-    case "low_last_full_month_training_count":
-      return "Training consistency was low last month";
-    case "sudden_monthly_volume_increase":
-      return "Training volume jumped recently";
-    case "insufficient_training_history":
-      return "Not enough recent training history yet";
-    default:
-      return athleteFacingText(flag)
-        .replace(/\b\w/g, (letter) => letter.toUpperCase());
-  }
-}
-
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -1232,6 +1168,39 @@ function parseSinceDays(rawURL: string): number {
 
 function queryValue(rawURL: string, name: string): string {
   return new URL(rawURL, "http://localhost").searchParams.get(name)?.trim() ?? "";
+}
+
+function parseCoachChatPayload(value: unknown): { request: CoachRequest; messages: CoachChatMessage[] } {
+  if (!isRecord(value) || !isRecord(value.request)) {
+    throw new Error("request object is required");
+  }
+  if (!Array.isArray(value.messages)) {
+    throw new Error("messages array is required");
+  }
+
+  const messages: CoachChatMessage[] = value.messages.map((message): CoachChatMessage => {
+    if (!isRecord(message)) {
+      throw new Error("each chat message must be an object");
+    }
+    const role = cleanString(message.role);
+    if (role !== "user" && role !== "coach") {
+      throw new Error("chat message role must be user or coach");
+    }
+    const text = cleanString(message.text);
+    if (!text) {
+      throw new Error("chat message text is required");
+    }
+    return {
+      role,
+      text,
+      createdAt: cleanString(message.createdAt) || undefined
+    };
+  });
+
+  return {
+    request: value.request as CoachRequest,
+    messages: normalizeCoachChatMessages(messages)
+  };
 }
 
 function autoPlanSource(value: unknown): AutoPlanSource {
@@ -1279,7 +1248,13 @@ function isClientInputError(error: unknown): error is Error {
   return [
     "source must be",
     "request object is required",
-    "request.userId is required"
+    "request.userId is required",
+    "messages array is required",
+    "at least one user chat message is required",
+    "chat message role must be",
+    "chat message text must be",
+    "chat message text is required",
+    "each chat message must be"
   ].some((message) => error.message.includes(message));
 }
 

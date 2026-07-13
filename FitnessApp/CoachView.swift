@@ -16,6 +16,7 @@ struct CoachView: View {
     @State private var generationStatus: String?
     @State private var isGeneratingPlan = false
     @State private var isAdvancedExpanded = false
+    @State private var selectedSection: CoachSection = .read
 
     var profile: UserProfile
 
@@ -37,36 +38,55 @@ struct CoachView: View {
 
     var body: some View {
         NavigationStack {
-            // The inline navigation bar already says "Coach" — no second title.
-            ScreenBackground {
-                CoachVerdictCard(
-                    verdict: latestVerdict,
-                    latestPlan: latestPlan,
-                    profile: profile,
-                    raceGoal: raceGoals.first,
-                    historyCount: historyLogs.count
-                )
+            VStack(spacing: 0) {
+                Picker("Coach view", selection: $selectedSection) {
+                    ForEach(CoachSection.allCases) { section in
+                        Text(section.title).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, AppTheme.screenMargin)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
+                .background(AppTheme.background)
+                .accessibilityIdentifier("coach-section-picker")
 
-                PlanAutomationCard(
-                    latestPlan: latestPlan,
-                    isGenerating: isGeneratingPlan,
-                    status: generationStatus,
-                    onRegeneratePlan: generateAIWeek
-                )
+                if selectedSection == .read {
+                    // The inline navigation bar already says "Coach" — no second title.
+                    ScreenBackground {
+                        CoachVerdictCard(
+                            verdict: latestVerdict,
+                            latestPlan: latestPlan,
+                            profile: profile,
+                            raceGoal: raceGoals.first,
+                            historyCount: historyLogs.count
+                        )
 
-                AdvancedCoachControls(
-                    endpoint: endpoint,
-                    selectedModelID: $selectedModelID,
-                    isExpanded: $isAdvancedExpanded,
-                    profile: profile,
-                    historyCount: historyLogs.count,
-                    plannedCount: plannedContextSessions.count,
-                    raceGoal: raceGoals.first,
-                    isGeneratingPlan: isGeneratingPlan,
-                    generationStatus: generationStatus,
-                    onRegeneratePlan: generateAIWeek
-                )
+                        PlanAutomationCard(
+                            latestPlan: latestPlan,
+                            isGenerating: isGeneratingPlan,
+                            status: generationStatus,
+                            onRegeneratePlan: generateAIWeek
+                        )
+
+                        AdvancedCoachControls(
+                            endpoint: endpoint,
+                            selectedModelID: $selectedModelID,
+                            isExpanded: $isAdvancedExpanded,
+                            profile: profile,
+                            historyCount: historyLogs.count,
+                            plannedCount: plannedContextSessions.count,
+                            raceGoal: raceGoals.first,
+                            isGeneratingPlan: isGeneratingPlan,
+                            generationStatus: generationStatus,
+                            onRegeneratePlan: generateAIWeek
+                        )
+                    }
+                } else {
+                    CoachChatView(profile: profile)
+                }
             }
+            .background(AppTheme.background.ignoresSafeArea())
             .navigationTitle("Coach")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -124,6 +144,20 @@ struct CoachView: View {
         }
     }
 
+}
+
+private enum CoachSection: String, CaseIterable, Identifiable {
+    case read
+    case chat
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .read: "Read"
+        case .chat: "Chat"
+        }
+    }
 }
 
 private struct CoachVerdictCard: View {

@@ -31,6 +31,7 @@
 		AA000000000000000000011C /* CoachView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000238 /* CoachView.swift */; };
 		AA000000000000000000011D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000239 /* SettingsView.swift */; };
 		AA000000000000000000011E /* LogWorkoutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023A /* LogWorkoutView.swift */; };
+		AA000000000000000000011F /* CoachChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023B /* CoachChatView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -79,6 +80,7 @@
 		AA0000000000000000000238 /* CoachView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000239 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA000000000000000000023A /* LogWorkoutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogWorkoutView.swift; sourceTree = "<group>"; };
+		AA000000000000000000023B /* CoachChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachChatView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -136,6 +138,7 @@
 				AA0000000000000000000236 /* CalendarView.swift */,
 				AA0000000000000000000237 /* ProgressView.swift */,
 				AA0000000000000000000238 /* CoachView.swift */,
+				AA000000000000000000023B /* CoachChatView.swift */,
 				AA0000000000000000000239 /* SettingsView.swift */,
 				AA000000000000000000023A /* LogWorkoutView.swift */,
 				AA0000000000000000000209 /* Assets.xcassets */,
@@ -318,6 +321,7 @@
 				AA000000000000000000011A /* CalendarView.swift in Sources */,
 				AA000000000000000000011B /* ProgressView.swift in Sources */,
 				AA000000000000000000011C /* CoachView.swift in Sources */,
+				AA000000000000000000011F /* CoachChatView.swift in Sources */,
 				AA000000000000000000011D /* SettingsView.swift in Sources */,
 				AA000000000000000000011E /* LogWorkoutView.swift in Sources */,
 			);
@@ -593,7 +597,8 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FitnessAppUITests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -614,7 +619,8 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FitnessAppUITests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

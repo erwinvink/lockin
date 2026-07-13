@@ -212,6 +212,63 @@ test("rejects sessions outside selected future training day offsets", () => {
   assert.ok(result.messages.some((message) => message.includes("selected future training days")));
 });
 
+test("accepts fewer strength sessions than selected future training day offsets", () => {
+  const plan = balancedPlan();
+  plan.sessions = [
+    mixedSession("Monday work", 1),
+    mixedSession("Wednesday work", 3)
+  ];
+  const context: CoachContext = {
+    ...baseContext,
+    profile: {
+      ...baseContext.profile,
+      weeklySessions: 4,
+      trainingDays: ["monday", "wednesday", "friday", "saturday"],
+      trainingDayOffsets: [1, 3, 5, 6]
+    }
+  };
+
+  const result = validateWeeklyPlan(plan, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("rejects more strength sessions than selected future training day offsets", () => {
+  const plan = balancedPlan();
+  const context: CoachContext = {
+    ...baseContext,
+    profile: {
+      ...baseContext.profile,
+      weeklySessions: 4,
+      trainingDays: ["friday", "saturday"],
+      trainingDayOffsets: [5, 6]
+    }
+  };
+
+  const result = validateWeeklyPlan(plan, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("no more than 2 future sessions")));
+});
+
+test("accepts an empty plan when explicit training days have no future offsets", () => {
+  const plan = balancedPlan();
+  plan.sessions = [];
+  const context: CoachContext = {
+    ...baseContext,
+    profile: {
+      ...baseContext.profile,
+      weeklySessions: 4,
+      trainingDays: ["monday", "wednesday", "friday", "saturday"],
+      trainingDayOffsets: []
+    }
+  };
+
+  const result = validateWeeklyPlan(plan, context);
+
+  assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
 test("rejects non-renderable exercise values", () => {
   const plan = balancedPlan();
   plan.sessions[0].exercises[0] = { ...plan.sessions[0].exercises[0], sets: 0, reps: -1 };

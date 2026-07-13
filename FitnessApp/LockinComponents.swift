@@ -423,10 +423,10 @@ struct WeekPlanRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 12) {
-                Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated))
+                Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(AppTheme.muted)
-                    .frame(width: 34, alignment: .leading)
+                    .frame(width: 76, alignment: .leading)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(session.title)
                         .font(.subheadline.weight(.medium))

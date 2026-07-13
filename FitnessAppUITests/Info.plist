@@ -4,8 +4,6 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
-	<key>CFBundleDisplayName</key>
-	<string>lockin</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -22,31 +20,5 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>CoachProxyEndpoint</key>
 	<string>$(COACH_PROXY_ENDPOINT)</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoadsInLocalNetworking</key>
-		<true/>
-	</dict>
-	<key>NSHumanReadableCopyright</key>
-	<string></string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>lockin connects to your local AI coach proxy when you use a Mac IP address.</string>
-	<key>UIApplicationSceneManifest</key>
-	<dict>
-		<key>UIApplicationSupportsMultipleScenes</key>
-		<true/>
-		<key>UISceneConfigurations</key>
-		<dict/>
-	</dict>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UISupportedInterfaceOrientations~iphone</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-	</array>
 </dict>
 </plist>
