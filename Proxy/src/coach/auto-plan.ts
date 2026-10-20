@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { localDateParts, validTimeZone, zonedDateTimeToUTC } from "./local-time";
 import { buildCoachContext } from "./planner/build-coach-context";
 import type { CoachRequest, RunningWeek, WeeklyPlan } from "./planner/types";
 
@@ -61,6 +62,8 @@ export type AutoPlanTrigger = {
   force?: boolean;
   reason?: string;
   timeZone?: string;
+  /** A scheduled retry of a failed plan: it uses up the same retry budget. */
+  retry?: boolean;
 };
 
 export type AutoPlanDecision = {
@@ -104,19 +107,31 @@ export class AutoPlanStore {
   ) {}
 
   async read(): Promise<AutoPlanStateFile> {
+    let raw: string;
     try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Partial<AutoPlanStateFile>;
-      if (parsed.version !== 1 || typeof parsed.users !== "object" || parsed.users === null) {
-        return emptyAutoPlanState();
-      }
-      return { version: 1, users: parsed.users as Record<string, AutoPlanUserState> };
+      raw = await readFile(this.filePath, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return emptyAutoPlanState();
       }
       throw error;
     }
+
+    let parsed: Partial<AutoPlanStateFile>;
+    try {
+      parsed = JSON.parse(raw) as Partial<AutoPlanStateFile>;
+    } catch {
+      // A partial write (disk full, crash) must not wedge planning forever:
+      // move it aside once for inspection and start from an empty state.
+      const backupPath = `${this.filePath}.corrupt-${Date.now()}`;
+      await rename(this.filePath, backupPath).catch(() => undefined);
+      console.error(`Auto-plan state file was not valid JSON; moved it to ${backupPath} and started empty.`);
+      return emptyAutoPlanState();
+    }
+    if (parsed.version !== 1 || typeof parsed.users !== "object" || parsed.users === null) {
+      return emptyAutoPlanState();
+    }
+    return { version: 1, users: parsed.users as Record<string, AutoPlanUserState> };
   }
 
   async write(state: AutoPlanStateFile): Promise<void> {
@@ -151,16 +166,85 @@ export class AutoPlanStore {
     }
   }
 
-  async usersDueForNightly(now: Date = this.now()): Promise<AutoPlanUserState[]> {
-    const state = await this.read();
-    return Object.values(state.users).filter((user) => {
-      return Boolean(user.latestRequest) && Boolean(user.nextNightlyRunAt) && Date.parse(user.nextNightlyRunAt ?? "") <= now.getTime();
-    });
-  }
-
   now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+// A generation older than this is treated as interrupted (process restart).
+// A live one makes at most four OpenAI calls (initial + repair for running
+// and strength), each capped at OPENAI_TIMEOUT_MS (5 min by default), so the
+// cutoff stays well above 4 x 5 min.
+const staleGeneratingMs = 30 * 60_000;
+
+export type AutoPlanSchedulerDeps = {
+  store: AutoPlanStore;
+  runTrigger: (trigger: AutoPlanTrigger) => Promise<unknown>;
+  log?: (message: string, error?: unknown) => void;
+};
+
+/**
+ * One scheduler tick: recover generations interrupted by a restart, retry
+ * failed plans whose nextRetryAt has passed, and run due nightly plans.
+ * Never rejects: a broken state file or a failing user is logged and the
+ * next tick tries again.
+ */
+export async function runDueAutoPlans(deps: AutoPlanSchedulerDeps): Promise<void> {
+  const log = deps.log ?? ((message: string, error?: unknown) => console.error(message, error));
+  try {
+    const now = deps.store.now();
+    const state = await deps.store.read();
+    for (const stuck of Object.values(state.users).filter((user) => isStaleGenerating(user, now))) {
+      await deps.store.updateUser(stuck.userId, (user) => {
+        if (isStaleGenerating(user, now)) {
+          markAutoPlanFailed(user, "Automatic planning was interrupted before it finished.", now);
+        }
+      });
+    }
+
+    const users = Object.values((await deps.store.read()).users);
+    for (const user of users) {
+      if (!user.latestRequest || user.status === "generating") {
+        continue;
+      }
+      const retryDue = user.status === "retrying" && isDue(user.nextRetryAt, now);
+      const nightlyDue = isDue(user.nextNightlyRunAt, now);
+      if (!retryDue && !nightlyDue) {
+        continue;
+      }
+      try {
+        await deps.runTrigger(retryDue
+          ? {
+              source: user.lastTriggerSource ?? "nightly",
+              force: true,
+              retry: true,
+              request: refreshRequestForNightly(user.latestRequest, now, user.timeZone),
+              reason: "Retrying automatic planning after a failure.",
+              timeZone: user.timeZone
+            }
+          : {
+              source: "nightly",
+              request: refreshRequestForNightly(user.latestRequest, now, user.timeZone),
+              reason: "Nightly planning window.",
+              timeZone: user.timeZone
+            });
+      } catch (error) {
+        log(`Auto plan failed for ${user.userId}:`, error);
+      }
+    }
+  } catch (error) {
+    log("Auto plan scheduler tick failed:", error);
+  }
+}
+
+function isStaleGenerating(user: AutoPlanUserState, now: Date): boolean {
+  if (user.status !== "generating") return false;
+  const startedAt = Date.parse(user.lastTriggeredAt ?? "");
+  return !Number.isFinite(startedAt) || now.getTime() - startedAt > staleGeneratingMs;
+}
+
+function isDue(at: string | null, now: Date): boolean {
+  return Boolean(at) && Date.parse(at ?? "") <= now.getTime();
 }
 
 export function prepareAutoPlanTrigger(
@@ -176,6 +260,8 @@ export function prepareAutoPlanTrigger(
   const nextNightlyRunAt = nextNightlyRun(now, timeZone).toISOString();
   const source = trigger.source;
   const force = trigger.force === true || source === "manual";
+  // Read before it is moved to the next night, so a missed run can be caught up.
+  const previousNightlyRunAt = user.nextNightlyRunAt;
 
   user.timeZone = timeZone;
   user.latestRequest = request;
@@ -185,7 +271,7 @@ export function prepareAutoPlanTrigger(
   user.lastTriggerReason = cleanString(trigger.reason) || defaultReasonFor(source);
   user.lastTriggeredAt = now.toISOString();
   user.nextNightlyRunAt = nextNightlyRunAt;
-  user.lastError = null;
+  const wasRetrying = user.status === "retrying";
 
   const decision = decideAutoPlan(user, {
     source,
@@ -194,16 +280,27 @@ export function prepareAutoPlanTrigger(
     contextHash,
     trainingHash,
     now,
-    nextNightlyRunAt
+    nextNightlyRunAt,
+    previousNightlyRunAt
   });
 
   if (decision.action === "generate") {
     user.status = "generating";
     user.nextRetryAt = null;
+    user.lastError = null;
+    if (!trigger.retry) {
+      // A new trigger (not a scheduled retry) starts a fresh retry budget.
+      user.failureCount = 0;
+    }
+  } else if (wasRetrying) {
+    // A failed plan is waiting for its retry: queueing or skipping now must
+    // not cancel it.
   } else if (decision.action === "queue") {
+    user.lastError = null;
     user.status = "queued";
     user.nextRetryAt = decision.nextNightlyRunAt;
   } else {
+    user.lastError = null;
     user.status = "skipped";
     user.lastSkippedAt = now.toISOString();
     user.nextRetryAt = null;
@@ -284,6 +381,7 @@ function decideAutoPlan(
     trainingHash: string;
     now: Date;
     nextNightlyRunAt: string;
+    previousNightlyRunAt: string | null;
   }
 ): AutoPlanDecision {
   const base = {
@@ -318,7 +416,7 @@ function decideAutoPlan(
   }
 
   if (input.source === "app_active") {
-    if (user.nextNightlyRunAt && Date.parse(user.nextNightlyRunAt) <= input.now.getTime()) {
+    if (input.previousNightlyRunAt && Date.parse(input.previousNightlyRunAt) <= input.now.getTime()) {
       return { ...base, action: "generate", message: "Catching up the overnight plan refresh." };
     }
     return { ...base, action: "queue", message: "Automatic planning is queued for tonight." };
@@ -426,6 +524,7 @@ export function refreshRequestForNightly(
   return {
     ...request,
     weekStart: localStart.toISOString(),
+    timeZone: validTimeZone(request.timeZone) ?? normalizedZone,
     trainingDayOffsets: strengthOffsets,
     plannedSessions: request.plannedSessions.filter((session) => {
       const scheduled = Date.parse(session.scheduledDate);
@@ -492,50 +591,13 @@ function nextNightlyRun(now: Date, timeZone: string): Date {
   return target;
 }
 
-function zonedDateTimeToUTC(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): Date {
-  let guess = new Date(Date.UTC(year, month - 1, day, hour, minute));
-  for (let index = 0; index < 3; index += 1) {
-    const parts = localDateParts(guess, timeZone);
-    const actual = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
-    const wanted = Date.UTC(year, month - 1, day, hour, minute);
-    guess = new Date(guess.getTime() + (wanted - actual));
-  }
-  return guess;
-}
-
 function localDateKey(date: Date, timeZone: string): string {
   const parts = localDateParts(date, timeZone);
   return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
 }
 
-function localDateParts(date: Date, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number } {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  });
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    hour: Number(parts.hour),
-    minute: Number(parts.minute)
-  };
-}
-
 function normalizedTimeZone(value: string): string {
-  const trimmed = cleanString(value) || "UTC";
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).format(new Date());
-    return trimmed;
-  } catch {
-    return "UTC";
-  }
+  return validTimeZone(value) ?? "UTC";
 }
 
 function stableHash(value: unknown): string {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateRunningWeek } from "./validate-running-week";
+import { runningDayAvailability, validateRunningWeek } from "./validate-running-week";
 import type { CoachContext, RunKind, RunningContext, RunningWeek } from "./types";
 
 const baseRunning: RunningContext = {
@@ -538,7 +538,8 @@ test("still applies ordering, target, negative, jump, and balance checks when no
 });
 
 test("accepts an empty session list when the running week is already underway", () => {
-  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
+  // Saturday-only runner on a Saturday: a selection exists, but no selected day is left this week.
+  const context = contextWith({ runningDays: ["saturday"], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
   const week: RunningWeek = {
     summary: "This running week is already underway; the next full week starts after the coming rest days.",
     safetyFlags: [],
@@ -548,6 +549,61 @@ test("accepts an empty session list when the running week is already underway", 
   const result = validateRunningWeek(week, context);
 
   assert.deepEqual(result, { accepted: true, messages: [] });
+});
+
+test("rejects runs on non-running days when the selected days have no offset left (S6)", () => {
+  const context = contextWith({ runningDays: ["saturday"], runningDayOffsets: [], longRunDay: "saturday", longRunDayOffset: undefined });
+  const week: RunningWeek = {
+    summary: "Runs spread through the week.",
+    safetyFlags: [],
+    sessions: [run("Easy aerobic run", 1, "easy", 8), run("Tempo blocks", 3, "tempo", 10), run("Easy aerobic run", 5, "easy", 8)]
+  };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.messages.filter((message) => message.includes("non-running day")).length, 3);
+});
+
+test("treats an empty running-day selection as unconstrained (S6)", () => {
+  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
+  const week: RunningWeek = {
+    summary: "Steady aerobic week placed freely.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy aerobic run", 1, "easy", 8),
+      run("Tempo blocks", 2, "tempo", 10),
+      run("Long trail run", 4, "long", 22),
+      run("Recovery jog", 6, "recovery", 6)
+    ]
+  };
+
+  assert.deepEqual(validateRunningWeek(week, context), { accepted: true, messages: [] });
+});
+
+test("an unconstrained selection still needs runs this week (S6)", () => {
+  const context = contextWith({ runningDays: [], runningDayOffsets: [], longRunDay: undefined, longRunDayOffset: undefined });
+  const week: RunningWeek = { summary: "Nothing planned.", safetyFlags: [], sessions: [] };
+
+  const result = validateRunningWeek(week, context);
+
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("at least one run")));
+});
+
+test("running-day availability distinguishes no selection from no days left (S6)", () => {
+  assert.deepEqual(
+    runningDayAvailability(contextWith({ runningDays: [], runningDayOffsets: [] })),
+    { unconstrained: true, offsets: [1, 2, 3, 4, 5, 6] }
+  );
+  assert.deepEqual(
+    runningDayAvailability(contextWith({ runningDays: ["saturday"], runningDayOffsets: [] })),
+    { unconstrained: false, offsets: [] }
+  );
+  assert.deepEqual(
+    runningDayAvailability(contextWith({ runningDays: ["tuesday", "thursday"], runningDayOffsets: [1, 3] })),
+    { unconstrained: false, offsets: [1, 3] }
+  );
 });
 
 function contextWith(overrides: Partial<RunningContext>): CoachContext {

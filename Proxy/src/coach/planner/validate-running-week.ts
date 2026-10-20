@@ -5,14 +5,33 @@ export type RunningValidation = { accepted: boolean; messages: string[] };
 const HARD_KINDS = new Set(["long", "tempo", "intervals", "hills"]);
 const RECOVERY_STATES = new Set(["overreaching", "recovery_needed"]);
 
+const ALL_FUTURE_OFFSETS = [1, 2, 3, 4, 5, 6];
+
+/**
+ * Where runs may go this week. A selection exists when the athlete picked any
+ * running day (`runningDays`), even if none of them is left this week: then
+ * the offsets are empty and the week has zero runs. No running days picked at
+ * all means unconstrained: any future day 1 through 6.
+ */
+export function runningDayAvailability(context: CoachContext): { unconstrained: boolean; offsets: number[] } {
+  const running = context.running;
+  const unconstrained = (running?.runningDays ?? []).length === 0;
+  return {
+    unconstrained,
+    offsets: unconstrained ? [...ALL_FUTURE_OFFSETS] : [...(running?.runningDayOffsets ?? [])]
+  };
+}
+
 export function validateRunningWeek(week: RunningWeek, context: CoachContext): RunningValidation {
   const messages: string[] = [];
   const running = context.running;
-  const allowed = running?.runningDayOffsets ?? [];
-  const hasSelectedDays = allowed.length > 0;
+  const availability = runningDayAvailability(context);
+  const allowed = availability.offsets;
+  const hasSelectedDays = !availability.unconstrained;
+  const hasAvailableDays = allowed.length > 0;
   const hasSafetyFlags = week.safetyFlags.length > 0;
 
-  if (hasSelectedDays && week.sessions.length === 0) {
+  if (hasAvailableDays && week.sessions.length === 0) {
     messages.push("Running week must contain at least one run when future running days are available.");
   }
 
@@ -20,7 +39,7 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
     messages.push("Running cannot occupy all six future offsets; leave at least one complete rest day for combined recovery.");
   }
 
-  if (running && hasSelectedDays) {
+  if (running) {
     const frequency = runFrequencyPolicy(running, allowed.length);
     const canReduceFrequency =
       hasSafetyFlags ||

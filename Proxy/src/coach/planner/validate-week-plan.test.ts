@@ -305,6 +305,19 @@ test("accepts an empty plan when explicit training days have no future offsets",
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
+test("accepts a zero-session week even when progression was earned (S7)", () => {
+  // Saturday-only athlete after the Saturday session: nothing is schedulable this week.
+  const plan = balancedPlan();
+  plan.sessions = [];
+  const earned = earnedProgressionContext();
+  const context: CoachContext = {
+    ...earned,
+    profile: { ...earned.profile, trainingDays: ["saturday"], trainingDayOffsets: [] }
+  };
+
+  assert.deepEqual(validateWeeklyPlan(plan, context), { accepted: true, messages: [] });
+});
+
 test("rejects non-renderable exercise values", () => {
   const plan = balancedPlan();
   plan.sessions[0].exercises[0] = { ...plan.sessions[0].exercises[0], sets: 0, reps: -1 };

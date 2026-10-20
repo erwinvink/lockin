@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCoachContext } from "./build-coach-context";
+import { evaluateCoachRead } from "./evaluate-coach-read";
 import type { CoachRequest, RunningRequest, RunSummary, TrainingLog } from "./types";
 
 test("keeps insufficient history when both completed-month and current evidence are sparse", () => {
@@ -299,6 +300,103 @@ test("excludes future sessions from adherence scoring", () => {
   assert.equal(context.adherence.adherenceScorePct, 50);
 });
 
+test("today's session at local midnight is pending, not due, all day (S4)", () => {
+  // Amsterdam, Sunday 28 June 08:00. The app stores sessions at local midnight.
+  const request = baseRequest({
+    weekStart: "2026-06-27T22:00:00.000Z",
+    timeZone: "Europe/Amsterdam",
+    plannedSessions: [
+      plannedSession("thu", "2026-06-24T22:00:00.000Z", "completed"),
+      plannedSession("fri", "2026-06-25T22:00:00.000Z", "completed"),
+      plannedSession("sat", "2026-06-26T22:00:00.000Z", "completed"),
+      plannedSession("today", "2026-06-27T22:00:00.000Z", "planned"),
+      plannedSession("tomorrow", "2026-06-28T22:00:00.000Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-06-28T06:00:00Z"));
+
+  assert.equal(context.adherence.due, 3);
+  assert.equal(context.adherence.completed, 3);
+  assert.equal(context.adherence.pending, 0);
+  assert.equal(context.adherence.pendingToday, 1);
+  assert.equal(context.adherence.future, 2);
+  assert.equal(context.adherence.adherenceScorePct, 100);
+  assert.deepEqual(context.plannedWork.todaySessions.map((session) => session.id), ["today"]);
+  const evaluation = evaluateCoachRead(context, null);
+  assert.equal(evaluation.adherence.band, "excellent");
+  assert.equal(evaluation.adherence.missedSessions, 0);
+});
+
+test("an unfinished session from before today still counts against adherence (S4)", () => {
+  const request = baseRequest({
+    weekStart: "2026-06-27T22:00:00.000Z",
+    plannedSessions: [
+      plannedSession("sat", "2026-06-26T22:00:00.000Z", "planned"),
+      plannedSession("today", "2026-06-27T22:00:00.000Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-06-28T06:00:00Z"));
+
+  assert.equal(context.adherence.due, 1);
+  assert.equal(context.adherence.pending, 1);
+  assert.equal(context.adherence.pendingToday, 1);
+  assert.equal(context.adherence.adherenceScorePct, 0);
+});
+
+test("a session finished today counts toward adherence right away (S4)", () => {
+  const request = baseRequest({
+    weekStart: "2026-06-27T22:00:00.000Z",
+    timeZone: "Europe/Amsterdam",
+    plannedSessions: [
+      plannedSession("sat", "2026-06-26T22:00:00.000Z", "missed"),
+      plannedSession("today-run", "2026-06-27T22:00:00.000Z", "completed"),
+      plannedSession("today-strength", "2026-06-27T22:00:00.000Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-06-28T10:00:00Z"));
+
+  assert.equal(context.adherence.due, 2);
+  assert.equal(context.adherence.completed, 1);
+  assert.equal(context.adherence.missed, 1);
+  assert.equal(context.adherence.pendingToday, 1);
+  assert.equal(context.adherence.adherenceScorePct, 50);
+});
+
+test("on the spring-forward day tomorrow's session is not today (S15)", () => {
+  // Sunday 28 March 2027 in Amsterdam has 23 hours.
+  const request = baseRequest({
+    weekStart: "2027-03-27T23:00:00.000Z",
+    timeZone: "Europe/Amsterdam",
+    plannedSessions: [
+      plannedSession("sunday", "2027-03-27T23:00:00.000Z", "planned"),
+      plannedSession("monday", "2027-03-28T22:00:00.000Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2027-03-28T08:00:00Z"));
+
+  assert.deepEqual(context.plannedWork.todaySessions.map((session) => session.id), ["sunday"]);
+});
+
+test("on the fall-back day the 25th hour is still today (S15)", () => {
+  // Sunday 25 October 2026 in Amsterdam has 25 hours; 22:30Z is 23:30 local.
+  const request = baseRequest({
+    weekStart: "2026-10-24T22:00:00.000Z",
+    timeZone: "Europe/Amsterdam",
+    plannedSessions: [
+      plannedSession("late", "2026-10-25T22:30:00.000Z", "planned"),
+      plannedSession("monday", "2026-10-25T23:00:00.000Z", "planned")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-10-25T08:00:00Z"));
+
+  assert.deepEqual(context.plannedWork.todaySessions.map((session) => session.id), ["late"]);
+});
+
 test("separates old misses from repeated misses in the latest 14 days", () => {
   const request = baseRequest({
     weekStart: "2026-07-13T00:00:00Z",
@@ -412,7 +510,7 @@ test("leaves running context undefined when the payload has no running request",
 
 function baseRequest(overrides: Partial<CoachRequest> = {}): CoachRequest {
   return {
-    model: "gpt-5-mini",
+    model: "gpt-6.1-sol",
     baseline: { pullUps: 5, pushUps: 20, plankSeconds: 60 },
     goals: { pullUps: 50, pushUps: 100, plankSeconds: 300 },
     profileNotes: "",

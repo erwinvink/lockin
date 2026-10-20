@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { estimateOpenAICostUSD, extractOpenAIUsage, summarizeOpenAIRequestBody } from "./openai-telemetry";
+import { estimateOpenAICostUSD, extractOpenAIUsage, fetchOpenAIResponse, summarizeOpenAIRequestBody } from "./openai-telemetry";
 
 test("extracts Responses API usage including cached and reasoning tokens", () => {
   const usage = extractOpenAIUsage({
@@ -77,4 +77,50 @@ test("summarizes request shape without logging prompt contents", () => {
   assert.equal(summary.schemaName, "weekly_training_plan");
   assert.ok(summary.bodyBytes > summary.systemContentChars + summary.userContentChars);
   assert.ok((summary.schemaBytes ?? 0) > 0);
+});
+
+test("an OpenAI request that never answers times out instead of hanging", { timeout: 2000 }, async (t) => {
+  const previous = process.env.OPENAI_TELEMETRY_DISABLED;
+  process.env.OPENAI_TELEMETRY_DISABLED = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.OPENAI_TELEMETRY_DISABLED;
+    else process.env.OPENAI_TELEMETRY_DISABLED = previous;
+  });
+  let signal: AbortSignal | null | undefined;
+  const hangingFetch: typeof fetch = (_input, init) => {
+    signal = init?.signal;
+    return new Promise<Response>(() => {});
+  };
+
+  const result = await fetchOpenAIResponse(
+    "sk-test",
+    { model: "gpt-6.1-sol", input: [] },
+    { route: "/test", phase: "test", model: "gpt-6.1-sol" },
+    { timeoutMs: 50, fetchImpl: hangingFetch }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? 0 : result.status, 504);
+  assert.match(result.ok ? "" : result.body, /timed out/);
+  assert.equal(signal?.aborted, true);
+});
+
+test("a normal OpenAI answer within the budget is returned", async (t) => {
+  const previous = process.env.OPENAI_TELEMETRY_DISABLED;
+  process.env.OPENAI_TELEMETRY_DISABLED = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.OPENAI_TELEMETRY_DISABLED;
+    else process.env.OPENAI_TELEMETRY_DISABLED = previous;
+  });
+  const okFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({ output_text: "{}" }), { status: 200, headers: { "content-type": "application/json" } });
+
+  const result = await fetchOpenAIResponse(
+    "sk-test",
+    { model: "gpt-6.1-sol", input: [] },
+    { route: "/test", phase: "test", model: "gpt-6.1-sol" },
+    { timeoutMs: 1000, fetchImpl: okFetch }
+  );
+
+  assert.deepEqual(result, { ok: true, status: 200, json: { output_text: "{}" } });
 });

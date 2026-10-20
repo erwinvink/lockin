@@ -61,8 +61,9 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 
 - Today (`dayOffset: 0`) is locked. Never create, replace, or repair a run for today.
 - Never occupy all six future offsets with running; the combined week must retain one day with neither running nor strength.
-- When available future running-day offsets are provided, use only those offsets. Do not create runs on unavailable days.
-- If no future running-day offsets are provided, return an empty `sessions` array and use `summary` to explain that this running week is already underway and the next full week starts after the coming rest days.
+- When the athlete selected running days (`outputRules.unconstrainedRunningDays` is false), use only the offsets in `outputRules.availableDayOffsets`. Do not create runs on unavailable days.
+- If running days are selected but none of them is left this week (`outputRules.availableDayOffsets` is empty), return an empty `sessions` array and use `summary` to explain that this running week is already underway and the next full week starts after the coming rest days.
+- If no running days are selected (`outputRules.unconstrainedRunningDays` is true), any future offset 1 through 6 is available: plan a normal week on the offsets that suit it best, keeping the mandatory rest day.
 - The long run goes on the long-run day when one is provided. When the race itself falls in this week, the race session takes precedence and counts as the long run wherever it lands.
 - No weekly volume jump above 15% week-over-week without a safety flag.
 - Never schedule a long run above 1.4x the recent longest run. Hold the cap and add a safety flag explaining the race-demand pressure instead. The race-day session is exempt from this cap; when the race exceeds recent training distance, add a safety flag saying so.

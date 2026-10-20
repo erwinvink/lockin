@@ -1,4 +1,4 @@
-import type { CoachContext, GarminWellnessDay, RunSummary } from "./types";
+import type { CoachContext, CoachWellnessDay, RunSummary } from "./types";
 
 /**
  * Pre-computed numbers for the coach read. LLMs are unreliable at arithmetic
@@ -164,7 +164,7 @@ function raceSignals(raceDate: string, weeksToRace: number, now: Date): Training
   return { daysToRace: days, weeksToRace, taperStatus };
 }
 
-function wellnessSignals(wellness: GarminWellnessDay[]): TrainingSignals["wellness"] {
+function wellnessSignals(wellness: CoachWellnessDay[]): TrainingSignals["wellness"] {
   const latest = [...wellness]
     .sort((a, b) => a.date.localeCompare(b.date))
     .at(-1);
@@ -184,10 +184,15 @@ function wellnessSignals(wellness: GarminWellnessDay[]): TrainingSignals["wellne
     latestDate: latest.date,
     hrvStatus: status.length > 0 ? status : null,
     hrvGate,
-    sleepScore: latest.sleepScore > 0 ? latest.sleepScore : null,
-    trainingReadiness: latest.trainingReadiness > 0 ? latest.trainingReadiness : null,
-    restingHr: latest.restingHr > 0 ? latest.restingHr : null
+    sleepScore: positiveOrNull(latest.sleepScore),
+    trainingReadiness: positiveOrNull(latest.trainingReadiness),
+    restingHr: positiveOrNull(latest.restingHr)
   };
+}
+
+// 0 (or null) means Garmin had no value: never a real low score.
+function positiveOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && value > 0 ? value : null;
 }
 
 function round1(value: number): number {
