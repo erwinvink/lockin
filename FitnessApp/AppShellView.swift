@@ -6,20 +6,17 @@ struct AppShellView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
-    @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
-    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
-    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     @Query private var ranks: [RankState]
     // Configuration, not state: fixed per build flavor (see LocalCoachClient).
     private let coachEndpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
+    @AppStorage("garminLastSyncAttemptAt") private var garminLastSyncAttemptAt: Double = 0
     @AppStorage("garminConnectionActive") private var garminConnectionActive = false
     @AppStorage("autoPlanLastContextSyncAt") private var autoPlanLastContextSyncAt: Double = 0
     @State private var isSyncingGarmin = false
     @State private var isSyncingAutoPlan = false
 
-    private static let garminSyncInterval: TimeInterval = 30 * 60
     private static let autoPlanContextInterval: TimeInterval = 30 * 60
 
     var profile: UserProfile
@@ -78,66 +75,53 @@ struct AppShellView: View {
             ranks: ranks,
             in: modelContext
         )
+        guard !ProcessInfo.processInfo.arguments.contains("UITesting") else { return }
+        Task { await refreshWorkoutReminders(in: modelContext) }
         syncGarminIfDue()
         syncAutoPlanIfDue()
+        Task {
+            await CoachReadRefresher.refreshIfDue(endpoint: coachEndpoint, profile: profile, modelID: selectedModelID, in: modelContext)
+        }
     }
 
-    /// Pulls the Garmin snapshot at most every 30 minutes. All failures stay
-    /// silent here; Settings surfaces the Garmin status and sync errors
-    /// separately. UI tests run against the in-memory store and must stay
-    /// hermetic: a live sync would pour real account data into seeded state.
+    /// Pulls the Garmin snapshot at most every 30 minutes, backing off 10
+    /// minutes after a failed attempt. It no longer waits for the Profile
+    /// screen to mark Garmin as connected: a logged-out sidecar answers
+    /// `notLoggedIn`, which clears the flag. All failures stay silent here;
+    /// Settings surfaces the Garmin status and sync errors separately. UI
+    /// tests run against the in-memory store and must stay hermetic: a live
+    /// sync would pour real account data into seeded state.
     private func syncGarminIfDue() {
-        guard !ProcessInfo.processInfo.arguments.contains("UITesting") else { return }
-        guard garminConnectionActive else { return }
         guard !isSyncingGarmin else { return }
-        guard Date().timeIntervalSince1970 - garminLastSyncAt > Self.garminSyncInterval else { return }
+        guard shouldAttemptGarminSync(now: Date(), lastSuccessAt: garminLastSyncAt, lastAttemptAt: garminLastSyncAttemptAt) else { return }
 
         isSyncingGarmin = true
+        garminLastSyncAttemptAt = Date().timeIntervalSince1970
         Task {
             defer { isSyncingGarmin = false }
             do {
                 let ingested = try await performGarminSync(endpoint: coachEndpoint, userId: profile.id.uuidString, in: modelContext)
                 garminLastSyncAt = Date().timeIntervalSince1970
+                garminConnectionActive = true
+                await refreshWorkoutReminders(in: modelContext)
                 if ingested.completedRuns > 0 || ingested.partialRuns > 0 || ingested.importedRuns > 0 {
-                    await refreshCoachReadAfterTraining()
+                    await CoachReadRefresher.refresh(endpoint: coachEndpoint, profile: profile, modelID: selectedModelID, in: modelContext)
                 }
+            } catch GarminSyncError.notLoggedIn {
+                garminConnectionActive = false
             } catch {
                 // Swallowed by design: performGarminSync already rolled back
-                // any partial ingest, and the next foreground retries.
+                // any partial ingest, and a later foreground retries.
             }
         }
     }
 
-    private func refreshCoachReadAfterTraining() async {
-        do {
-            let refreshedLogs = try modelContext.fetch(FetchDescriptor<PerformanceLog>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)]))
-            let refreshedSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
-            let refreshedPrescriptions = try modelContext.fetch(FetchDescriptor<SetPrescription>(sortBy: [SortDescriptor(\.orderIndex)]))
-            let refreshedRunLogs = try modelContext.fetch(FetchDescriptor<RunLog>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)]))
-            let refreshedRaceGoal = try modelContext.fetch(FetchDescriptor<RaceGoal>(sortBy: [SortDescriptor(\.createdAt)])).first
-            let request = makeCoachRequest(
-                profile: profile,
-                modelID: selectedModelID,
-                logs: refreshedLogs,
-                sessions: refreshedSessions,
-                prescriptions: refreshedPrescriptions,
-                raceGoal: refreshedRaceGoal,
-                runLogs: refreshedRunLogs,
-                weekStart: rollingPlanStart()
-            )
-            let response = try await LocalCoachClient(endpointString: coachEndpoint).generateVerdict(request: request)
-            modelContext.insert(CoachVerdict(response: response, sourceLogId: nil))
-            try modelContext.save()
-            UserDefaults.standard.set(false, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
-        } catch {
-            UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
-        }
-    }
-
     private func syncAutoPlanIfDue() {
-        guard !ProcessInfo.processInfo.arguments.contains("UITesting") else { return }
         guard !isSyncingAutoPlan else { return }
-        guard Date().timeIntervalSince1970 - autoPlanLastContextSyncAt > Self.autoPlanContextInterval else {
+        let scheduleChanged = PlanRefreshRequest.consume()
+        let profileId = profile.id.uuidString
+        let needsFirstPlan = FirstPlanRequest.shouldForce(profileId: profileId, sessionCount: sessions.count)
+        guard scheduleChanged || needsFirstPlan || Date().timeIntervalSince1970 - autoPlanLastContextSyncAt > Self.autoPlanContextInterval else {
             Task { _ = await AutoPlanCoordinator.applyLatestServerPlan(endpoint: coachEndpoint, profile: profile, in: modelContext) }
             return
         }
@@ -146,24 +130,28 @@ struct AppShellView: View {
         Task {
             defer { isSyncingAutoPlan = false }
             _ = await AutoPlanCoordinator.applyLatestServerPlan(endpoint: coachEndpoint, profile: profile, in: modelContext)
-            let request = makeCoachRequest(
-                profile: profile,
-                modelID: selectedModelID,
-                logs: logs,
-                sessions: sessions,
-                prescriptions: prescriptions,
-                raceGoal: raceGoals.first,
-                runLogs: runLogs,
-                weekStart: rollingPlanStart()
-            )
-            _ = await AutoPlanCoordinator.trigger(
+            // Fetch after the await: the plan just applied may have replaced
+            // the sessions and prescriptions the view's queries still hold.
+            guard let request = try? makeCoachRequestFromStore(profile: profile, modelID: selectedModelID, in: modelContext) else { return }
+            let outcome = await AutoPlanCoordinator.trigger(
                 endpoint: coachEndpoint,
-                source: .appActive,
-                reason: "App refreshed the latest planning context.",
+                source: scheduleChanged ? .manual : .appActive,
+                reason: scheduleChanged
+                    ? "Training days changed."
+                    : needsFirstPlan ? "First plan for a new profile." : "App refreshed the latest planning context.",
+                force: scheduleChanged || needsFirstPlan,
                 request: request,
                 profile: profile,
                 in: modelContext
             )
+            if scheduleChanged, PlanRefreshRequest.shouldRetry(after: outcome) {
+                PlanRefreshRequest.mark()
+            }
+            // One forced first plan per profile once the proxy has answered;
+            // an offline attempt is tried again on the next open.
+            if needsFirstPlan, outcome.reachedProxy {
+                FirstPlanRequest.markRequested(profileId: profileId)
+            }
             autoPlanLastContextSyncAt = Date().timeIntervalSince1970
         }
     }

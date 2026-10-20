@@ -28,6 +28,7 @@ struct FitnessApp: App {
     private let modelContainer: ModelContainer
 
     init() {
+        CoachModelCatalog.migrateStoredSelection()
         do {
             let isUITesting = ProcessInfo.processInfo.arguments.contains("UITesting")
             let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil

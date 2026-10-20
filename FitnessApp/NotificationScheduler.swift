@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import UserNotifications
 
 protocol NotificationScheduling {
@@ -32,22 +33,15 @@ struct WorkoutNotificationScheduler: NotificationScheduling {
 
     func scheduleWorkoutReminders(for sessions: [WorkoutSession], at reminderTime: Date) async {
         clearWorkoutReminders()
-        let now = Date()
-        for session in sessions where session.status == .planned {
-            guard let reminderDate = workoutReminderDate(
-                for: session.scheduledDate,
-                at: reminderTime,
-                now: now
-            ) else { continue }
-
+        for reminder in workoutReminderRequests(for: sessions, at: reminderTime) {
             let content = UNMutableNotificationContent()
-            content.title = "\(session.title) today"
-            content.body = reminderBody(for: session)
+            content.title = reminder.title
+            content.body = reminder.body
             content.sound = .default
 
-            let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: reminderDate)
+            let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: reminder.fireDate)
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
-            let request = UNNotificationRequest(identifier: "workout-\(session.id.uuidString)", content: content, trigger: trigger)
+            let request = UNNotificationRequest(identifier: reminder.identifier, content: content, trigger: trigger)
             try? await center.add(request)
         }
     }
@@ -55,27 +49,68 @@ struct WorkoutNotificationScheduler: NotificationScheduling {
     func clearWorkoutReminders() {
         center.removeAllPendingNotificationRequests()
     }
+}
 
-    /// The reminder names the actual work — "12 km · ~75 min" beats a
-    /// generic nag — and keeps the accountability line.
-    private func reminderBody(for session: WorkoutSession) -> String {
-        var parts: [String] = []
-        if session.isRun {
-            if session.plannedDistanceKm > 0 {
-                parts.append(runDistanceText(km: session.plannedDistanceKm))
-            }
-            if session.plannedElevationM > 0 {
-                parts.append("\(session.plannedElevationM) m+")
-            }
+struct WorkoutReminderRequest: Equatable {
+    var identifier: String
+    var fireDate: Date
+    var title: String
+    var body: String
+}
+
+/// One reminder per training day for the sessions still planned, so a done
+/// session never nags and a double day gets one notification.
+func workoutReminderRequests(
+    for sessions: [WorkoutSession],
+    at reminderTime: Date,
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> [WorkoutReminderRequest] {
+    let planned = sessions.filter { $0.status == .planned }
+    let byDay = Dictionary(grouping: planned) { calendar.startOfDay(for: $0.scheduledDate) }
+    return byDay.keys.sorted().compactMap { day in
+        guard let fireDate = workoutReminderDate(for: day, at: reminderTime, now: now, calendar: calendar) else { return nil }
+        let daySessions = (byDay[day] ?? []).sorted { lhs, rhs in
+            if lhs.isRun != rhs.isRun { return lhs.isRun }
+            return lhs.scheduledDate < rhs.scheduledDate
         }
-        if session.estimatedDurationMinutes > 0 {
-            parts.append("~\(session.estimatedDurationMinutes) min")
-        }
-        let detail = parts.joined(separator: " · ")
-        return detail.isEmpty
-            ? "Skip it and the score pays."
-            : "\(detail) — skip it and the score pays."
+        let details = daySessions.map(reminderDetail(for:)).filter { !$0.isEmpty }.joined(separator: " · ")
+        return WorkoutReminderRequest(
+            identifier: "workout-day-\(Int(day.timeIntervalSince1970))",
+            fireDate: fireDate,
+            title: daySessions.map(\.title).joined(separator: " + ") + " today",
+            body: details.isEmpty ? "Skip it and the score pays." : "\(details) — skip it and the score pays."
+        )
     }
+}
+
+/// The reminder names the actual work — "12 km · ~75 min" beats a generic
+/// nag.
+private func reminderDetail(for session: WorkoutSession) -> String {
+    var parts: [String] = []
+    if session.isRun {
+        if session.plannedDistanceKm > 0 {
+            parts.append(runDistanceText(km: session.plannedDistanceKm))
+        }
+        if session.plannedElevationM > 0 {
+            parts.append("\(session.plannedElevationM) m+")
+        }
+    }
+    if session.estimatedDurationMinutes > 0 {
+        parts.append("~\(session.estimatedDurationMinutes) min")
+    }
+    return parts.joined(separator: " · ")
+}
+
+/// Rebuilds pending reminders from the store after anything that changes
+/// which sessions are still planned (a log, a Garmin completion, a replan).
+@MainActor
+func refreshWorkoutReminders(in modelContext: ModelContext) async {
+    guard let profile = try? modelContext.fetch(FetchDescriptor<UserProfile>(sortBy: [SortDescriptor(\.createdAt)])).first,
+          profile.remindersEnabled,
+          let sessions = try? modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+    else { return }
+    await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: sessions, at: profile.reminderTime)
 }
 
 func workoutReminderDate(

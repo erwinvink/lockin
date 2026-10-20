@@ -9,10 +9,14 @@ enum GarminSyncCoordinator {
     static let watchRetryNote = "Runs are planned but not all on your watch yet. Retry from the Garmin row."
 
     private(set) static var isSyncing = false
+    private static var needsResync = false
+    private static let lastPlanRevisionKey = "garminLastSyncedPlanRevisionId"
 
     /// Sends the desired future running plan to the proxy. The proxy deletes
     /// stale workout ids first, creates only missing/replaced future runs, and
-    /// keeps failed work durable for retry.
+    /// keeps failed work durable for retry. Stale ids are queued on the device
+    /// first, so a sync requested while another one runs is not lost: the
+    /// running sync loops once more and sends them.
     static func syncPlannedRuns(
         endpoint: String,
         userId: String,
@@ -20,32 +24,46 @@ enum GarminSyncCoordinator {
         stalePushedIds: [String],
         in modelContext: ModelContext
     ) async -> String? {
+        let staleQueue = GarminStaleWorkoutQueue()
+        staleQueue.enqueue(stalePushedIds)
+        UserDefaults.standard.set(planRevisionId, forKey: lastPlanRevisionKey)
         guard let client = try? LocalCoachClient(endpointString: endpoint) else { return watchRetryNote }
-        guard !isSyncing else { return nil }
+        guard !isSyncing else {
+            needsResync = true
+            return nil
+        }
 
         isSyncing = true
         defer { isSyncing = false }
 
-        do {
-            let workouts = garminSyncWorkouts(from: try futurePlannedRunsForGarmin(in: modelContext))
-            guard !workouts.isEmpty || !stalePushedIds.isEmpty else {
-                return nil
-            }
+        var message: String?
+        repeat {
+            needsResync = false
+            do {
+                let staleIds = staleQueue.pending
+                let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+                let request = makeGarminSyncPlanRequest(
+                    userId: userId,
+                    planRevisionId: planRevisionId,
+                    staleWorkoutIds: staleIds,
+                    sessions: sessions
+                )
+                guard !request.workouts.isEmpty || !request.staleWorkoutIds.isEmpty else {
+                    continue
+                }
 
-            let response = try await client.syncGarminPlan(GarminSyncPlanRequest(
-                userId: userId,
-                planRevisionId: planRevisionId,
-                staleWorkoutIds: stalePushedIds,
-                workouts: workouts
-            ))
-            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
-            _ = applyGarminSyncResults(response.workouts, to: sessions)
-            try modelContext.save()
-            return response.message
-        } catch {
-            markFutureRunsForSyncRetry(in: modelContext, error: error.localizedDescription)
-            return watchRetryNote
-        }
+                let response = try await client.syncGarminPlan(request)
+                staleQueue.remove(staleIds)
+                let refreshedSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+                _ = applyGarminSyncResults(response.workouts, to: refreshedSessions)
+                try modelContext.save()
+                message = response.message
+            } catch {
+                markFutureRunsForSyncRetry(in: modelContext, error: error.localizedDescription)
+                return watchRetryNote
+            }
+        } while needsResync
+        return message
     }
 
     static func retryFailedSync(
@@ -57,34 +75,29 @@ enum GarminSyncCoordinator {
         guard !isSyncing else { return "Garmin sync is already running." }
 
         isSyncing = true
-        defer { isSyncing = false }
-
+        let message: String
         do {
             let response = try await client.retryGarminSync(userId: userId)
             let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
             _ = applyGarminSyncResults(response.workouts, to: sessions)
             try modelContext.save()
-            return response.message
+            message = response.message
         } catch {
-            return error.localizedDescription
+            message = error.localizedDescription
         }
-    }
+        isSyncing = false
 
-    /// Future planned runs are the proxy's desired state. Today's run is
-    /// excluded: it is locked during replans, so an existing watch workout
-    /// stays valid, and pushing a new one mid-day would land too late anyway.
-    private static func futurePlannedRunsForGarmin(in modelContext: ModelContext) throws -> [WorkoutSession] {
-        let endOfToday = Calendar.current.dateInterval(of: .day, for: Date())?.end ?? Date()
-        let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
-        return sessions.filter {
-            $0.discipline == .running &&
-            $0.status == .planned &&
-            $0.scheduledDate >= endOfToday
+        // A plan applied while the retry ran, or stale ids still queued: push
+        // the current plan now instead of waiting for the next replan.
+        if needsResync || !GarminStaleWorkoutQueue().pending.isEmpty {
+            let revision = UserDefaults.standard.string(forKey: lastPlanRevisionKey) ?? "retry"
+            _ = await syncPlannedRuns(endpoint: endpoint, userId: userId, planRevisionId: revision, stalePushedIds: [], in: modelContext)
         }
+        return message
     }
 
     private static func markFutureRunsForSyncRetry(in modelContext: ModelContext, error: String) {
-        guard let sessions = try? futurePlannedRunsForGarmin(in: modelContext) else { return }
+        guard let sessions = try? futurePlannedRunsForGarmin(from: modelContext.fetch(FetchDescriptor<WorkoutSession>())) else { return }
         let now = Date()
         for session in sessions where session.garminSyncStatus != .synced {
             session.garminSyncStatus = .retrying
@@ -95,9 +108,97 @@ enum GarminSyncCoordinator {
     }
 }
 
+/// Future planned runs are the proxy's desired state. Today's run is
+/// excluded: it is locked during replans, so an existing watch workout stays
+/// valid, and pushing a new one mid-day would land too late anyway. The
+/// request's `lockedThroughDate` tells the proxy not to read today's missing
+/// run as "deleted".
+func futurePlannedRunsForGarmin(from sessions: [WorkoutSession], now: Date = Date(), calendar: Calendar = .current) -> [WorkoutSession] {
+    let endOfToday = calendar.dateInterval(of: .day, for: now)?.end ?? now
+    return sessions
+        .filter { $0.discipline == .running && $0.status == .planned && $0.scheduledDate >= endOfToday }
+        .sorted { $0.scheduledDate < $1.scheduledDate }
+}
+
+func makeGarminSyncPlanRequest(
+    userId: String,
+    planRevisionId: String,
+    staleWorkoutIds: [String],
+    sessions: [WorkoutSession],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> GarminSyncPlanRequest {
+    GarminSyncPlanRequest(
+        userId: userId,
+        planRevisionId: planRevisionId,
+        staleWorkoutIds: staleWorkoutIds,
+        workouts: garminSyncWorkouts(from: futurePlannedRunsForGarmin(from: sessions, now: now, calendar: calendar), calendar: calendar),
+        lockedThroughDate: garminCalendarDateString(now, calendar: calendar)
+    )
+}
+
+private func garminCalendarDateString(_ date: Date, calendar: Calendar) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = calendar
+    formatter.timeZone = calendar.timeZone
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.string(from: date)
+}
+
+/// Garmin workout ids that must be deleted from the watch, kept on the
+/// device until a sync has sent them. Survives app restarts.
+struct GarminStaleWorkoutQueue {
+    static let key = "garminPendingStaleWorkoutIds"
+    var defaults: UserDefaults = .standard
+
+    var pending: [String] {
+        defaults.stringArray(forKey: Self.key) ?? []
+    }
+
+    func enqueue(_ ids: [String]) {
+        var updated = pending
+        for id in ids where !id.isEmpty && !updated.contains(id) {
+            updated.append(id)
+        }
+        defaults.set(updated, forKey: Self.key)
+    }
+
+    func remove(_ ids: [String]) {
+        let sent = Set(ids)
+        defaults.set(pending.filter { !sent.contains($0) }, forKey: Self.key)
+    }
+}
+
+/// What a plan trigger did, for the screen that asked: the message to show
+/// and whether a new plan actually landed on the device.
+struct AutoPlanTriggerOutcome: Equatable {
+    var message: String
+    var appliedNewPlan: Bool
+    /// False when the request never got an answer (offline, busy, bad URL).
+    var reachedProxy: Bool = false
+}
+
+/// A brand-new profile (no sessions at all) gets one forced first plan
+/// instead of waiting for the nightly run. Only once per profile: if that
+/// plan fails or is legitimately empty, later opens use the normal throttle
+/// instead of forcing a new OpenAI generation every time.
+enum FirstPlanRequest {
+    private static func key(_ profileId: String) -> String { "firstPlanRequested.\(profileId)" }
+
+    static func shouldForce(profileId: String, sessionCount: Int, defaults: UserDefaults = .standard) -> Bool {
+        sessionCount == 0 && !defaults.bool(forKey: key(profileId))
+    }
+
+    static func markRequested(profileId: String, defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: key(profileId))
+    }
+}
+
 @MainActor
 enum AutoPlanCoordinator {
     private(set) static var isTriggering = false
+    static let busyMessage = "Planning is already running. Try again in a moment."
 
     static func trigger(
         endpoint: String,
@@ -107,9 +208,16 @@ enum AutoPlanCoordinator {
         request: CoachPlanRequest,
         profile: UserProfile,
         in modelContext: ModelContext
-    ) async -> String? {
-        guard !isTriggering, !GarminSyncCoordinator.isSyncing else { return nil }
-        guard let client = try? LocalCoachClient(endpointString: endpoint) else { return nil }
+    ) async -> AutoPlanTriggerOutcome {
+        guard !isTriggering, !GarminSyncCoordinator.isSyncing else {
+            return AutoPlanTriggerOutcome(message: busyMessage, appliedNewPlan: false)
+        }
+        let client: LocalCoachClient
+        do {
+            client = try LocalCoachClient(endpointString: endpoint)
+        } catch {
+            return AutoPlanTriggerOutcome(message: error.localizedDescription, appliedNewPlan: false)
+        }
 
         isTriggering = true
         defer { isTriggering = false }
@@ -123,11 +231,12 @@ enum AutoPlanCoordinator {
                 request: request
             ))
             if let generatedPlan = response.generatedPlan, response.generated {
-                try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
+                let result = try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
+                return AutoPlanTriggerOutcome(message: result.message ?? response.message, appliedNewPlan: result.applied, reachedProxy: true)
             }
-            return response.message
+            return AutoPlanTriggerOutcome(message: response.message, appliedNewPlan: false, reachedProxy: true)
         } catch {
-            return nil
+            return AutoPlanTriggerOutcome(message: error.localizedDescription, appliedNewPlan: false)
         }
     }
 
@@ -145,8 +254,8 @@ enum AutoPlanCoordinator {
         do {
             let status = try await client.fetchAutoPlanStatus(userId: profile.id.uuidString)
             guard let generatedPlan = status.generatedPlan else { return status.message }
-            try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
-            return status.message
+            let result = try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
+            return result.message ?? status.message
         } catch {
             return nil
         }
@@ -157,8 +266,17 @@ enum AutoPlanCoordinator {
         endpoint: String,
         profile: UserProfile,
         in modelContext: ModelContext
-    ) async throws {
-        guard shouldApply(planRevisionId: generatedPlan.planRevisionId, userId: profile.id.uuidString) else { return }
+    ) async throws -> (applied: Bool, message: String?) {
+        guard shouldApply(planRevisionId: generatedPlan.planRevisionId, userId: profile.id.uuidString) else { return (false, nil) }
+
+        // The proxy validates too, but the device is the last gate before the
+        // athlete's schedule changes: a plan on rest days or today is dropped.
+        let structure = validateGeneratedPlanStructure(generatedPlan, profile: profile)
+        guard structure.status != .rejected else {
+            markApplied(planRevisionId: generatedPlan.planRevisionId, userId: profile.id.uuidString)
+            return (false, "Skipped a coach plan that did not fit your training days: " + structure.messages.joined(separator: " "))
+        }
+
         var stalePushedIds: [String] = []
 
         if let combinedWeek = generatedPlan.combinedWeek {
@@ -176,14 +294,11 @@ enum AutoPlanCoordinator {
                 try persist(plan: plan, in: modelContext, source: .ai, replacingFuturePlannedSessions: true)
             }
         } else {
-            return
+            return (false, nil)
         }
 
         markApplied(planRevisionId: generatedPlan.planRevisionId, userId: profile.id.uuidString)
-        if profile.remindersEnabled {
-            let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
-            await WorkoutNotificationScheduler().scheduleWorkoutReminders(for: sessions, at: profile.reminderTime)
-        }
+        await refreshWorkoutReminders(in: modelContext)
         _ = await GarminSyncCoordinator.syncPlannedRuns(
             endpoint: endpoint,
             userId: profile.id.uuidString,
@@ -191,6 +306,7 @@ enum AutoPlanCoordinator {
             stalePushedIds: stalePushedIds,
             in: modelContext
         )
+        return (true, nil)
     }
 
     private static func saveAtomically(in modelContext: ModelContext, _ mutate: () throws -> Void) throws {
@@ -216,6 +332,48 @@ enum AutoPlanCoordinator {
     }
 }
 
+/// Structural checks on a server plan before it replaces the athlete's
+/// schedule: days 1–6 only (today stays locked), strictly increasing,
+/// strength only on selected training days, runs only on selected running
+/// days (an empty running selection means any day), and known exercises
+/// and run kinds. Coaching quality is the proxy's job.
+func validateGeneratedPlanStructure(
+    _ plan: AutoPlanGeneratedPlan,
+    profile: UserProfile,
+    calendar: Calendar = .current
+) -> PlanValidationResult {
+    var messages: [String] = []
+    let strengthWeek = plan.combinedWeek?.strengthWeek ?? plan.strengthWeek
+    let runningWeek = plan.combinedWeek?.runningWeek ?? plan.runningWeek
+
+    if let strengthWeek {
+        let selectedDays = TrainingWeekday.normalized(profile.trainingDays, weeklySessions: profile.weeklySessions)
+        let allowed = TrainingWeekday.dayOffsets(
+            for: Set(selectedDays),
+            weeklySessions: selectedDays.count,
+            weekStart: plan.weekStart,
+            calendar: calendar
+        ).filter { (1...6).contains($0) }
+        messages += CoachPlanValidator().validateStructure(response: strengthWeek, allowedDayOffsets: allowed).messages
+    }
+
+    if let runningWeek {
+        let allowed = profile.runningDays.isEmpty ? [] : TrainingWeekday.dayOffsets(
+            for: profile.runningDays,
+            weeklySessions: profile.runningDays.count,
+            weekStart: plan.weekStart,
+            calendar: calendar
+        ).filter { (1...6).contains($0) }
+        messages += RunningWeekValidator().validate(
+            response: runningWeek,
+            allowedDayOffsets: allowed,
+            hasSelectedDays: !profile.runningDays.isEmpty
+        ).messages
+    }
+
+    return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
+}
+
 struct CoachPlanRequest: Codable, Equatable {
     var userId: String
     var model: String
@@ -231,6 +389,9 @@ struct CoachPlanRequest: Codable, Equatable {
     var trainingLogs: [CoachLog]
     var plannedSessions: [CoachPlannedSession]
     var running: CoachRunningRequest? = nil
+    /// IANA zone of the athlete, so the proxy can find "today" and "due"
+    /// with local midnights (DST-safe).
+    var timeZone: String? = nil
 }
 
 struct CoachRunningGoal: Codable, Equatable {
@@ -264,12 +425,24 @@ struct CoachRunningRequest: Codable, Equatable {
 }
 
 enum CoachModelCatalog {
-    static let defaultModelID = "gpt-5-mini"
+    static let defaultModelID = "gpt-6.1-sol"
     static let defaultModelIDs = [
         defaultModelID,
-        "gpt-5",
-        "gpt-4.1"
+        "gpt-5.5",
+        "gpt-5-mini"
     ]
+    /// The @AppStorage key holding the athlete's model choice.
+    static let selectedModelKey = "coachModelID"
+    private static let migrationKey = "coachModelMigratedToDefault"
+
+    /// Moves a stored model choice to the current default once per default
+    /// change, so an app update switches the coach to the new model. A pick
+    /// made after the migration is kept.
+    static func migrateStoredSelection(defaults: UserDefaults = .standard) {
+        guard defaults.string(forKey: migrationKey) != defaultModelID else { return }
+        defaults.set(defaultModelID, forKey: selectedModelKey)
+        defaults.set(defaultModelID, forKey: migrationKey)
+    }
 
     static func normalized(_ modelID: String) -> String {
         let trimmed = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -562,6 +735,9 @@ struct GarminWellnessDayResponse: Codable, Equatable {
     var bodyBattery: Int
     var trainingReadiness: Int
     var restingHr: Int
+    /// Metrics the sidecar failed to fetch for this day (their values are
+    /// 0 placeholders). Missing on older proxies.
+    var unavailableMetrics: [String]? = nil
 }
 
 struct GarminActivityResponse: Codable, Equatable {
@@ -658,6 +834,9 @@ struct GarminSyncPlanRequest: Codable, Equatable {
     var planRevisionId: String
     var staleWorkoutIds: [String]
     var workouts: [GarminSyncWorkout]
+    /// The athlete's local today ("yyyy-MM-dd"). The proxy never deletes a
+    /// synced workout dated on or before it just because it was not resent.
+    var lockedThroughDate: String? = nil
 }
 
 struct GarminRetrySyncRequest: Codable, Equatable {
@@ -1160,6 +1339,41 @@ struct CoachPlanValidator {
         return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
     }
 
+    /// The schedule-safety part of `validate`, without the coaching-quality
+    /// rules: offsets 1–6 on allowed days, strictly increasing, no more
+    /// sessions than allowed days, and known focus, exercises and counts.
+    func validateStructure(response: CoachPlanResponse, allowedDayOffsets: [Int]) -> PlanValidationResult {
+        var messages: [String] = []
+        let allowed = Set(allowedDayOffsets)
+        if response.sessions.count > allowed.count {
+            messages.append("AI plan must contain no more than \(allowed.count) future sessions.")
+        }
+        var previousDayOffset = -1
+        for (index, session) in response.sessions.enumerated() {
+            if !(1...6).contains(session.dayOffset) {
+                messages.append("AI session \(index + 1) must have a day offset from 1 through 6; day offset 0 is today and cannot be planned during a refresh.")
+            } else if !allowed.contains(session.dayOffset) {
+                messages.append("AI session \(index + 1) is scheduled on a rest day.")
+            }
+            if session.dayOffset <= previousDayOffset {
+                messages.append("AI sessions must use strictly increasing day offsets.")
+            }
+            previousDayOffset = session.dayOffset
+            if SessionFocus(rawValue: session.focus) == nil {
+                messages.append("AI session \(index + 1) has an unknown focus.")
+            }
+            for exercise in session.exercises {
+                if ExerciseKind(rawValue: exercise.exercise) == nil {
+                    messages.append("AI session \(index + 1) has an unknown exercise.")
+                }
+                if exercise.sets < 1 || exercise.reps < 0 || exercise.seconds < 0 || exercise.restSeconds < 0 {
+                    messages.append("AI session \(index + 1) has an invalid set, rep, hold, or rest value.")
+                }
+            }
+        }
+        return PlanValidationResult(status: messages.isEmpty ? .accepted : .rejected, messages: messages)
+    }
+
     private func validateEffort(
         _ response: CoachPlannedEffortResponse?,
         fallback: PlannedEffort,
@@ -1351,9 +1565,13 @@ struct CoachPlanValidator {
 }
 
 struct RunningWeekValidator {
-    func validate(response: RunningWeekResponse, allowedDayOffsets: [Int]) -> PlanValidationResult {
+    /// `hasSelectedDays` is true when the athlete picked running days; then
+    /// an empty `allowedDayOffsets` (no running day left this week) allows
+    /// no runs at all. Without a selection, any future day is fine.
+    func validate(response: RunningWeekResponse, allowedDayOffsets: [Int], hasSelectedDays: Bool? = nil) -> PlanValidationResult {
         var messages: [String] = []
         let allowed = Set(allowedDayOffsets)
+        let constrained = hasSelectedDays ?? !allowed.isEmpty
         var previousDayOffset = -1
 
         for (index, session) in response.sessions.enumerated() {
@@ -1361,7 +1579,7 @@ struct RunningWeekValidator {
                 messages.append("AI run \(index + 1) must have a day offset from 1 through 6; day offset 0 is today and cannot be planned during a refresh.")
             }
 
-            if !allowed.isEmpty, (1...6).contains(session.dayOffset), !allowed.contains(session.dayOffset) {
+            if constrained, (1...6).contains(session.dayOffset), !allowed.contains(session.dayOffset) {
                 messages.append("AI run \(index + 1) is scheduled on a non-running day.")
             }
 
@@ -1436,6 +1654,123 @@ extension CoachPlanResponse {
 
 enum CoachVerdictRefreshFlag {
     static let needsRefreshKey = "coachVerdictNeedsRefresh"
+    static let lastAttemptKey = "coachVerdictLastRefreshAttemptAt"
+    static let retryInterval: TimeInterval = 10 * 60
+}
+
+/// The coach read is refreshed when a previous refresh failed (the retry
+/// flag) or when newer training or a fresh morning snapshot exists.
+func coachReadRefreshIsDue(
+    retryFlag: Bool,
+    latestLog: PerformanceLog?,
+    latestConfirmedRun: RunLog?,
+    latestSnapshot: GarminDailySnapshot?,
+    latestVerdict: CoachVerdict?
+) -> Bool {
+    retryFlag || coachVerdictNeedsRefresh(
+        latestLog: latestLog,
+        latestConfirmedRun: latestConfirmedRun,
+        latestSnapshot: latestSnapshot,
+        latestVerdict: latestVerdict
+    )
+}
+
+/// The newest plan the coach generated. Rule records (old deload markers)
+/// are not plans.
+func latestAIPlan(from plans: [CoachPlan]) -> CoachPlan? {
+    plans
+        .filter { $0.sourceRaw == PlanSource.ai.rawValue }
+        .max { $0.generatedAt < $1.generatedAt }
+}
+
+/// Background Garmin pulls run at most every 30 minutes after a success and
+/// back off 10 minutes after a failed attempt (logged out, sidecar down).
+func shouldAttemptGarminSync(now: Date, lastSuccessAt: Double, lastAttemptAt: Double) -> Bool {
+    let t = now.timeIntervalSince1970
+    return t - lastSuccessAt > 30 * 60 && t - lastAttemptAt > 10 * 60
+}
+
+/// A training-day, running-day or long-run-day change asks for one forced
+/// replan, sent when the athlete leaves Profile (or on the next app open).
+enum PlanRefreshRequest {
+    static let key = "planRefreshAfterScheduleChange"
+
+    static func mark(defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: key)
+    }
+
+    static func consume(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.bool(forKey: key) else { return false }
+        defaults.set(false, forKey: key)
+        return true
+    }
+
+    /// Ask again when the replan never reached the proxy (offline, busy).
+    /// A proxy answer, even a failure, ends it: no forced-replan loop.
+    static func shouldRetry(after outcome: AutoPlanTriggerOutcome) -> Bool {
+        !outcome.appliedNewPlan && !outcome.reachedProxy
+    }
+}
+
+/// Builds the coach request from a fresh fetch, never from view @Query
+/// arrays that an awaited replan may have changed or deleted underneath.
+@MainActor
+func makeCoachRequestFromStore(profile: UserProfile, modelID: String, in modelContext: ModelContext) throws -> CoachPlanRequest {
+    makeCoachRequest(
+        profile: profile,
+        modelID: modelID,
+        logs: try modelContext.fetch(FetchDescriptor<PerformanceLog>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)])),
+        sessions: try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)])),
+        prescriptions: try modelContext.fetch(FetchDescriptor<SetPrescription>(sortBy: [SortDescriptor(\.orderIndex)])),
+        raceGoal: try modelContext.fetch(FetchDescriptor<RaceGoal>(sortBy: [SortDescriptor(\.createdAt)])).first,
+        runLogs: try modelContext.fetch(FetchDescriptor<RunLog>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)])),
+        weekStart: rollingPlanStart()
+    )
+}
+
+/// The one way the app refreshes the coach read. Clears the retry flag on
+/// success and keeps it set on failure, so the next app open retries.
+@MainActor
+enum CoachReadRefresher {
+    @discardableResult
+    static func refresh(
+        endpoint: String,
+        profile: UserProfile,
+        modelID: String,
+        sourceLogId: UUID? = nil,
+        in modelContext: ModelContext
+    ) async -> Bool {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: CoachVerdictRefreshFlag.lastAttemptKey)
+        do {
+            let request = try makeCoachRequestFromStore(profile: profile, modelID: modelID, in: modelContext)
+            let response = try await LocalCoachClient(endpointString: endpoint).generateVerdict(request: request)
+            modelContext.insert(CoachVerdict(response: response, sourceLogId: sourceLogId))
+            try modelContext.save()
+            UserDefaults.standard.set(false, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+            return true
+        } catch {
+            UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+            return false
+        }
+    }
+
+    /// Refreshes on app open when due, at most every 10 minutes.
+    static func refreshIfDue(endpoint: String, profile: UserProfile, modelID: String, in modelContext: ModelContext) async {
+        let lastAttempt = UserDefaults.standard.double(forKey: CoachVerdictRefreshFlag.lastAttemptKey)
+        guard Date().timeIntervalSince1970 - lastAttempt > CoachVerdictRefreshFlag.retryInterval else { return }
+        let latestLog = try? modelContext.fetch(FetchDescriptor<PerformanceLog>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)])).first
+        let latestRun = confirmedRunLogs(from: (try? modelContext.fetch(FetchDescriptor<RunLog>())) ?? []).last
+        let latestSnapshot = try? modelContext.fetch(FetchDescriptor<GarminDailySnapshot>(sortBy: [SortDescriptor(\.date, order: .reverse)])).first
+        let latestVerdict = try? modelContext.fetch(FetchDescriptor<CoachVerdict>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])).first
+        guard coachReadRefreshIsDue(
+            retryFlag: UserDefaults.standard.bool(forKey: CoachVerdictRefreshFlag.needsRefreshKey),
+            latestLog: latestLog,
+            latestConfirmedRun: latestRun,
+            latestSnapshot: latestSnapshot,
+            latestVerdict: latestVerdict
+        ) else { return }
+        await refresh(endpoint: endpoint, profile: profile, modelID: modelID, in: modelContext)
+    }
 }
 
 func makeCoachRequest(
@@ -1446,7 +1781,8 @@ func makeCoachRequest(
     prescriptions: [SetPrescription] = [],
     raceGoal: RaceGoal? = nil,
     runLogs: [RunLog] = [],
-    weekStart: Date = rollingPlanStart()
+    weekStart: Date = rollingPlanStart(),
+    timeZone: TimeZone = .current
 ) -> CoachPlanRequest {
     let baseline = Baseline(
         pullUps: profile.baselinePullUps,
@@ -1486,7 +1822,7 @@ func makeCoachRequest(
                 .flatMap { profile.runningDays.contains($0) ? $0 : nil }
                 .flatMap { TrainingWeekday.dayOffsets(for: [$0], weeklySessions: 1, weekStart: weekStart).first }
                 .flatMap { (1...6).contains($0) ? $0 : nil },
-            recentRuns: confirmedGarminRunLogs(from: runLogs)
+            recentRuns: confirmedRunLogs(from: runLogs)
                 .suffix(30)
                 .map {
                     CoachRunSummary(
@@ -1568,7 +1904,8 @@ func makeCoachRequest(
                     }
             )
         },
-        running: running
+        running: running,
+        timeZone: timeZone.identifier
     )
 }
 
@@ -1632,6 +1969,29 @@ struct LocalCoachClient {
     var session: URLSession = .shared
     var validator = CoachPlanValidator()
     var runningValidator = RunningWeekValidator()
+    /// Sent as `X-Lockin-App-Token` when set. The proxy requires it once
+    /// LOCKIN_APP_TOKEN is configured there; it comes from the
+    /// COACH_PROXY_APP_TOKEN build setting (Debug: also the scheme env var).
+    var appToken: String? = Self.configuredAppToken
+
+    static let configuredAppToken: String? = {
+        #if DEBUG
+        if let override = ProcessInfo.processInfo.environment["COACH_PROXY_APP_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return override
+        }
+        #endif
+        let bundled = (Bundle.main.object(forInfoDictionaryKey: "CoachProxyAppToken") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return bundled.isEmpty || bundled.hasPrefix("$(") ? nil : bundled
+    }()
+
+    func authorized(_ request: URLRequest) -> URLRequest {
+        guard let appToken, !appToken.isEmpty else { return request }
+        var request = request
+        request.setValue(appToken, forHTTPHeaderField: "X-Lockin-App-Token")
+        return request
+    }
 
     init(endpointString: String = defaultEndpointString, allowsLocalEndpoints: Bool = allowsLocalEndpointsByDefault) throws {
         guard let endpoint = Self.normalizedEndpoint(from: endpointString, allowsLocalEndpoints: allowsLocalEndpoints) else { throw CoachClientError.invalidURL }
@@ -1648,7 +2008,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(endpoint, error)
@@ -1685,7 +2045,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(weekEndpoint, error)
@@ -1727,7 +2087,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(verdictEndpoint, error)
@@ -1754,7 +2114,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(chatEndpoint, error)
@@ -1780,7 +2140,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(healthEndpoint, error)
@@ -1803,7 +2163,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(modelEndpoint, error)
@@ -1827,7 +2187,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(statusEndpoint, error)
@@ -1854,7 +2214,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(triggerEndpoint, error)
@@ -1878,7 +2238,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(statusEndpoint, error)
@@ -1905,7 +2265,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(connectEndpoint, error)
@@ -1932,7 +2292,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(disconnectEndpoint, error)
@@ -1960,7 +2320,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(snapshotEndpoint, error)
@@ -1984,7 +2344,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(syncStatusEndpoint, error)
@@ -2011,7 +2371,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(syncEndpoint, error)
@@ -2038,7 +2398,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(retryEndpoint, error)
@@ -2066,7 +2426,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(pushEndpoint, error)
@@ -2095,7 +2455,7 @@ struct LocalCoachClient {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (data, response) = try await session.data(for: authorized(urlRequest))
         } catch let error as URLError {
             if error.isLocalProxyConnectionFailure {
                 throw CoachClientError.proxyUnavailable(deleteEndpoint, error)

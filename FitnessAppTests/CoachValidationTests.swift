@@ -1828,3 +1828,182 @@ private extension CoachPlannedEffortResponse {
         )
     }
 }
+
+// MARK: - Bug audit 2026-10 regressions
+
+extension CoachValidationTests {
+    /// D0: the proxy must know which dates are locked so it never deletes
+    /// today's watch workout just because today's run is not resent.
+    func testGarminSyncPlanRequestLocksTodayAndOnlySendsFutureRuns() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Amsterdam"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 13, hour: 7)))
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: today))
+        let todayRun = WorkoutSession(scheduledDate: today, title: "Today", weekIndex: 0, focus: .mixed, summary: "AI: x", discipline: .running, runKind: .easy, plannedDistanceKm: 8)
+        let futureRun = WorkoutSession(scheduledDate: tomorrow, title: "Tomorrow", weekIndex: 0, focus: .mixed, summary: "AI: x", discipline: .running, runKind: .long, plannedDistanceKm: 20)
+
+        let request = makeGarminSyncPlanRequest(
+            userId: "user-1",
+            planRevisionId: "rev-1",
+            staleWorkoutIds: ["old-1"],
+            sessions: [todayRun, futureRun],
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(request.lockedThroughDate, "2026-06-13")
+        XCTAssertEqual(request.workouts.map(\.sessionId), [futureRun.id.uuidString])
+        XCTAssertEqual(request.staleWorkoutIds, ["old-1"])
+        let json = try XCTUnwrap(String(data: try JSONEncoder.coachEncoder.encode(request), encoding: .utf8))
+        XCTAssertTrue(json.contains("\"lockedThroughDate\":\"2026-06-13\""))
+    }
+
+    /// S15/S4: the proxy needs the athlete's zone for "today" and "due".
+    @MainActor
+    func testCoachPlanRequestEncodesAthleteTimeZone() throws {
+        let profile = UserProfile(targetDate: Date(), weeklySessions: 3, equipment: [.pullUpBar], baselinePullUps: 5, baselinePushUps: 20, baselinePlankSeconds: 60)
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: CoachModelCatalog.defaultModelID,
+            logs: [],
+            sessions: [],
+            timeZone: try XCTUnwrap(TimeZone(identifier: "Europe/Amsterdam"))
+        )
+        XCTAssertEqual(request.timeZone, "Europe/Amsterdam")
+    }
+
+    func testCoachModelCatalogDefaultsToGpt61SolAndMigratesStoredSelectionOnce() throws {
+        XCTAssertEqual(CoachModelCatalog.defaultModelID, "gpt-6.1-sol")
+        XCTAssertEqual(CoachModelCatalog.defaultModelIDs.first, "gpt-6.1-sol")
+
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "lockin-model-migration-\(UUID().uuidString)"))
+        defaults.set("gpt-5.5", forKey: CoachModelCatalog.selectedModelKey)
+        CoachModelCatalog.migrateStoredSelection(defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: CoachModelCatalog.selectedModelKey), "gpt-6.1-sol")
+
+        defaults.set("gpt-5-mini", forKey: CoachModelCatalog.selectedModelKey)
+        CoachModelCatalog.migrateStoredSelection(defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: CoachModelCatalog.selectedModelKey), "gpt-5-mini", "A later manual pick is kept")
+    }
+
+    /// W6: a server plan that ignores the athlete's days is not saved.
+    @MainActor
+    func testGeneratedPlanStructureMustRespectSelectedDays() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let monday = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let plan = AutoPlanGeneratedPlan(
+            planRevisionId: "rev",
+            generatedAt: "2026-06-08T01:30:00Z",
+            localDate: "2026-06-08",
+            weekStart: monday,
+            source: .nightly,
+            summary: "",
+            strengthWeek: nil,
+            runningWeek: nil,
+            combinedWeek: CombinedWeekResponse(
+                summary: "",
+                safetyFlags: [],
+                runningWeek: .ultraFixture(),
+                strengthWeek: .balancedFixture()
+            )
+        )
+
+        let matching = UserProfile(targetDate: Date(), weeklySessions: 4, trainingDays: [.tuesday, .thursday, .saturday, .sunday], equipment: [.pullUpBar], baselinePullUps: 5, baselinePushUps: 20, baselinePlankSeconds: 60)
+        matching.runningDays = [.tuesday, .thursday, .saturday]
+        XCTAssertEqual(validateGeneratedPlanStructure(plan, profile: matching, calendar: calendar).status, .accepted)
+
+        let restDays = UserProfile(targetDate: Date(), weeklySessions: 3, trainingDays: [.monday, .wednesday, .friday], equipment: [.pullUpBar], baselinePullUps: 5, baselinePushUps: 20, baselinePlankSeconds: 60)
+        restDays.runningDays = [.tuesday, .thursday, .saturday]
+        XCTAssertEqual(validateGeneratedPlanStructure(plan, profile: restDays, calendar: calendar).status, .rejected)
+
+        let mondayRunner = UserProfile(targetDate: Date(), weeklySessions: 4, trainingDays: [.tuesday, .thursday, .saturday, .sunday], equipment: [.pullUpBar], baselinePullUps: 5, baselinePushUps: 20, baselinePlankSeconds: 60)
+        mondayRunner.runningDays = [.monday]
+        XCTAssertEqual(
+            validateGeneratedPlanStructure(plan, profile: mondayRunner, calendar: calendar).status,
+            .rejected,
+            "Selected running days with no day left this week allow zero runs, not any day"
+        )
+    }
+
+    /// W8: stale watch workout ids survive an overlapping sync.
+    func testGarminStaleWorkoutQueueKeepsIdsUntilSent() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "lockin-stale-queue-\(UUID().uuidString)"))
+        let queue = GarminStaleWorkoutQueue(defaults: defaults)
+        queue.enqueue(["a", "b"])
+        queue.enqueue(["b", "c"])
+        XCTAssertEqual(queue.pending, ["a", "b", "c"])
+        queue.remove(["a", "b"])
+        XCTAssertEqual(GarminStaleWorkoutQueue(defaults: defaults).pending, ["c"])
+    }
+
+    /// W5: a failed coach-read refresh is retried later.
+    func testCoachReadRefreshIsDueWhenRetryFlagIsSet() {
+        let verdict = coachVerdictFixture(sourceLogId: nil, createdAt: Date())
+        XCTAssertTrue(coachReadRefreshIsDue(retryFlag: true, latestLog: nil, latestConfirmedRun: nil, latestSnapshot: nil, latestVerdict: verdict))
+        XCTAssertFalse(coachReadRefreshIsDue(retryFlag: false, latestLog: nil, latestConfirmedRun: nil, latestSnapshot: nil, latestVerdict: verdict))
+    }
+
+    /// W2: background Garmin sync no longer waits for the Profile screen.
+    func testGarminSyncAttemptThrottle() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let t = now.timeIntervalSince1970
+        XCTAssertTrue(shouldAttemptGarminSync(now: now, lastSuccessAt: 0, lastAttemptAt: 0))
+        XCTAssertFalse(shouldAttemptGarminSync(now: now, lastSuccessAt: t - 10 * 60, lastAttemptAt: t - 10 * 60))
+        XCTAssertFalse(shouldAttemptGarminSync(now: now, lastSuccessAt: 0, lastAttemptAt: t - 5 * 60), "Failed attempts back off")
+        XCTAssertTrue(shouldAttemptGarminSync(now: now, lastSuccessAt: t - 31 * 60, lastAttemptAt: t - 31 * 60))
+    }
+
+    /// X1: rule-based records are not the latest AI plan.
+    func testLatestAIPlanIgnoresRulePlans() {
+        let ai = CoachPlan(weekStart: Date(), summary: "AI", source: .ai, validationStatus: .accepted, generatedAt: Date(timeIntervalSince1970: 100))
+        let rules = CoachPlan(weekStart: Date(), summary: "Deload", source: .rules, validationStatus: .clamped, generatedAt: Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(latestAIPlan(from: [rules, ai])?.id, ai.id)
+    }
+
+    /// W3: the logged RPE starts at the planned RPE, not a hardcoded 7.
+    func testInitialLoggedRPEStartsAtPlannedRPE() {
+        let light = WorkoutSession(scheduledDate: Date(), title: "Easy", weekIndex: 0, focus: .recovery, summary: "AI: x", plannedEffort: .light())
+        let unplanned = WorkoutSession(scheduledDate: Date(), title: "Legacy", weekIndex: 0, focus: .mixed, summary: "AI: x")
+        XCTAssertEqual(initialLoggedRPE(for: light), 3)
+        XCTAssertEqual(initialLoggedRPE(for: unplanned), 7)
+    }
+
+    /// W10: a fresh profile gets one forced first plan, never a forced plan
+    /// on every foreground when that first plan is empty or fails.
+    func testAutoPlanForcesFirstPlanOncePerProfile() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "lockin-first-plan-\(UUID().uuidString)"))
+        XCTAssertTrue(FirstPlanRequest.shouldForce(profileId: "p1", sessionCount: 0, defaults: defaults))
+        FirstPlanRequest.markRequested(profileId: "p1", defaults: defaults)
+        XCTAssertFalse(FirstPlanRequest.shouldForce(profileId: "p1", sessionCount: 0, defaults: defaults))
+        XCTAssertTrue(FirstPlanRequest.shouldForce(profileId: "p2", sessionCount: 0, defaults: defaults), "A new profile after a reset gets its own first plan")
+        XCTAssertFalse(FirstPlanRequest.shouldForce(profileId: "p3", sessionCount: 2, defaults: defaults))
+    }
+
+    /// W7: a schedule-change replan is retried when it never reached the
+    /// proxy, but not when the proxy answered (no forced-replan loop).
+    func testPlanRefreshRetriesOnlyWhenTheProxyWasNotReached() {
+        XCTAssertTrue(PlanRefreshRequest.shouldRetry(after: AutoPlanTriggerOutcome(message: "offline", appliedNewPlan: false, reachedProxy: false)))
+        XCTAssertFalse(PlanRefreshRequest.shouldRetry(after: AutoPlanTriggerOutcome(message: "skipped", appliedNewPlan: false, reachedProxy: true)))
+        XCTAssertFalse(PlanRefreshRequest.shouldRetry(after: AutoPlanTriggerOutcome(message: "done", appliedNewPlan: true, reachedProxy: true)))
+    }
+
+    /// S5: when the proxy is locked with LOCKIN_APP_TOKEN, every call carries it.
+    func testCoachClientSendsAppTokenWhenConfigured() throws {
+        var client = try LocalCoachClient(endpointString: "https://lockin.elevenfactor.com/generate-week-plan")
+        client.appToken = "secret-token"
+        XCTAssertEqual(client.authorized(URLRequest(url: client.endpoint)).value(forHTTPHeaderField: "X-Lockin-App-Token"), "secret-token")
+        client.appToken = nil
+        XCTAssertNil(client.authorized(URLRequest(url: client.endpoint)).value(forHTTPHeaderField: "X-Lockin-App-Token"))
+    }
+
+    /// W7: a schedule change asks for one replan.
+    func testPlanRefreshRequestIsConsumedOnce() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "lockin-plan-refresh-\(UUID().uuidString)"))
+        XCTAssertFalse(PlanRefreshRequest.consume(defaults: defaults))
+        PlanRefreshRequest.mark(defaults: defaults)
+        XCTAssertTrue(PlanRefreshRequest.consume(defaults: defaults))
+        XCTAssertFalse(PlanRefreshRequest.consume(defaults: defaults))
+    }
+}

@@ -21,7 +21,7 @@ struct CoachView: View {
     var profile: UserProfile
 
     private var latestPlan: CoachPlan? {
-        plans.first
+        latestAIPlan(from: plans)
     }
 
     private var latestVerdict: CoachVerdict? {
@@ -95,7 +95,10 @@ struct CoachView: View {
     private func generateAIWeek() {
         // A replan while a push is in flight would delete sessions whose
         // garminWorkoutId has not landed yet, orphaning workouts on the watch.
-        guard !GarminSyncCoordinator.isSyncing, !AutoPlanCoordinator.isTriggering else { return }
+        guard !GarminSyncCoordinator.isSyncing, !AutoPlanCoordinator.isTriggering else {
+            generationStatus = AutoPlanCoordinator.busyMessage
+            return
+        }
         Task { await requestPlan() }
     }
 
@@ -104,17 +107,14 @@ struct CoachView: View {
         generationStatus = nil
         defer { isGeneratingPlan = false }
 
-        let request = makeCoachRequest(
-            profile: profile,
-            modelID: selectedModelID,
-            logs: logs,
-            sessions: sessions,
-            prescriptions: prescriptions,
-            raceGoal: raceGoals.first,
-            runLogs: runLogs,
-            weekStart: rollingPlanStart()
-        )
-        let message = await AutoPlanCoordinator.trigger(
+        let request: CoachPlanRequest
+        do {
+            request = try makeCoachRequestFromStore(profile: profile, modelID: selectedModelID, in: modelContext)
+        } catch {
+            generationStatus = error.localizedDescription
+            return
+        }
+        let outcome = await AutoPlanCoordinator.trigger(
             endpoint: endpoint,
             source: .manual,
             reason: "Manual regenerate plan request.",
@@ -123,7 +123,7 @@ struct CoachView: View {
             profile: profile,
             in: modelContext
         )
-        generationStatus = message ?? "I could not refresh the plan yet. Try again in a bit."
+        generationStatus = outcome.message
     }
 
     private func rescheduleRemindersIfEnabled() async throws {

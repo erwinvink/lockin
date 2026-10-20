@@ -161,8 +161,10 @@ struct CoachChatView: View {
                 CoachChatRequest(request: request, messages: turns)
             )
             isSending = false
+            // Device time, not the server's generatedAt: a clock difference
+            // must never sort the answer above its question.
             modelContext.insert(CoachChatMessage(
-                createdAt: response.generatedAt,
+                createdAt: max(Date(), userMessage.createdAt.addingTimeInterval(0.001)),
                 role: .coach,
                 text: response.answer,
                 status: .sent,

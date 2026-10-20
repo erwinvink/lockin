@@ -7,17 +7,25 @@ struct TodayView: View {
     @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
+    @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var performanceLogs: [PerformanceLog]
     @Query(sort: \GarminDailySnapshot.date, order: .reverse) private var snapshots: [GarminDailySnapshot]
     @Query private var ranks: [RankState]
 
     var profile: UserProfile
     @State private var loggingSession: WorkoutSession?
+    @State private var loggingRun: WorkoutSession?
     @State private var pendingLoggingSessionID: UUID?
     @State private var previewSession: WorkoutSession?
     @State private var workoutCardResetID = UUID()
 
+    /// Today's planned sessions plus yesterday's unlogged ones, so a late
+    /// evening session can still be logged the next morning.
     private var dueSessions: [WorkoutSession] {
-        duePlannedSessions(from: sessions)
+        duePlannedSessions(from: sessions) + lateLoggableSessions(from: sessions, logs: performanceLogs, runLogs: runLogs)
+    }
+
+    private func isFromYesterday(_ session: WorkoutSession) -> Bool {
+        Calendar.current.isDateInYesterday(session.scheduledDate)
     }
 
     private var futureSession: WorkoutSession? {
@@ -69,7 +77,7 @@ struct TodayView: View {
 
     private var thisWeekKm: Double {
         guard let weekInterval else { return 0 }
-        return confirmedGarminRunLogs(from: runLogs)
+        return confirmedRunLogs(from: runLogs)
             .filter { weekInterval.start <= $0.completedAt && $0.completedAt < weekInterval.end }
             .reduce(0) { $0 + $1.distanceKm }
     }
@@ -95,7 +103,9 @@ struct TodayView: View {
                             if session.isRun {
                                 RunPrescriptionCard(
                                     session: session,
-                                    prominent: index == 0
+                                    prominent: index == 0,
+                                    eyebrow: isFromYesterday(session) ? "YESTERDAY" : "TODAY",
+                                    onLog: { loggingRun = session }
                                 )
                             } else {
                                 WorkoutPrescriptionCard(
@@ -103,6 +113,7 @@ struct TodayView: View {
                                     prescriptions: prescriptionsForSession(session),
                                     blocks: blocksForSession(session),
                                     prominent: index == 0,
+                                    eyebrow: isFromYesterday(session) ? "YESTERDAY" : "TODAY",
                                     onComplete: { beginLogging(session) }
                                 )
                                 .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
@@ -144,6 +155,9 @@ struct TodayView: View {
             .sheet(item: $loggingSession, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { session in
                 LogWorkoutView(session: session, profile: profile)
             }
+            .sheet(item: $loggingRun) { session in
+                LogRunView(mode: .log(session), profile: profile)
+            }
             .sheet(item: $previewSession) { session in
                 FutureWorkoutPreviewSheet(
                     session: session,
@@ -169,7 +183,7 @@ struct TodayView: View {
     }
 
     private func beginLogging(_ session: WorkoutSession) {
-        guard session.status == .planned else { return }
+        guard session.status == .planned || session.status == .missed else { return }
         pendingLoggingSessionID = session.id
         loggingSession = session
     }
@@ -177,7 +191,7 @@ struct TodayView: View {
     private func resetCheckedWorkoutIfLogWasCancelled() {
         guard let pendingLoggingSessionID else { return }
         let session = sessions.first { $0.id == pendingLoggingSessionID }
-        if session?.status == .planned {
+        if session?.status == .planned || session?.status == .missed {
             workoutCardResetID = UUID()
         }
         self.pendingLoggingSessionID = nil
@@ -223,6 +237,7 @@ struct WorkoutPrescriptionCard: View {
     var prescriptions: [SetPrescription]
     var blocks: [WorkoutBlock]
     var prominent: Bool = false
+    var eyebrow: String = "TODAY"
     var onComplete: () -> Void
     @State private var completedPrescriptionIds: Set<UUID> = []
 
@@ -239,7 +254,8 @@ struct WorkoutPrescriptionCard: View {
             SessionHeading(
                 title: session.title,
                 trailingText: session.focus.title,
-                prominent: prominent
+                prominent: prominent,
+                eyebrow: eyebrow
             )
 
             if durationMinutes > 0 || session.plannedEffortLabel != nil {
@@ -303,11 +319,12 @@ private struct SessionHeading: View {
     var title: String
     var trailingText: String?
     var prominent: Bool
+    var eyebrow: String = "TODAY"
 
     var body: some View {
         VStack(alignment: .leading, spacing: prominent ? 8 : 4) {
             if prominent {
-                MicroLabel(text: "TODAY", color: AppTheme.accent)
+                MicroLabel(text: eyebrow, color: AppTheme.accent)
             }
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
@@ -328,6 +345,8 @@ private struct SessionHeading: View {
 private struct RunPrescriptionCard: View {
     var session: WorkoutSession
     var prominent: Bool = false
+    var eyebrow: String = "TODAY"
+    var onLog: () -> Void = {}
 
     private var purposeText: String {
         var purpose = session.summary
@@ -342,7 +361,8 @@ private struct RunPrescriptionCard: View {
             SessionHeading(
                 title: session.title,
                 trailingText: (session.runKind ?? .easy).title == session.title ? nil : (session.runKind ?? .easy).title,
-                prominent: prominent
+                prominent: prominent,
+                eyebrow: eyebrow
             )
 
             if session.estimatedDurationMinutes > 0 || garminWatchPill(for: session) != nil {
@@ -376,6 +396,11 @@ private struct RunPrescriptionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // Garmin completes runs automatically; this is for runs without
+            // the watch, or when Garmin isn't connected.
+            Button("Log run", action: onLog)
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("log-run-button")
         }
     }
 }
