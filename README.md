@@ -19,11 +19,13 @@ Core app flow:
 - Onboard with name, current maxes, target maxes, target date, available equipment, training days, strict-form agreement, and pain/injury notes.
 - Generate an AI week from the hosted coach proxy.
 - Show today's due workout with sets, reps, holds, rest, planned effort, RPE target, and estimated duration.
-- Let the athlete check off work, log actual performance, RPE, pain, fatigue, and notes.
+- Let the athlete check off work, log actual performance, RPE, pain, fatigue, and notes. The actual-RPE slider starts at the planned RPE.
+- Let the athlete log a session the morning after: yesterday's unlogged sessions stay on Today, and logging one that was already marked missed refunds the miss.
 - Track streak, best streak, missed trainings, and latest measured progress against goals.
+- After a pain or "very weak" log, ask the coach for a new plan; if no new plan arrives, deload the next planned strength session on the device.
 - Keep a Log screen for open future sessions and completed/missed history.
-- Keep a Coach screen for generating a week, refreshing a coach verdict, checking proxy health, and choosing the model.
-- Keep a Profile screen for training-day changes, reminders, and full local reset.
+- Keep a Coach screen for generating a week, refreshing a coach verdict, checking proxy health, and choosing the model. The default coach model is `gpt-6.1-sol`.
+- Keep a Profile screen for training-day changes, reminders, and full local reset. Changing training days, running days, the long-run day or the race goal triggers one forced replan when the athlete leaves Profile.
 
 ### Running goal and ultra coach
 
@@ -31,8 +33,10 @@ lockin also coaches ultrarunning alongside the strength work. The athlete can se
 
 With a Garmin account connected on the server, the sync is two-way:
 
-- Pull: daily wellness (sleep, HRV, body battery, training readiness, resting HR) and completed running activities, which are auto-matched to planned runs as pending logs the athlete confirms.
+- Pull: daily wellness (sleep, HRV, body battery, training readiness, resting HR) and completed running activities. An activity on the same day as a planned run completes it (80% of the planned distance or more) or marks it partial (30% or more). The athlete can add RPE and "how it felt" to a Garmin-completed run from Log.
 - Push: planned runs go to the watch as structured Garmin workouts scheduled on their calendar date, with pace or heart-rate targets when the plan sets them.
+
+Without Garmin (or when the watch wasn't worn), the athlete logs a run by hand from Today with distance, moving time, RPE and feel. A later Garmin activity on the same day replaces the manual row and keeps the athlete's RPE and feel. The app pulls Garmin in the background every 30 minutes on its own; it no longer waits for the Profile screen to be opened.
 
 ## Current platforms
 
@@ -86,7 +90,7 @@ For Android, build a native client that mirrors the iOS product contract:
 - Use local persistence for profile, sessions, prescriptions, logs, rank state, coach plans, and coach verdicts.
 - Send the same coach request shape to the proxy when generating a week or verdict.
 - Never store an OpenAI API key in the Android app.
-- Keep today locked during week refreshes: new AI sessions should be future sessions only.
+- Keep today locked during week refreshes: new AI sessions should be future sessions only, and a refresh never removes today's sessions or today's watch workout, even after a session today is done. Send `lockedThroughDate` (today, `yyyy-MM-dd`) with every `/garmin/sync-plan` call.
 - Preserve selected training days; the AI plan should schedule only on those selected future days.
 - Keep planned effort separate from logged effort:
   - planned effort comes from the generated session or exercise plan
@@ -143,6 +147,7 @@ The client request includes:
 - target date
 - recent performance logs
 - planned/completed/missed sessions
+- the athlete's time zone (IANA id), used for "today" and "due"
 
 ## Run the iOS app
 
@@ -206,6 +211,8 @@ There are three deployable pieces: the iOS app, the coach proxy, and the Garmin 
 4. Test on a simulator and a real device.
 5. Use Xcode's Archive flow to distribute through TestFlight or the App Store.
 
+When the proxy is locked with `LOCKIN_APP_TOKEN`, build the app with the same value in the `COACH_PROXY_APP_TOKEN` build setting (for example `xcodebuild ... COACH_PROXY_APP_TOKEN=<token>`, or an untracked `.xcconfig`). It reaches the app through the `CoachProxyAppToken` Info.plist key, and every proxy call sends it as `X-Lockin-App-Token`. Debug builds also read a `COACH_PROXY_APP_TOKEN` scheme environment variable. Roll out in this order: ship the app with the token first, then set `LOCKIN_APP_TOKEN` on the proxy. The other order makes every app call fail with 401.
+
 The iOS app should point at the hosted proxy:
 
 ```text
@@ -234,6 +241,10 @@ Coolify-style setup:
 - Environment variables:
   - `OPENAI_API_KEY`
   - `PORT=8787` if the host does not inject its own port
+  - `LOCKIN_APP_TOKEN` (recommended): requires `X-Lockin-App-Token` on every route except `GET /health`. See the iOS section for the rollout order.
+  - `COACH_ALLOWED_MODELS` (optional): comma-separated models the app may ask for; anything else falls back to the default `gpt-6.1-sol`.
+  - `LOCKIN_AUTH_SECRET` and `NODE_ENV=production` when the `/v1` storage API is used. In production, `/v1` refuses to run with the built-in development secret.
+  - See `Proxy/README.md` for the full list.
 - Health check: `GET /health`
 - Public domain: `https://lockin.elevenfactor.com`
 
@@ -243,7 +254,7 @@ After deployment, verify:
 curl https://lockin.elevenfactor.com/health
 ```
 
-Expected result is JSON with `ok: true` and `hasApiKey: true`.
+Expected result is JSON with `ok: true` and `hasApiKey: true`. Also check that `GET /models` lists `gpt-6.1-sol`; when the API key can't use the default model, every coach call fails.
 
 ### Garmin sidecar (GarminService)
 
@@ -272,8 +283,10 @@ Expected result is JSON with `ok: true` and `loggedIn: true`.
 Accepted contracts and residual risks of the Garmin integration:
 
 - A missing wellness day means "no data", never zeros. The sidecar omits days it could not fetch completely, and consumers must not fabricate zero-filled days.
+- Within a day, a metric the sidecar failed to fetch is listed in `unavailableMetrics` (its value is a 0 placeholder). The app never overwrites a stored reading with such a value or with a 0.
 - When Garmin throttles or repeatedly fails mid-fetch, the wellness window is truncated to the complete days fetched so far; the remaining days are simply absent.
 - Pushing runs to the watch is recorded locally after the push succeeds. If that local save fails AND the app terminates before any later save, the watch can hold a scheduled workout the app does not know about; the next push can then schedule a duplicate, which has to be removed in Garmin Connect manually.
+- Garmin workout ids that must be deleted after a replan are queued on the device (`garminPendingStaleWorkoutIds`) until a sync has sent them, so an overlapping sync can't drop them.
 - A manual "Sync now" from Settings records the sync timestamp and therefore resets the 30-minute background sync throttle.
 
 ## Repo map
