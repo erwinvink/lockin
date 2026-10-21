@@ -335,6 +335,9 @@ final class UserProfile {
     var painNotes: String = ""
     var runningDaysRaw: String = ""
     var longRunDayRaw: String = ""
+    /// Set by "Start a new plan". Nil on profiles from before that existed,
+    /// which read as their creation date (see `planBlockStartedAt`).
+    var planBlockStartedAtRaw: Date? = nil
 
     init(
         id: UUID = UUID(),
@@ -380,7 +383,19 @@ final class UserProfile {
     }
 
     var equipment: Set<EquipmentKind> {
-        Set(equipmentRaw.split(separator: ",").compactMap { EquipmentKind(rawValue: String($0)) })
+        get {
+            Set(equipmentRaw.split(separator: ",").compactMap { EquipmentKind(rawValue: String($0)) })
+        }
+        set {
+            equipmentRaw = newValue.map(\.rawValue).sorted().joined(separator: ",")
+        }
+    }
+
+    /// When the current plan block began: the last "Start a new plan", or
+    /// the day the profile was created.
+    var planBlockStartedAt: Date {
+        get { planBlockStartedAtRaw ?? createdAt }
+        set { planBlockStartedAtRaw = newValue }
     }
 
     var trainingDays: Set<TrainingWeekday> {

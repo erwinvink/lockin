@@ -20,6 +20,7 @@
 		AA0000000000000000000111 /* CoachValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* CoachValidationTests.swift */; };
 		AA0000000000000000000112 /* FitnessAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000212 /* FitnessAppUITests.swift */; };
 		AA0000000000000000000113 /* PersistenceResetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000214 /* PersistenceResetTests.swift */; };
+		AA00000000000000000001A2 /* NewPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000002A2 /* NewPlanTests.swift */; };
 		AA0000000000000000000114 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000230 /* AppShellView.swift */; };
 		AA0000000000000000000115 /* LockinComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000231 /* LockinComponents.swift */; };
 		AA0000000000000000000116 /* TrainingPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000232 /* TrainingPlanStore.swift */; };
@@ -66,6 +67,7 @@
 		AA0000000000000000000212 /* FitnessAppUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitnessAppUITests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000213 /* FitnessApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitnessApp.entitlements; sourceTree = "<group>"; };
 		AA0000000000000000000214 /* PersistenceResetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceResetTests.swift; sourceTree = "<group>"; };
+		AA00000000000000000002A2 /* NewPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanTests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000221 /* FitnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000222 /* FitnessAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000223 /* FitnessAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -151,6 +153,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000210 /* TrainingEngineTests.swift */,
+				AA00000000000000000002A2 /* NewPlanTests.swift */,
 				AA0000000000000000000211 /* CoachValidationTests.swift */,
 				AA0000000000000000000214 /* PersistenceResetTests.swift */,
 			);
@@ -332,6 +335,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000110 /* TrainingEngineTests.swift in Sources */,
+				AA00000000000000000001A2 /* NewPlanTests.swift in Sources */,
 				AA0000000000000000000111 /* CoachValidationTests.swift in Sources */,
 				AA0000000000000000000113 /* PersistenceResetTests.swift in Sources */,
 			);

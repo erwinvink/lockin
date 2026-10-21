@@ -1271,6 +1271,215 @@ func wipeAllData(in modelContext: ModelContext) throws {
     try deleteAll(UserProfile.self, in: modelContext)
 }
 
+// MARK: - New plan
+
+/// Everything the coach plans from, as one editable value. Onboarding starts
+/// from the defaults; "Start a new plan" starts from the current profile.
+struct PlanInputs: Equatable {
+    var pullUps = 5
+    var pushUps = 20
+    var plankSeconds = 60
+    var goalPullUps = 50
+    var goalPushUps = 100
+    var goalPlankSeconds = 300
+    var targetDate = Calendar.current.date(byAdding: .year, value: 1, to: Date()) ?? Date()
+    var trainingDays: Set<TrainingWeekday> = TrainingWeekday.defaultTrainingDays(for: 4)
+    /// The longest a strength session may take; 0 leaves it to the coach.
+    var sessionMinutes = 0
+    var equipment: Set<EquipmentKind> = [.pullUpBar, .yogaMat]
+    var strictForm = true
+    var painNotes = ""
+    var isTrainingForRace = false
+    var raceName = ""
+    var raceDate = Calendar.current.date(byAdding: .weekOfYear, value: 16, to: Date()) ?? Date()
+    var raceDistanceKm = 50
+    var raceElevationGainM = 1000
+    var runningDays: Set<TrainingWeekday> = [.tuesday, .thursday, .saturday]
+    var longRunDay: TrainingWeekday = .saturday
+
+    /// Why the inputs can't be saved yet, in the order the athlete meets the
+    /// controls. Nil when they can.
+    var blockingReason: String? {
+        if !(2...6).contains(trainingDays.count) { return "Pick 2 to 6 strength days." }
+        if isTrainingForRace && runningDays.isEmpty { return "Pick at least one running day." }
+        if !equipment.contains(.pullUpBar) { return "Add a pull-up bar to continue." }
+        if !strictForm { return "Turn on strict reps to continue." }
+        return nil
+    }
+
+    /// The long-run day, moved onto a picked running day if it isn't one.
+    var resolvedLongRunDay: TrainingWeekday? {
+        runningDays.contains(longRunDay) ? longRunDay : TrainingWeekday.allCases.last { runningDays.contains($0) }
+    }
+
+    func applyingStrengthNumbers(_ numbers: StrengthNumbers) -> PlanInputs {
+        var copy = self
+        copy.pullUps = numbers.pullUps
+        copy.pushUps = numbers.pushUps
+        copy.plankSeconds = numbers.plankSeconds
+        return copy
+    }
+}
+
+extension PlanInputs {
+    /// Pre-filled from the profile, the race goal and the athlete's current
+    /// numbers.
+    init(profile: UserProfile, raceGoal: RaceGoal?, current: StrengthNumbers) {
+        self.init()
+        pullUps = current.pullUps
+        pushUps = current.pushUps
+        plankSeconds = current.plankSeconds
+        goalPullUps = profile.goalPullUps
+        goalPushUps = profile.goalPushUps
+        goalPlankSeconds = profile.goalPlankSeconds
+        targetDate = profile.targetDate
+        trainingDays = profile.trainingDays
+        sessionMinutes = max(0, profile.sessionMinutes)
+        equipment = profile.equipment
+        strictForm = profile.strictFormAccepted
+        painNotes = profile.painNotes
+        if let raceGoal {
+            isTrainingForRace = true
+            raceName = raceGoal.name
+            raceDate = raceGoal.raceDate
+            raceDistanceKm = max(1, Int(raceGoal.distanceKm.rounded()))
+            raceElevationGainM = max(0, raceGoal.elevationGainM)
+        }
+        if !profile.runningDays.isEmpty {
+            runningDays = profile.runningDays
+        }
+        longRunDay = profile.longRunDay.flatMap { runningDays.contains($0) ? $0 : nil }
+            ?? TrainingWeekday.allCases.last { runningDays.contains($0) }
+            ?? .saturday
+    }
+}
+
+struct StrengthNumbers: Equatable {
+    var pullUps: Int
+    var pushUps: Int
+    var plankSeconds: Int
+}
+
+/// Where the athlete stands now, per movement: the best strict value logged
+/// in the last four weeks; with nothing that recent, the latest logged
+/// value; with nothing logged, the profile's baseline.
+func currentStrengthNumbers(
+    profile: UserProfile,
+    logs: [PerformanceLog],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> StrengthNumbers {
+    let recentStart = calendar.date(byAdding: .day, value: -28, to: calendar.startOfDay(for: now)) ?? now
+    let newestFirst = logs.filter { $0.completedAt <= now }.sorted { $0.completedAt > $1.completedAt }
+
+    func current(_ value: (PerformanceLog) -> Int, logged: (PerformanceLog) -> Bool, baseline: Int) -> Int {
+        let loggedValues = newestFirst.filter(logged)
+        if let recentBest = loggedValues.filter({ $0.completedAt >= recentStart }).map(value).max() {
+            return recentBest
+        }
+        return loggedValues.first.map(value) ?? baseline
+    }
+
+    return StrengthNumbers(
+        pullUps: current(\.pullUps, logged: \.loggedPullUps, baseline: profile.baselinePullUps),
+        pushUps: current(\.pushUps, logged: \.loggedPushUps, baseline: profile.baselinePushUps),
+        plankSeconds: current(\.plankSeconds, logged: \.loggedPlankSeconds, baseline: profile.baselinePlankSeconds)
+    )
+}
+
+struct NewPlanReset: Equatable {
+    var removedSessionCount: Int
+    /// Watch workouts of removed sessions, queued for deletion on Garmin.
+    var stalePushedGarminIds: [String]
+}
+
+/// "Start a new plan": keeps the athlete's history and replaces the plan.
+/// In one save it removes every open (planned) session from today on with
+/// its blocks and prescriptions, clears the coach plan, decisions and read,
+/// writes the new inputs to the profile and race goal, and starts a new plan
+/// block now. Logs, runs, readiness, past sessions, rank and chat stay.
+/// Today's open sessions go too: the athlete asked for a fresh start, and a
+/// replan never fills today, so leaving them would turn into misses.
+/// Removed watch workouts join the stale queue only once the save succeeds;
+/// the next Garmin plan sync deletes them.
+@discardableResult
+func startNewPlan(
+    with inputs: PlanInputs,
+    profile: UserProfile,
+    in modelContext: ModelContext,
+    staleWorkoutQueue: GarminStaleWorkoutQueue = GarminStaleWorkoutQueue(),
+    now: Date = Date(),
+    calendar: Calendar = .current
+) throws -> NewPlanReset {
+    do {
+        let startOfToday = calendar.startOfDay(for: now)
+        let openSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+            .filter { $0.status == .planned && $0.scheduledDate >= startOfToday }
+            .sorted { $0.scheduledDate < $1.scheduledDate }
+        let staleIds = openSessions.map(\.garminWorkoutId).filter { !$0.isEmpty }
+        let openIds = Set(openSessions.map(\.id))
+
+        for prescription in try modelContext.fetch(FetchDescriptor<SetPrescription>()) where openIds.contains(prescription.sessionId) {
+            modelContext.delete(prescription)
+        }
+        for block in try modelContext.fetch(FetchDescriptor<WorkoutBlock>()) where openIds.contains(block.sessionId) {
+            modelContext.delete(block)
+        }
+        for session in openSessions {
+            modelContext.delete(session)
+        }
+
+        // Decisions belong to plans; the read judged the old plan.
+        try deleteAll(CoachDecision.self, in: modelContext)
+        try deleteAll(CoachPlan.self, in: modelContext)
+        try deleteAll(CoachVerdict.self, in: modelContext)
+
+        profile.baselinePullUps = inputs.pullUps
+        profile.baselinePushUps = inputs.pushUps
+        profile.baselinePlankSeconds = inputs.plankSeconds
+        profile.goalPullUps = inputs.goalPullUps
+        profile.goalPushUps = inputs.goalPushUps
+        profile.goalPlankSeconds = inputs.goalPlankSeconds
+        profile.targetDate = inputs.targetDate
+        profile.trainingDays = inputs.trainingDays
+        profile.sessionMinutes = max(0, inputs.sessionMinutes)
+        profile.equipment = inputs.equipment
+        profile.strictFormAccepted = inputs.strictForm
+        profile.painNotes = inputs.painNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.planBlockStartedAt = now
+
+        let raceGoals = try modelContext.fetch(FetchDescriptor<RaceGoal>(sortBy: [SortDescriptor(\.createdAt)]))
+        if inputs.isTrainingForRace {
+            // Edit the goal in place: its weekly base and longest run come
+            // from run history, which a new plan keeps.
+            let goal: RaceGoal
+            if let existing = raceGoals.first {
+                goal = existing
+            } else {
+                goal = RaceGoal(createdAt: now)
+                modelContext.insert(goal)
+            }
+            goal.name = inputs.raceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            goal.raceDate = inputs.raceDate
+            goal.distanceKm = Double(inputs.raceDistanceKm)
+            goal.elevationGainM = inputs.raceElevationGainM
+            profile.runningDays = inputs.runningDays
+            profile.longRunDay = inputs.resolvedLongRunDay
+        } else {
+            for goal in raceGoals {
+                modelContext.delete(goal)
+            }
+        }
+
+        try modelContext.save()
+        staleWorkoutQueue.enqueue(staleIds)
+        return NewPlanReset(removedSessionCount: openSessions.count, stalePushedGarminIds: staleIds)
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
+}
+
 func applyScoreOutcome(_ outcome: ScoreOutcome, to rank: RankState) {
     rank.consistencyScore = max(0, rank.consistencyScore + outcome.consistencyDelta)
     rank.penaltyPoints = max(0, rank.penaltyPoints + outcome.penaltyDelta)
