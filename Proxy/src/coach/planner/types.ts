@@ -194,6 +194,10 @@ export type PlannedGoalTrend = {
   latestVolume: number | null;
   flatCount: number;
   latestDate: string | null;
+  /** Top working prescription of the latest past week (tests excluded). */
+  latestWorkingTarget?: number | null;
+  latestWorkingSets?: number | null;
+  latestWorkingDate?: string | null;
 };
 
 export type RecentGoalPerformance = {

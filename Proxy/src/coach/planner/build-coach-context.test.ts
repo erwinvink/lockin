@@ -601,3 +601,58 @@ function trainingLog(completedAt: string, overrides: Partial<TrainingLog> = {}):
     ...overrides
   };
 }
+
+// Finding: `clean` required a stored plannedRPE, so manually logged or legacy
+// sessions could never earn progression. A missing planned RPE now falls back
+// to the planned effort label, else 7.
+test("a log without planned RPE is judged against a default planned RPE of 7", () => {
+  const request = (rpe: number) => baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [plannedGoalSession("push-legacy", "2026-07-10T08:00:00Z", "completed", "pushUp", 3, 17)],
+    trainingLogs: [trainingLog("2026-07-10T09:00:00Z", {
+      sessionId: "push-legacy", pushUps: 19, loggedPullUps: false, loggedPlankSeconds: false, rpe
+    })]
+  });
+
+  const atEight = buildCoachContext(request(8), new Date("2026-07-13T12:00:00Z"));
+  const atNine = buildCoachContext(request(9), new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(atEight.plannedWork.recentGoalPerformance?.pushUps.clean, true);
+  assert.equal(atEight.plannedWork.recentGoalPerformance?.pushUps.delta, 2);
+  assert.equal(atNine.plannedWork.recentGoalPerformance?.pushUps.clean, false);
+  // The calibration summary still only uses real planned RPE values.
+  assert.equal(atEight.history.rpeCalibration.recentPlannedLogCount, 0);
+});
+
+test("a missing planned RPE uses the logged planned effort label when there is one", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [plannedGoalSession("push-medium", "2026-07-10T08:00:00Z", "completed", "pushUp", 3, 17)],
+    trainingLogs: [trainingLog("2026-07-10T09:00:00Z", {
+      sessionId: "push-medium", pushUps: 19, loggedPullUps: false, loggedPlankSeconds: false, rpe: 8, plannedEffortLabel: "medium"
+    })]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T12:00:00Z"));
+
+  assert.equal(context.plannedWork.recentGoalPerformance?.pushUps.clean, false, "medium plans RPE 6, so actual 8 is not clean");
+});
+
+test("the previous working prescription is the top target of the latest week, tests excluded", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [
+      plannedGoalSession("old", "2026-06-29T08:00:00Z", "completed", "pushUp", 3, 30),
+      plannedGoalSession("mon", "2026-07-06T08:00:00Z", "completed", "pushUp", 4, 24),
+      plannedGoalSession("thu", "2026-07-09T08:00:00Z", "completed", "pushUp", 3, 26, "volume"),
+      plannedGoalSession("test", "2026-07-11T08:00:00Z", "completed", "pushUp", 1, 45, "test")
+    ]
+  });
+
+  const trend = buildCoachContext(request, new Date("2026-07-13T12:00:00Z")).plannedWork.recentGoalTargets.pushUps;
+
+  assert.equal(trend.latestWorkingTarget, 26);
+  assert.equal(trend.latestWorkingSets, 3);
+  assert.equal(trend.latestWorkingDate, "2026-07-09T08:00:00Z");
+  assert.equal(trend.latestTarget, 45, "latestTarget keeps its old meaning");
+});
