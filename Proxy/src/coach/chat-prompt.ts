@@ -126,6 +126,15 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
       },
       startingBaseline: context.profile.baseline,
       bestRecent: context.history.bestRecentTests,
+      bestBeforeThisPlan: context.history.bestBeforeBlock
+        ? {
+            pullUps: context.history.bestBeforeBlock.pullUps,
+            pushUps: context.history.bestBeforeBlock.pushUps,
+            plankSeconds: context.history.bestBeforeBlock.plankSeconds,
+            planStarted: dateOnly(context.history.bestBeforeBlock.blockStartedAt, timeZone),
+            note: "Higher numbers from before the current plan started; the plan works from bestRecent."
+          }
+        : null,
       strengthDaysPerWeek: context.profile.weeklySessions,
       strengthDays: context.profile.trainingDays,
       equipment: context.profile.equipment,
@@ -178,6 +187,7 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
     riskFlags: context.readiness.riskFlags.map(humanize),
     strength: {
       twoMonthTrend: humanize(context.history.twoFullMonthTrend.label),
+      lastThreeWeeksVsThreeBefore: context.history.rollingTrend ? humanize(context.history.rollingTrend.label) : null,
       goalWorkVsPrescription: goalWorkVsPrescription(context),
       effortVsPlan: {
         averageRpeAbovePlanLast5: context.history.rpeCalibration.averageDeltaLast5,

@@ -255,11 +255,13 @@ export function strengthGuardrailsForPrompt(
         {
           maxPerSet: progression[metric].cap,
           basedOnBest: context.history.bestRecentTests[metric],
-          ratio: STRENGTH_LIMITS.workingCapRatio[metric]
+          ratio: STRENGTH_LIMITS.workingCapRatio[metric],
+          ...(context.history.bestBeforeBlock?.[metric] ? { olderBestBeforeThisBlock: context.history.bestBeforeBlock[metric] } : {})
         }
       ])
     ),
-    workingCapRule: "Working reps or hold seconds per set must not exceed maxPerSet, except stimulus test. Over-cap values are lowered to the cap.",
+    workingCapRule:
+      "Working reps or hold seconds per set must not exceed maxPerSet, except stimulus test. Over-cap values are lowered to the cap. basedOnBest is the current level: the baseline set at the plan block start plus logs since then. olderBestBeforeThisBlock is context only; never plan from it.",
     goalSetsPerExercise: STRENGTH_LIMITS.goalSets,
     maxHardSessionsThisWeek: maxHardStrengthSessions(context),
     hardSessionRule:

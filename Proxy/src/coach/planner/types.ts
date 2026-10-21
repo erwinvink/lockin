@@ -159,10 +159,19 @@ export type CoachContext = {
     twoFullMonthTrend: TrendSummary;
     /** Plateau and decline evidence: the last 21 days against the 21 before (logs since the block start). */
     rollingTrend?: RollingTrendSummary;
+    /** The current level: the baseline plus logs since the plan block start (all logs without one). */
     bestRecentTests: {
       pullUps: number | null;
       pushUps: number | null;
       plankSeconds: number | null;
+    };
+    /** Higher bests logged before the current block (context only). */
+    bestBeforeBlock?: {
+      blockStartedAt: string;
+      pullUps: number | null;
+      pushUps: number | null;
+      plankSeconds: number | null;
+      note: string;
     };
   };
   adherence: {
@@ -238,6 +247,8 @@ export type RecentGoalPerformance = {
   consecutiveCleanCompletionsAtStandard: number;
   completedAt: string | null;
   latestTestDate: string | null;
+  /** The plan block start: the baseline set there counts as a fresh test for test spacing. */
+  baselineSetAt?: string | null;
 };
 
 export type WeeklyPlan = {

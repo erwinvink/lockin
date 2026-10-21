@@ -469,11 +469,19 @@ function validateGoalPrescription(
 
   if (effort?.stimulus === "test") {
     testedMetrics.add(metric);
-    const latestTest = context.plannedWork.recentGoalPerformance?.[metric]?.latestTestDate;
-    const age = latestTest ? Date.parse(context.profile.weekStart) - Date.parse(latestTest) : Number.POSITIVE_INFINITY;
-    if (Number.isFinite(age) && age < ASSESSMENT_SPACING_DAYS * DAY_MS) {
+    const performance = context.plannedWork.recentGoalPerformance?.[metric];
+    const weekStart = Date.parse(context.profile.weekStart);
+    const latestTest = performance?.latestTestDate ?? null;
+    const baselineSetAt = performance?.baselineSetAt ?? null;
+    const testAge = latestTest ? weekStart - Date.parse(latestTest) : Number.POSITIVE_INFINITY;
+    const baselineAge = baselineSetAt ? weekStart - Date.parse(baselineSetAt) : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(testAge) && testAge < ASSESSMENT_SPACING_DAYS * DAY_MS) {
       messages.push(
         `${label} ${exercise.exercise} is a test, but the last ${METRIC_LABEL[metric]} test was on ${String(latestTest).slice(0, 10)}, fewer than ${ASSESSMENT_SPACING_DAYS} days ago. Use working sets instead.`
+      );
+    } else if (Number.isFinite(baselineAge) && baselineAge < ASSESSMENT_SPACING_DAYS * DAY_MS) {
+      messages.push(
+        `${label} ${exercise.exercise} is a test, but the ${METRIC_LABEL[metric]} baseline was set at the plan block start on ${String(baselineSetAt).slice(0, 10)}, fewer than ${ASSESSMENT_SPACING_DAYS} days ago. Use working sets instead.`
       );
     }
     return;

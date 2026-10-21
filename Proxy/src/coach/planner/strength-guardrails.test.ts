@@ -182,6 +182,23 @@ test("a goal test within 28 days of the last one is rejected; a due test skips t
   assert.deepEqual(validateWeeklyPlan(plan, dueTest), { accepted: true, messages: [] });
 });
 
+test("a baseline set at a recent plan block start counts as a fresh test for the 28-day spacing", () => {
+  const plan = hybridPlan({});
+  plan.sessions[1] = {
+    ...session("Pull-up assessment", 4, "max_output", "test"),
+    exercises: [exercise("pullUp", 1, 12, 0, effort("max_output", 10, "test", 0))]
+  };
+  const withBaselineAt = (baselineSetAt: string) => {
+    const context = hybridContext({ previous: { pullUps: { target: 8, sets: 4 } } });
+    context.plannedWork.recentGoalPerformance!.pullUps.baselineSetAt = baselineSetAt;
+    return context;
+  };
+
+  const messages = validateWeeklyPlan(plan, withBaselineAt("2026-05-04T00:00:00Z")).messages;
+  assert.ok(messages.some((m) => m.includes("pull-up baseline was set at the plan block start on 2026-05-04, fewer than 28 days ago")));
+  assert.deepEqual(validateWeeklyPlan(plan, withBaselineAt("2026-03-01T00:00:00Z")), { accepted: true, messages: [] });
+});
+
 type PreviousSpec = { target: number; sets: number; date?: string };
 type EarnedSpec = { logged: number; target: number; sets: number; consecutive?: number };
 

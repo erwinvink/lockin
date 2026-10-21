@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCoachContext } from "./build-coach-context";
 import { evaluateCoachRead } from "./evaluate-coach-read";
+import { strengthProgressionPlan, workingCap } from "./strength-guardrails";
 import type { CoachRequest, RunningRequest, RunSummary, TrainingLog } from "./types";
 
 test("keeps insufficient history when both completed-month and current evidence are sparse", () => {
@@ -811,4 +812,76 @@ test("a lower retest at a new plan block is not read as a decline against the ol
 
   assert.equal(context.history.rollingTrend?.label, "insufficient_history");
   assert.notEqual(context.readiness.state, "overreaching");
+});
+
+// After "Start a new plan" with a lower retest, the current level is the new
+// baseline plus logs since the block start; older bests are context only.
+test("a lower retest at a new block sets the current level; the older best stays as context", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    planBlockStartedAt: "2026-07-08T00:00:00Z",
+    baseline: { pullUps: 8, pushUps: 30, plankSeconds: 70 },
+    plannedSessions: [
+      plannedGoalSession("old-pull", "2026-06-29T08:00:00Z", "completed", "pullUp", 4, 10),
+      plannedGoalSession("new-pull", "2026-07-10T08:00:00Z", "completed", "pullUp", 3, 6)
+    ],
+    trainingLogs: [
+      trainingLog("2026-06-20T10:00:00Z", { pullUps: 12, pushUps: 45, plankSeconds: 120 }),
+      trainingLog("2026-06-29T10:00:00Z", { sessionId: "old-pull", pullUps: 12, loggedPushUps: false, loggedPlankSeconds: false }),
+      trainingLog("2026-07-10T10:00:00Z", { sessionId: "new-pull", pullUps: 9, loggedPushUps: false, loggedPlankSeconds: false })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.deepEqual(context.history.bestRecentTests, { pullUps: 9, pushUps: 30, plankSeconds: 70 });
+  assert.equal(context.history.bestBeforeBlock?.pullUps, 12);
+  assert.equal(context.history.bestBeforeBlock?.pushUps, 45);
+  assert.equal(context.history.bestBeforeBlock?.plankSeconds, 120);
+  assert.equal(workingCap("pullUps", context.history.bestRecentTests.pullUps), 7, "85% of 9, not of 12");
+  const pull = context.plannedWork.recentGoalTargets.pullUps;
+  assert.equal(pull.latestWorkingTarget, 6, "the old block's 4 x 10 no longer anchors continuity");
+  assert.equal(context.plannedWork.recentGoalPerformance?.pullUps.prescribedTarget, 6);
+  assert.equal(context.plannedWork.recentGoalPerformance?.pullUps.baselineSetAt, "2026-07-08T00:00:00.000Z");
+});
+
+test("right after a new block the progression band starts fresh inside the new caps", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    planBlockStartedAt: "2026-07-12T00:00:00Z",
+    baseline: { pullUps: 8, pushUps: 30, plankSeconds: 70 },
+    plannedSessions: [plannedGoalSession("old-pull", "2026-07-06T08:00:00Z", "completed", "pullUp", 4, 10)],
+    trainingLogs: [trainingLog("2026-07-06T10:00:00Z", { sessionId: "old-pull", pullUps: 13 })]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+  const progression = strengthProgressionPlan(context);
+
+  assert.equal(context.history.bestRecentTests.pullUps, 8);
+  assert.equal(progression.pullUps.status, "free");
+  assert.deepEqual(progression.pullUps.target, { min: 1, max: 6 }, "inside the cap of 85% of 8, not 85% of 13");
+});
+
+test("without a block start the current level still uses every log and the baseline", () => {
+  const request = baseRequest({
+    baseline: { pullUps: 8, pushUps: 30, plankSeconds: 70 },
+    trainingLogs: [trainingLog("2026-06-20T10:00:00Z", { pullUps: 12, pushUps: 25, plankSeconds: 50 })]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.deepEqual(context.history.bestRecentTests, { pullUps: 12, pushUps: 30, plankSeconds: 70 });
+  assert.equal(context.history.bestBeforeBlock, undefined);
+});
+
+test("a block that started long ago (the profile's creation) keeps all logs in the current level", () => {
+  const request = baseRequest({
+    planBlockStartedAt: "2026-01-05T00:00:00Z",
+    baseline: { pullUps: 4, pushUps: 15, plankSeconds: 40 },
+    trainingLogs: [trainingLog("2026-06-20T10:00:00Z", { pullUps: 12, pushUps: 35, plankSeconds: 90 })]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.deepEqual(context.history.bestRecentTests, { pullUps: 12, pushUps: 35, plankSeconds: 90 });
 });

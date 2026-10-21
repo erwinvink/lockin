@@ -109,7 +109,7 @@ Normal `building`, `plateau`, and `insufficient_history` weeks should not be all
 
 ## Progression Caps
 
-Use the best actually logged recent value, falling back to baseline. These caps are enforced (`strengthGuardrails.workingCaps`); only `stimulus: test` may exceed them.
+Use the current level (`history.bestRecentTests`): the baseline set at the plan block start plus logs since then (all recent logs when no block start is known). After "Start a new plan" with a lower retest, older higher bests appear only in `history.bestBeforeBlock` as context; never plan from them. The baseline set at the block start also counts as a fresh test for the 28-day test spacing. These caps are enforced (`strengthGuardrails.workingCaps`); only `stimulus: test` may exceed them.
 
 - Pull-up working reps per set: at most 85% of the best recent pull-up value (at least 1).
 - Push-up working reps per set: at most 75% of the best recent push-up value.

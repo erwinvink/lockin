@@ -59,6 +59,13 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   const twoFullMonthTrend = summarizeTrend(lastFullMonth, previousFullMonth);
   const blockStartMs = planBlockStartMs(request);
   const rollingTrend = summarizeRollingTrend(sortedLogs, now, blockStartMs);
+  // A new plan block resets the current level and the progression evidence:
+  // caps, progression and continuity use only the block's own logs and
+  // prescriptions (the baseline set at the block start covers the rest).
+  const blockLogs = blockStartMs === null ? sortedLogs : sortedLogs.filter((log) => Date.parse(log.completedAt) >= blockStartMs);
+  const blockSessions = blockStartMs === null
+    ? request.plannedSessions
+    : request.plannedSessions.filter((session) => Date.parse(session.scheduledDate) >= blockStartMs);
   const validCompletedMonthLogCount = validLogCount(sortedLogs, previousFullMonthStart, currentMonthStart);
   const validCurrentMonthLogCount = validLogCount(sortedLogs, currentMonthStart, addMonths(currentMonthStart, 1));
   const riskFlags = collectRiskFlags(
@@ -102,15 +109,18 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       previousFullMonth,
       twoFullMonthTrend,
       rollingTrend,
+      // The current level: the baseline set at the block start plus logs
+      // since then. Without a block start, all logs (3 months) count.
       bestRecentTests: {
-        pullUps: latestKnownBest("pullUps", "loggedPullUps", sortedLogs, request.baseline.pullUps),
-        pushUps: latestKnownBest("pushUps", "loggedPushUps", sortedLogs, request.baseline.pushUps),
-        plankSeconds: latestKnownBest("plankSeconds", "loggedPlankSeconds", sortedLogs, request.baseline.plankSeconds)
-      }
+        pullUps: latestKnownBest("pullUps", "loggedPullUps", blockLogs, request.baseline.pullUps),
+        pushUps: latestKnownBest("pushUps", "loggedPushUps", blockLogs, request.baseline.pushUps),
+        plankSeconds: latestKnownBest("plankSeconds", "loggedPlankSeconds", blockLogs, request.baseline.plankSeconds)
+      },
+      ...bestBeforeBlock(sortedLogs, blockStartMs, request)
     },
     adherence,
     ...planBlockContext(request),
-    plannedWork: summarizePlannedWork(request.plannedSessions, sortedLogs, request.weekStart, today),
+    plannedWork: summarizePlannedWork(blockSessions, blockLogs, request.weekStart, today, request.plannedSessions, blockStartMs),
     readiness: {
       state,
       riskFlags
@@ -288,11 +298,13 @@ function summarizePlannedWork(
   plannedSessions: CoachRequest["plannedSessions"],
   logs: TrainingLog[],
   weekStart: string,
-  today: TodayWindow
+  today: TodayWindow,
+  allPlannedSessions: CoachRequest["plannedSessions"] = plannedSessions,
+  blockStartMs: number | null = null
 ): CoachContext["plannedWork"] {
   const startTime = new Date(weekStart).getTime();
   const endOfToday = today.end;
-  const todaySessions = plannedSessions
+  const todaySessions = allPlannedSessions
     .filter((session) => {
       const scheduled = new Date(session.scheduledDate).getTime();
       return Number.isFinite(scheduled) && scheduled >= startTime && scheduled < endOfToday;
@@ -332,9 +344,9 @@ function summarizePlannedWork(
       plankSeconds: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "plankSeconds"))
     },
     recentGoalPerformance: {
-      pullUps: summarizeRecentGoalPerformance("pullUps", plannedSessions, logs, startTime),
-      pushUps: summarizeRecentGoalPerformance("pushUps", plannedSessions, logs, startTime),
-      plankSeconds: summarizeRecentGoalPerformance("plankSeconds", plannedSessions, logs, startTime)
+      pullUps: summarizeRecentGoalPerformance("pullUps", plannedSessions, logs, startTime, allPlannedSessions, blockStartMs),
+      pushUps: summarizeRecentGoalPerformance("pushUps", plannedSessions, logs, startTime, allPlannedSessions, blockStartMs),
+      plankSeconds: summarizeRecentGoalPerformance("plankSeconds", plannedSessions, logs, startTime, allPlannedSessions, blockStartMs)
     }
   };
 }
@@ -343,7 +355,9 @@ function summarizeRecentGoalPerformance(
   metric: "pullUps" | "pushUps" | "plankSeconds",
   plannedSessions: CoachRequest["plannedSessions"],
   logs: TrainingLog[],
-  startTime: number
+  startTime: number,
+  allPlannedSessions: CoachRequest["plannedSessions"] = plannedSessions,
+  blockStartMs: number | null = null
 ): RecentGoalPerformance {
   const sessionsById = new Map(plannedSessions.map((session) => [session.id, session]));
   const matches = logs
@@ -402,7 +416,9 @@ function summarizeRecentGoalPerformance(
     clean: latest?.clean ?? null,
     consecutiveCleanCompletionsAtStandard,
     completedAt: latest?.completedAt ?? null,
-    latestTestDate: latestTestDate(metric, plannedSessions, startTime)
+    // Tests from before the block still count for the 28-day test spacing.
+    latestTestDate: latestTestDate(metric, allPlannedSessions, startTime),
+    ...(blockStartMs === null ? {} : { baselineSetAt: new Date(blockStartMs).toISOString() })
   };
 }
 
@@ -553,6 +569,41 @@ function classifyState(
   if (rollingTrendLabel === "flat" && adherence.completed >= Math.max(3, adherence.planned * 0.7)) return "plateau";
   if (rollingTrendLabel === "declining") return "overreaching";
   return "building";
+}
+
+/**
+ * Older, higher bests from before the current plan block, shown as context
+ * only (the athlete restarted lower on purpose); omitted when none is higher.
+ */
+function bestBeforeBlock(
+  sortedLogs: TrainingLog[],
+  blockStartMs: number | null,
+  request: CoachRequest
+): Pick<CoachContext["history"], "bestBeforeBlock"> {
+  if (blockStartMs === null) return {};
+  const before = sortedLogs.filter((log) => Date.parse(log.completedAt) < blockStartMs);
+  const higher = (
+    metric: "pullUps" | "pushUps" | "plankSeconds",
+    flag: "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds"
+  ): number | null => {
+    const values = before.filter((log) => log[flag]).map((log) => log[metric]);
+    if (values.length === 0) return null;
+    const best = Math.max(...values);
+    return best > request.baseline[metric] ? best : null;
+  };
+  const pullUps = higher("pullUps", "loggedPullUps");
+  const pushUps = higher("pushUps", "loggedPushUps");
+  const plankSeconds = higher("plankSeconds", "loggedPlankSeconds");
+  if (pullUps === null && pushUps === null && plankSeconds === null) return {};
+  return {
+    bestBeforeBlock: {
+      blockStartedAt: new Date(blockStartMs).toISOString(),
+      pullUps,
+      pushUps,
+      plankSeconds,
+      note: "Higher values logged before the current plan block. Context only: working caps and progression use the current level (bestRecentTests)."
+    }
+  };
 }
 
 function latestKnownBest(

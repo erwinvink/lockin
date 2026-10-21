@@ -21,7 +21,7 @@ Use the deterministic `coachContext` built by the proxy planner code before the 
 
 - profile baseline, goals, notes, equipment, selected training days, future day offsets, week start, and target date
 - last 5 logs with planned vs actual perceived effort, pain, how-you-felt signal, notes, and logged goal metrics
-- current partial month, last full month, previous full month, two-month trend, and best recent tests
+- current partial month, last full month, previous full month, the rolling 3-week trend, and best recent tests (the current level: the baseline set at the plan block start plus logs since then; older higher bests from before the block are in `bestBeforeBlock`, context only)
 - adherence counts, including misses in the most recent 14 days
 - `plannedWork.recentGoalPerformance`, which matches each logged goal result to that session's saved prescription and supplies the logged best, target, delta, clean-signal decision, repeat count at the same standard, and latest assessment date
 - `plannedWork.recentGoalTargets` as supporting prescription history, including the previous working prescription (`latestWorkingTarget`, `latestWorkingSets`)
