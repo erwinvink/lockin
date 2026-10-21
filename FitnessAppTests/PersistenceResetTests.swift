@@ -1873,9 +1873,35 @@ final class PersistenceResetTests: XCTestCase {
         updateRaceGoalBaselines(goal: goal, logs: logs, now: now, calendar: calendar)
 
         // Legacy pending rows still represent real Garmin distance: 10 + 20 + 25 km
-        // over a 10-day span = 38.5 km/week.
-        XCTAssertEqual(goal.baselineWeeklyKm, 38.5, accuracy: 0.01)
+        // over the full 28-day window = 13.75 km/week (shown as 13.8). It used to
+        // divide by the 10 days the runs covered (38.5), overstating the base.
+        XCTAssertEqual(goal.baselineWeeklyKm, 13.8, accuracy: 0.01)
         XCTAssertEqual(goal.longestRecentRunKm, 25, accuracy: 0.01)
+    }
+
+    func testUpdateRaceGoalBaselinesReadsABreakAsNoRecentVolume() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let now = Date()
+        let goal = RaceGoal(name: "Test Ultra", raceDate: now.addingTimeInterval(86_400 * 70), distanceKm: 50, elevationGainM: 2_000, baselineWeeklyKm: 45, longestRecentRunKm: 24)
+        modelContext.insert(goal)
+        for daysAgo in [50, 53, 56] {
+            modelContext.insert(RunLog(
+                sessionId: RunLog.unattachedSessionId,
+                completedAt: calendar.date(byAdding: .day, value: -daysAgo, to: now) ?? now,
+                distanceKm: 15,
+                movingSeconds: 5_400,
+                source: .garmin
+            ))
+        }
+        try modelContext.save()
+
+        updateRaceGoalBaselines(goal: goal, logs: try modelContext.fetch(FetchDescriptor<RunLog>()), now: now, calendar: calendar)
+
+        // Seven weeks off: no stale pre-break base for the coach to build on.
+        XCTAssertEqual(goal.baselineWeeklyKm, 0, accuracy: 0.01)
+        XCTAssertEqual(goal.longestRecentRunKm, 0, accuracy: 0.01)
     }
 
     func testUpdateRaceGoalBaselinesDeduplicatesGarminActivityIds() throws {
@@ -1909,7 +1935,8 @@ final class PersistenceResetTests: XCTestCase {
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
         updateRaceGoalBaselines(goal: goal, logs: logs, now: now, calendar: calendar)
 
-        XCTAssertEqual(goal.baselineWeeklyKm, 35, accuracy: 0.01)
+        // One deduplicated 35 km run in the 28-day window: 35 / 4 weeks.
+        XCTAssertEqual(goal.baselineWeeklyKm, 8.8, accuracy: 0.01)
         XCTAssertEqual(goal.longestRecentRunKm, 35, accuracy: 0.01)
     }
 

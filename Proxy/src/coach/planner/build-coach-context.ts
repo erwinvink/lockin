@@ -5,11 +5,29 @@ import type {
   CoachContext,
   CoachRequest,
   ContextState,
+  EffortLabel,
+  EffortStimulus,
   PlannedExercisePrescription,
   PlannedGoalTrend,
   RecentGoalPerformance,
   TrainingLog
 } from "./types";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Planned RPE assumed when a log carries none (manually logged or legacy
+ * sessions): the planned effort label's RPE when known, else 7 (a normal
+ * hard working set). Without it those sessions could never earn progression.
+ */
+export const DEFAULT_PLANNED_RPE = 7;
+const plannedRPEForLabel: Record<EffortLabel, number> = {
+  light: 4,
+  medium: 6,
+  hard: 7,
+  very_hard: 9,
+  max_output: 10
+};
 
 export function buildCoachContext(request: CoachRequest, now = new Date()): CoachContext {
   const sortedLogs = [...request.trainingLogs].sort(
@@ -224,10 +242,12 @@ function summarizePlannedWork(
           metric: goalMetricForExercise(exercise.exercise),
           scheduledDate: session.scheduledDate,
           target: exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps,
+          sets: exercise.sets,
+          stimulus: exercise.plannedEffortStimulus,
           volume: (exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps) * exercise.sets
         }))
     )
-    .filter((entry): entry is { metric: "pullUps" | "pushUps" | "plankSeconds"; scheduledDate: string; target: number; volume: number } =>
+    .filter((entry): entry is GoalEntry & { metric: "pullUps" | "pushUps" | "plankSeconds" } =>
       entry.metric !== null && entry.target > 0 && entry.volume > 0
     )
     .sort((a, b) => new Date(b.scheduledDate).getTime() - new Date(a.scheduledDate).getTime());
@@ -262,7 +282,11 @@ function summarizeRecentGoalPerformance(
       if (!prescription) return [];
 
       const actualRPE = normalizeRPE(log.actualRPE) ?? normalizeRPE(log.rpe);
-      const plannedRPE = normalizeRPE(log.plannedRPE);
+      const plannedRPE =
+        normalizeRPE(log.plannedRPE) ??
+        plannedRPEFromLabel(log.plannedEffortLabel) ??
+        plannedRPEFromLabel(prescription.label) ??
+        DEFAULT_PLANNED_RPE;
       const clean =
         typeof actualRPE === "number" &&
         typeof plannedRPE === "number" &&
@@ -310,15 +334,20 @@ function summarizeRecentGoalPerformance(
   };
 }
 
+function plannedRPEFromLabel(label: unknown): number | undefined {
+  return typeof label === "string" && label in plannedRPEForLabel ? plannedRPEForLabel[label as EffortLabel] : undefined;
+}
+
 function latestGoalPrescription(
   exercises: PlannedExercisePrescription[],
   metric: "pullUps" | "pushUps" | "plankSeconds"
-): { target: number; sets: number } | null {
+): { target: number; sets: number; label?: EffortLabel } | null {
   const candidates = exercises
     .filter((exercise) => isGoalWorkPrescription(exercise) && goalMetricForExercise(exercise.exercise) === metric)
     .map((exercise) => ({
       target: metric === "plankSeconds" ? exercise.targetSeconds : exercise.targetReps,
-      sets: exercise.sets
+      sets: exercise.sets,
+      label: exercise.plannedEffortLabel
     }))
     .filter((exercise) => exercise.target > 0 && exercise.sets > 0)
     .sort((a, b) => b.target - a.target || b.sets - a.sets);
@@ -368,12 +397,26 @@ function goalMetricForExercise(exercise: string): "pullUps" | "pushUps" | "plank
   }
 }
 
-function summarizeGoalTrend(
-  entries: Array<{ scheduledDate: string; target: number; volume: number }>
-): PlannedGoalTrend {
+type GoalEntry = {
+  scheduledDate: string;
+  target: number;
+  sets: number;
+  stimulus: EffortStimulus | undefined;
+  volume: number;
+};
+
+function summarizeGoalTrend(entries: GoalEntry[]): PlannedGoalTrend {
   const latest = entries[0];
   if (!latest) {
-    return { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null };
+    return {
+      latestTarget: null,
+      latestVolume: null,
+      flatCount: 0,
+      latestDate: null,
+      latestWorkingTarget: null,
+      latestWorkingSets: null,
+      latestWorkingDate: null
+    };
   }
 
   let flatCount = 0;
@@ -382,12 +425,33 @@ function summarizeGoalTrend(
     flatCount += 1;
   }
 
+  const working = latestWorkingPrescription(entries);
   return {
     latestTarget: latest.target,
     latestVolume: latest.volume,
     flatCount,
-    latestDate: latest.scheduledDate
+    latestDate: latest.scheduledDate,
+    latestWorkingTarget: working?.target ?? null,
+    latestWorkingSets: working?.sets ?? null,
+    latestWorkingDate: working?.date ?? null
   };
+}
+
+/**
+ * The top working prescription (highest target, then most sets) of the most
+ * recent 7-day block of past goal work, tests excluded. This is the
+ * "previous prescription" the validator keeps new targets continuous with;
+ * using the block's top set matches how a new plan's goal work is summarized.
+ */
+function latestWorkingPrescription(entries: GoalEntry[]): { target: number; sets: number; date: string } | null {
+  const working = entries.filter((entry) => entry.stimulus !== "test" && Number.isFinite(Date.parse(entry.scheduledDate)));
+  const latest = working[0];
+  if (!latest) return null;
+  const latestMs = Date.parse(latest.scheduledDate);
+  const top = working
+    .filter((entry) => Date.parse(entry.scheduledDate) > latestMs - 7 * DAY_MS)
+    .reduce((best, entry) => (entry.target > best.target || (entry.target === best.target && entry.sets > best.sets) ? entry : best));
+  return { target: top.target, sets: top.sets, date: latest.scheduledDate };
 }
 
 function classifyState(

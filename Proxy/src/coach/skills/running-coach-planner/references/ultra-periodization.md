@@ -22,7 +22,7 @@ Verified prescription (Wang 2023 meta-analysis of 14 RCTs; outcomes are sub-ultr
 Established coaching practice, not verified science — treat these caps as protective heuristics:
 
 - Increase the long run by no more than 10-15% per week.
-- Never schedule a long run above 1.4x the recent longest run. If race demand seems to require a bigger jump, hold the cap and add a safety flag instead.
+- Never schedule a long run above 1.4x the recent longest run (`guardrails.longRun.capKm`; enforced, a safety flag does not waive it). If race demand seems to require a bigger jump, hold the cap and explain the gap in the summary.
 - Hold or reduce the long run on recovery weeks and during taper.
 
 ## Elevation Progression
@@ -38,7 +38,8 @@ A standard build week for an athlete with an established base: the long run, one
 ## Intensity Split
 
 - Keep roughly 80% of weekly running time easy (Zone 2, conversational) and at most 20% hard (tempo, intervals, hard hills).
-- Easy days stay easy. Recovery runs carry no quality content.
+- Easy days stay easy. Recovery runs carry no quality content. Use `guardrails.easyReference` (the athlete's own recent easy runs) as the easy pace and heart-rate band.
+- `trainingSignals.running.easyShareLast4Weeks` is the share of recent runs labelled easy or recovery. Long runs and quality sessions count as not easy, so a normal week of a long run, one quality session and two easy runs reads 0.5. Only a value well below that (most runs hard) is a reason to favor easy running; do not call a 0.5 share low.
 
 ## Back-to-Back Long Runs
 
@@ -46,9 +47,9 @@ Established coaching practice, not verified science. Schedule back-to-back long 
 
 - the phase is build or peak
 - the race is 80 km or longer
-- recent volume supports it: the combined two-day distance fits inside normal weekly progression
+- recent volume supports it: the combined two-day distance fits inside normal weekly progression (the weekly cap)
 
-Otherwise use a single long run.
+Otherwise use a single long run. Outside this case, never put two hard runs (long, tempo, intervals, hills) on consecutive days.
 
 ## Downhill Conditioning
 

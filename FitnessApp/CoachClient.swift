@@ -413,6 +413,8 @@ struct CoachRunSummary: Codable, Equatable {
     var averageHr: Int?
     var rpe: Int?
     var feelScore: Int? = nil   // 1 very weak ... 5 very strong; nil when never set
+    /// The planned session's run kind when the run completed one, else a
+    /// conservative inference (easy / tempo / long), else nil.
     var kind: String?
 }
 
@@ -554,7 +556,7 @@ struct CoachPlanResponse: Codable, Equatable {
 }
 
 struct RunTargetResponse: Codable, Equatable {
-    var type: String   // "pace" | "hr"
+    var type: String   // "pace" | "hr" | "none" (the proxy dropped an implausible target: effort-based run)
     var low: Int
     var high: Int
 }
@@ -1801,6 +1803,13 @@ func makeCoachRequest(
         weekStart: weekStart
     ).filter { (1...6).contains($0) }
     let prescriptionsBySession = Dictionary(grouping: prescriptions, by: \.sessionId)
+    let recentRunLogs = Array(confirmedRunLogs(from: runLogs).suffix(30))
+    let plannedRunKinds = Dictionary(
+        sessions
+            .filter { $0.discipline == .running && !$0.runKindRaw.isEmpty }
+            .map { ($0.id, $0.runKindRaw) },
+        uniquingKeysWith: { first, _ in first }
+    )
     let running = raceGoal.map { goal in
         CoachRunningRequest(
             raceGoal: CoachRunningGoal(
@@ -1827,8 +1836,7 @@ func makeCoachRequest(
                 .flatMap { profile.runningDays.contains($0) ? $0 : nil }
                 .flatMap { TrainingWeekday.dayOffsets(for: [$0], weeklySessions: 1, weekStart: weekStart).first }
                 .flatMap { (1...6).contains($0) ? $0 : nil },
-            recentRuns: confirmedRunLogs(from: runLogs)
-                .suffix(30)
+            recentRuns: recentRunLogs
                 .map {
                     CoachRunSummary(
                         completedAt: $0.completedAt,
@@ -1839,7 +1847,7 @@ func makeCoachRequest(
                         averageHr: $0.averageHr > 0 ? $0.averageHr : nil,
                         rpe: $0.rpe > 0 ? $0.rpe : nil,
                         feelScore: $0.feelScore > 0 ? $0.feelScore : nil,
-                        kind: nil
+                        kind: coachRunKind(for: $0, plannedKindsBySessionId: plannedRunKinds, peers: recentRunLogs)
                     )
                 }
         )

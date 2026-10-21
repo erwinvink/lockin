@@ -20,11 +20,16 @@ Athlete-facing text should name each session's job plainly: what to run, at what
 Use the deterministic `coachContext` built by the proxy before the model call. It includes:
 
 - `coachContext.running`: race goal, weeks to race, recent runs (with elevation gain and loss per run), baseline weekly km, longest recent run, available running days with future day offsets, and the long-run day
-- Recent runs may include `feelScore`: 1 very weak … 5 very strong; treat 1-2 as a heavily-weighted warning sign.
+- Recent runs may include `feelScore`: 1 very weak … 5 very strong; treat 1-2 as a heavily-weighted warning sign. Runs may carry `kind` (from the planned session they completed, or a conservative app-side inference); missing means unknown.
 - shared readiness state and risk flags
 - optional `coachContext.garmin` wellness signals (training readiness, body battery, sleep score, HRV status)
 
-Do not infer these summaries from raw logs inside the model response.
+The proxy also computes, next to `coachContext`:
+
+- `trainingSignals.running`: `last7DaysKm`, `prior7DaysKm`, `fourWeekAvgKm`, `volumeVsFourWeekPct`, `longestRunLast6WeeksKm`, `recentLongRunsKm`, `easyShareLast4Weeks`, descent and ascent; `trainingSignals.race.taperStatus`; `trainingSignals.wellness.hrvGate`
+- `outputRules.guardrails`: the limits the proxy enforces after you answer — `weeklyVolume` (reference and `capKm`), `longRun.capKm`, `frequency` (min and max runs), `hardRuns`, `computedRelaxations`, `raceDayOffset`, `easyReference` (the athlete's own easy pace and heart-rate band), and `targetBounds`
+
+Use these numbers as given. Do not compute volumes, averages, or zones from raw runs yourself.
 
 ## References
 
@@ -37,13 +42,13 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 
 1. Read `coachContext`, references, and any repair request.
 2. Use the provided readiness state and apply the Garmin readiness gates from the periodization reference.
-3. Treat available future running-day offsets as availability, not a quota. Plan runs only on those offsets, choose the number of runs from the Frequency Policy below, and keep `dayOffset` values strictly increasing. Leave at least one of offsets 1 through 6 unused so the combined running-and-strength week has a complete rest day.
+3. Treat available future running-day offsets as availability, not a quota. Plan runs only on those offsets, choose the number of runs from `guardrails.frequency` and the Frequency Policy below, and keep `dayOffset` values strictly increasing. Leave at least one of offsets 1 through 6 unused so the combined running-and-strength week has a complete rest day.
 4. Place the long run on the long-run day when one is provided.
 5. Build a normal build week around the long run plus one or two quality sessions (`tempo`, `intervals`, or `hills`); easy and recovery runs fill the remaining planned run days. Keep roughly an 80/20 easy-to-hard split by time — the 20% is real, structured intensity, not an afterthought.
-6. Plan weekly volume from `baselineWeeklyKm` and the `recentRuns` trajectory, building toward the race demand. Do not undershoot the athlete's demonstrated weekly volume without a safety flag naming the reason. In build and peak, build descent durability per the periodization reference: sustained downhill work inside hill sessions and long runs, with the last hard downhill-loaded run 2-3 weeks before the race.
+6. Plan weekly volume from `guardrails.weeklyVolume` and `trainingSignals.running`, building toward the race demand: the sum of this week's planned distances (race-day session excluded) must not exceed `capKm`. Do not undershoot the athlete's demonstrated volume (`referenceKm`) unless a computed reason exists (`computedRelaxations`, a recovery week after a build block, or taper); name the reason in the summary. In build and peak, build descent durability per the periodization reference: sustained downhill work inside hill sessions and long runs, with the last hard downhill-loaded run 2-3 weeks before the race.
 7. Inside 21 days of `raceDate`, taper per the periodization reference: cut volume toward a 41-60% total reduction while holding intensity touches and the athlete's established run frequency constant.
 8. When `raceGoal.raceDate` falls on one of this week's offsets, make that day's session the race effort: title it with the race name, kind `long`, the race distance and elevation, and a goal-effort target. Keep every other run that week a short shakeout or recovery run.
-9. Give every session a `target`: `pace` in seconds per km with `low` as the faster bound, or `hr` in bpm, so each run can be pushed to Garmin as a structured workout. Write `zone` values in the form "Zone 2" (capital Z, space, digit) so app display stays consistent.
+9. Give every session a `target`: `pace` in seconds per km with `low` as the faster bound, or `hr` in bpm, so each run can be pushed to Garmin as a structured workout. Anchor targets to `guardrails.easyReference` instead of inventing zones: easy and recovery runs use its pace or heart-rate band (prefer heart rate on hilly terrain), long runs sit at or slightly below it, and quality sessions are set relative to it (for example tempo roughly 45-75 s/km faster than the easy band). Targets must stay inside `guardrails.targetBounds` (pace 150-720 s/km, heart rate 80-210 bpm); the proxy replaces implausible targets with the easy reference or drops them so the run is effort-based. Write `zone` values in the form "Zone 2" (capital Z, space, digit) so app display stays consistent.
 10. Write `summary`, `purpose`, and `notes` in the calm coach voice.
 11. Return JSON only, matching `running-week.schema.json`.
 
@@ -55,7 +60,7 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 - Established base: use 4-5 runs, and keep progressive weekly volume toward race demand.
 - Use at most 5 of the six future offsets. The complete rest day is mandatory even for an athlete whose history supports high frequency.
 - Do not make the plan timid: when readiness is clean, progress the main training variable for the phase (usually weekly volume, long-run distance, or race-specific elevation) within the safety caps.
-- If readiness or recent pain/fatigue calls for fewer runs, explain it with a safety flag rather than pretending availability changed.
+- Fewer runs than `guardrails.frequency.minRuns` are accepted only when `guardrails.computedRelaxations` is not empty (readiness state, race or taper window, post-race weeks, a tripped wellness gate, a recent run rated feel 1-2, or missing run history). Name that reason in the summary; a safety flag alone does not lower the floor.
 
 ## Hard Rules
 
@@ -65,13 +70,13 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 - If running days are selected but none of them is left this week (`outputRules.availableDayOffsets` is empty), return an empty `sessions` array and use `summary` to explain that this running week is already underway and the next full week starts after the coming rest days.
 - If no running days are selected (`outputRules.unconstrainedRunningDays` is true), any future offset 1 through 6 is available: plan a normal week on the offsets that suit it best, keeping the mandatory rest day.
 - The long run goes on the long-run day when one is provided. When the race itself falls in this week, the race session takes precedence and counts as the long run wherever it lands.
-- No weekly volume jump above 15% week-over-week without a safety flag.
-- Never schedule a long run above 1.4x the recent longest run. Hold the cap and add a safety flag explaining the race-demand pressure instead. The race-day session is exempt from this cap; when the race exceeds recent training distance, add a safety flag saying so.
-- `long`, `tempo`, `intervals`, and `hills` all count as hard sessions for weekly balance. If hard sessions exceed half the week's runs (for example a back-to-back long-run week), include a safety flag explaining why.
-- Apply the readiness gates from `references/ultra-periodization.md`: when a gate trips, move the quality session to a later clean day in the week when one exists, otherwise downgrade it to easy — and add a safety flag naming the signal.
+- Safety flags are athlete-facing notes, not permissions. They never waive a cap or rule below. Add one only when there is something specific to tell the athlete: a pain or injury note, a tripped readiness gate, a race longer than recent training, or missing run history.
+- Weekly volume (race-day session excluded) must not exceed `guardrails.weeklyVolume.capKm`: 15% (at least 3 km) above the larger of the last 7 days and the 4-week average, or 20 km for the first week back after 4+ weeks without runs. With no run history and no baseline the cap is waived: plan a minimal assessment week. Over the cap, the proxy shortens easy and recovery runs.
+- No run may exceed `guardrails.longRun.capKm` (1.4x the recent longest run). If race demand seems to need more, hold the cap and explain the gap in the summary. The race-day session is exempt; when the race exceeds recent training distance, say so in a safety flag.
+- `long`, `tempo`, `intervals`, and `hills` are hard runs. At most 2 hard runs in a 3-4 run week and 3 in a 5-run week. Never schedule two hard runs on consecutive days. The only exception is two long runs back to back, allowed only for races of 80 km or more, 4-12 weeks out (`guardrails.hardRuns.consecutiveDays` says whether it applies); such a pair counts as one hard session.
+- Apply the readiness gates from `references/ultra-periodization.md`: when a gate trips, move the quality session to a later clean day in the week when one exists, otherwise downgrade it to easy, and add a safety flag naming the signal. A tripped gate on the latest wellness day appears in `computedRelaxations`.
 - With no recent runs, anchor volume to `baselineWeeklyKm`; if that is also 0, plan a minimal assessment week and flag it.
-- More than 3 weeks from the race with clean readiness, a week of only easy and recovery runs is not a training week: every normal build week includes at least one quality session (the long run counts). All-easy weeks are reserved for recovery weeks, taper, or tripped readiness gates — and must carry a safety flag naming the reason.
-- Add safety flags for injury notes, volume jumps, or missing run history.
+- More than 3 weeks from the race, a week of only easy and recovery runs is not a training week: every normal build week includes at least one quality session (the long run counts). All-easy weeks need a computed reason in `computedRelaxations` (readiness, taper, wellness gate, recent distressed run); a safety flag is not enough.
 - For pace targets, keep `durationMinutes` roughly equal to `distanceKm` × the target pace midpoint converted to minutes, with an allowance for elevation gain.
 - Never diagnose pain or injury; adjust training and explain the safety reason.
 - Return schema-valid JSON only.
