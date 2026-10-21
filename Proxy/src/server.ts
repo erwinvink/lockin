@@ -36,14 +36,14 @@ import {
   type AutoPlanTrigger
 } from "./coach/auto-plan";
 import { answerCoachChat, type CoachChatModelCall } from "./coach/chat-model";
-import { buildCoachContextFromClient, parseCoachChatPayload } from "./coach/chat-request";
+import { assertCoachRequestShape, buildCoachContextFromClient, parseCoachChatPayload, parseCoachRequestBody } from "./coach/chat-request";
 import { appTokenFromEnv, isAuthorizedAppRequest } from "./app-auth";
 import { createGarminEnricher } from "./garmin/garmin-enrichment";
 import { createGarminRouteHandler } from "./garmin/garmin-routes";
 import { GarminSyncInputError } from "./garmin/garmin-sync";
 import { GarminSyncStore } from "./garmin/garmin-sync-store";
 import { defaultCoachModel, filterAllowedModels, pickTextModelIDs, resolveCoachModel, withDefaultCoachModel } from "./model-selection";
-import { errorResponseFor, parseJSONBody, readRequestBody, RequestBodyTooLargeError } from "./http-body";
+import { ClientInputError, errorResponseFor, parseJSONBody, parseJSONObjectBody, readRequestBody, RequestBodyTooLargeError } from "./http-body";
 import { fetchOpenAIResponse, recordCoachValidationFailure, type OpenAIRequestTelemetry } from "./openai-telemetry";
 import { createLockinApiHandler } from "./storage/lockin-api";
 import { LockinStore } from "./storage/lockin-store";
@@ -112,7 +112,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     if (req.method === "POST" && req.url === "/plan/trigger") {
-      writeJSON(res, 200, await runAutoPlanTrigger(parseAutoPlanTrigger(JSON.parse(await readBody(req)))));
+      writeJSON(res, 200, await runAutoPlanTrigger(parseAutoPlanTrigger(parseJSONObjectBody(await readBody(req)))));
       return;
     }
 
@@ -122,10 +122,10 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      const payload = JSON.parse(await readBody(req)) as CoachRequest;
+      const payload = parseCoachRequestBody(await readBody(req));
       const model = resolveCoachModel(payload.model);
 
-      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const context = await enrichWithGarmin(buildCoachContextFromClient(payload), payload.userId);
       const trainingSignals = computeTrainingSignals(context);
       const evaluation = evaluateCoachRead(context, trainingSignals);
       const generated = await generateCoachVerdict(
@@ -177,7 +177,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      const payload = JSON.parse(await readBody(req)) as CoachRequest;
+      const payload = parseCoachRequestBody(await readBody(req));
       const model = resolveCoachModel(payload.model);
 
       if (!payload.running) {
@@ -191,7 +191,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const [skill, runningSkill] = await Promise.all([loadSkillBundle(), loadRunningSkillBundle()]);
-      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const context = await enrichWithGarmin(buildCoachContextFromClient(payload), payload.userId);
 
       const result = await runCombinedWeekPipeline(
         combinedPipelineDeps(apiKey, model, skill, runningSkill, context, payload, "/generate-week")
@@ -222,11 +222,11 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       return;
     }
 
-    const payload = JSON.parse(await readBody(req)) as CoachRequest;
+    const payload = parseCoachRequestBody(await readBody(req));
     const model = resolveCoachModel(payload.model);
 
     const skill = await loadSkillBundle();
-    const context = buildCoachContext(payload);
+    const context = buildCoachContextFromClient(payload);
 
     const generated = await generateStrengthOnlyResponse(apiKey, model, skill, context, payload, "/generate-week-plan");
     if (!generated.ok) {
@@ -577,8 +577,10 @@ function parseAutoPlanTrigger(payload: Record<string, unknown>): AutoPlanTrigger
   const source = autoPlanSource(payload.source);
   const request = payload.request;
   if (!isRecord(request)) {
-    throw new Error("request object is required");
+    throw new ClientInputError("request object is required");
   }
+  // A malformed request would otherwise be stored and fail every night.
+  assertCoachRequestShape(request);
   return {
     source,
     request: request as CoachRequest,

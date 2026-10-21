@@ -1,4 +1,4 @@
-import { ClientInputError } from "../http-body";
+import { ClientInputError, parseJSONBody } from "../http-body";
 import { normalizeCoachChatMessages, type CoachChatMessage } from "./chat";
 import { buildCoachContext } from "./planner/build-coach-context";
 import type { CoachContext, CoachRequest } from "./planner/types";
@@ -41,6 +41,13 @@ export function parseCoachChatPayload(value: unknown): CoachChatPayload {
     throw new ClientInputError(error instanceof Error ? error.message : "chat messages are invalid");
   }
   return { request: value.request, messages: normalized };
+}
+
+/** A coach request body (/coach-verdict, /generate-week, /generate-week-plan): 400 for invalid JSON or shape. */
+export function parseCoachRequestBody(text: string): CoachRequest {
+  const value = parseJSONBody(text);
+  assertCoachRequestShape(value);
+  return value;
 }
 
 /**

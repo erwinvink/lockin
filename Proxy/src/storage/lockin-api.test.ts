@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import test from "node:test";
 import { createLockinApiHandler } from "./lockin-api";
 import { signAuthToken } from "./lockin-auth";
@@ -123,4 +123,39 @@ async function getJSON(url: string, token: string): Promise<Record<string, any>>
     assert.fail(`${url} returned HTTP ${response.status}: ${await response.text()}`);
   }
   return await response.json() as Record<string, any>;
+}
+
+test("storage routes answer invalid JSON with 400 and bodies over 2 MB with 413", async (t) => {
+  const store = new LockinStore(":memory:");
+  t.after(() => store.close());
+  const handler = createLockinApiHandler(store, { authSecret: "test-secret" });
+  const server = createServer(async (req, res) => {
+    if (!(await handler(req, res))) {
+      res.writeHead(404).end();
+    }
+  });
+  t.after(() => server.close());
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const url = `http://127.0.0.1:${address.port}/v1/auth/register`;
+
+  const invalid = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: "{\"username\":" });
+  assert.equal(invalid.status, 400);
+  assert.match(((await invalid.json()) as { error: string }).error, /valid JSON/);
+
+  assert.equal(await postDeclaringHugeBody(url), 413);
+});
+
+/** Declares a body over 2 MB without sending it, so the 413 can be read without a write race. */
+function postDeclaringHugeBody(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(url, { method: "POST", headers: { "content-type": "application/json", "content-length": String(3 * 1024 * 1024) } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+      req.destroy();
+    });
+    req.on("error", reject);
+    req.flushHeaders();
+  });
 }

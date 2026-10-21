@@ -3,7 +3,7 @@ import test from "node:test";
 import { ClientInputError } from "../http-body";
 import { COACH_CHAT_MAX_TEXT_LENGTH } from "./chat";
 import { chatRequest } from "./chat.fixtures";
-import { assertCoachRequestShape, buildCoachContextFromClient, parseCoachChatPayload } from "./chat-request";
+import { assertCoachRequestShape, buildCoachContextFromClient, parseCoachChatPayload, parseCoachRequestBody } from "./chat-request";
 import { buildCoachContext } from "./planner/build-coach-context";
 
 const question = [{ role: "user", text: "What should I do today?" }];
@@ -69,4 +69,16 @@ test("turns a context-builder crash on bad input into a client error, and rethro
     () => buildCoachContextFromClient(chatRequest(), () => { throw new Error("disk full"); }),
     (error: unknown) => !(error instanceof ClientInputError) && error instanceof Error && error.message === "disk full"
   );
+});
+
+test("plan and coach-read bodies give client errors for invalid JSON or a malformed request", () => {
+  assert.equal(parseCoachRequestBody(JSON.stringify(chatRequest())).model, "gpt-6.1-sol");
+  for (const [body, pattern] of [
+    ["{\"baseline\":", /valid JSON/],
+    ["", /request body is required/],
+    ["[]", /request object is required/],
+    [JSON.stringify({ ...chatRequest(), trainingLogs: "none" }), /trainingLogs must be an array/]
+  ] as Array<[string, RegExp]>) {
+    assert.throws(() => parseCoachRequestBody(body), (error: unknown) => error instanceof ClientInputError && pattern.test(error.message), body);
+  }
 });
