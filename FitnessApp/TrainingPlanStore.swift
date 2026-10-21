@@ -975,6 +975,12 @@ private func preferredGarminRunLog(_ lhs: RunLog, _ rhs: RunLog) -> RunLog {
 /// run history: baseline weekly volume = the last 28 days of running divided
 /// by four weeks; longest recent run = the longest run in the last 42 days.
 /// Manually entered values act only as a fallback until real runs exist.
+///
+/// The 28 days are always divided by four. Dividing by the span the data
+/// covered made one run after three weeks off read as a full weekly base;
+/// the Garmin sync now pulls 90 days, so a first sync sees the whole window.
+/// Once real runs exist, a quiet window reads as 0 instead of keeping a
+/// stale pre-break value.
 func updateRaceGoalBaselines(
     goal: RaceGoal,
     logs: [RunLog],
@@ -987,23 +993,16 @@ func updateRaceGoalBaselines(
     let fourWeeksAgo = calendar.date(byAdding: .day, value: -28, to: now) ?? now
     let sixWeeksAgo = calendar.date(byAdding: .day, value: -42, to: now) ?? now
 
-    let inWindow = garminLogs.filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
-    let recentVolume = inWindow.reduce(0.0) { $0 + $1.distanceKm }
-    if recentVolume > 0, let oldest = inWindow.map(\.completedAt).min() {
-        // Divide by the span the data actually covers (a first sync only sees
-        // ~7 days), converging to a true 4-week average as history grows.
-        let daysCovered = min(28.0, max(1.0, now.timeIntervalSince(oldest) / 86_400))
-        let weeksCovered = max(1.0, daysCovered / 7.0)
-        goal.baselineWeeklyKm = (recentVolume / weeksCovered * 10).rounded() / 10
-    }
+    let recentVolume = garminLogs
+        .filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
+        .reduce(0.0) { $0 + $1.distanceKm }
+    goal.baselineWeeklyKm = (recentVolume / 4 * 10).rounded() / 10
 
     let longestRecent = garminLogs
         .filter { $0.completedAt >= sixWeeksAgo && $0.completedAt <= now }
         .map(\.distanceKm)
         .max() ?? 0
-    if longestRecent > 0 {
-        goal.longestRecentRunKm = (longestRecent * 10).rounded() / 10
-    }
+    goal.longestRecentRunKm = (longestRecent * 10).rounded() / 10
 }
 
 /// Mirrors the sidecar's running filter (any typeKey containing "running" or
