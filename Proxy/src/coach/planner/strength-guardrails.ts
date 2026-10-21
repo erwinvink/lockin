@@ -192,7 +192,7 @@ export function strengthProgressionPlan(
           maxSets: repsPossible ? previousSets : previousSets + 1,
           setRoute,
           note: repsPossible
-            ? `Clean matched performance earned progression from ${previous} ${unit} x ${previousSets} sets: prescribe ${repMin}-${repMax} ${unit} with at most ${previousSets} sets${setRoute ? `, or keep ${setRoute.target} ${unit} and use ${setRoute.sets} sets` : ""}.`
+            ? `Clean matched performance earned progression from ${previous} ${unit} x ${previousSets} sets: prescribe ${span(repMin, repMax)} ${unit} with at most ${previousSets} sets${setRoute ? `, or keep ${setRoute.target} ${unit} and use ${setRoute.sets} sets` : ""}.`
             : `Clean matched performance earned progression, but ${previous + step.min} ${unit} would exceed the working cap of ${cap}: keep ${heldTarget} ${unit} and use ${previousSets + 1} sets.`
         };
       } else {
@@ -286,6 +286,10 @@ export function strengthGuardrailsForPrompt(
       })
     )
   };
+}
+
+function span(min: number, max: number): string {
+  return min === max ? `${min}` : `${min}-${max}`;
 }
 
 function previousWorkingPrescription(context: CoachContext, metric: GoalMetric): { target: number; sets: number } | null {
