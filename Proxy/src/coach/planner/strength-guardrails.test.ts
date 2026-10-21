@@ -46,6 +46,20 @@ test("clamp lowers over-cap goal work to the cap but leaves tests alone", () => 
   assert.equal(plan.sessions[0].exercises[1].reps, 35, "input is not mutated");
 });
 
+test("a strength clamp notes the new numbers in the session rationale so the text never quotes the old reps", () => {
+  const plan = hybridPlan({ pushReps: 35 });
+  plan.sessions[0].progressionRationale = "Push-ups move to 35 reps per set.";
+
+  const { plan: clamped } = clampWeeklyPlan(plan, hybridContext());
+
+  assert.equal(
+    clamped.sessions[0].progressionRationale,
+    "Push-ups move to 35 reps per set. Adjusted to the plan limits: Push-ups 35 -> 30 reps per set (working cap)."
+  );
+  assert.equal(clamped.sessions[1].progressionRationale, plan.sessions[1].progressionRationale, "untouched sessions keep their text");
+  assert.equal(plan.sessions[0].progressionRationale, "Push-ups move to 35 reps per set.", "input is not mutated");
+});
+
 test("without earned progression the top target stays in the hold band; clamp lowers an unearned increase", () => {
   const context = hybridContext({ previous: { pushUps: { target: 24, sets: 3 } } });
   const plan = hybridPlan({ pushReps: 27 });

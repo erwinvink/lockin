@@ -13,6 +13,18 @@ export type GoalMetric = "pullUps" | "pushUps" | "plankSeconds";
 export const GOAL_METRICS: GoalMetric[] = ["pullUps", "pushUps", "plankSeconds"];
 export const METRIC_LABEL: Record<GoalMetric, string> = { pullUps: "pull-up", pushUps: "push-up", plankSeconds: "plank" };
 const METRIC_UNIT: Record<GoalMetric, string> = { pullUps: "reps", pushUps: "reps", plankSeconds: "seconds" };
+const METRIC_NAME: Record<GoalMetric, string> = { pullUps: "Pull-ups", pushUps: "Push-ups", plankSeconds: "Plank" };
+
+/**
+ * Appends what a clamp changed to the session's progression rationale (the
+ * text the app shows with the session), like the running clamps add notes.
+ */
+export function annotateSession(session: { progressionRationale?: unknown }, notes: string[]) {
+  if (notes.length === 0) return;
+  const base = typeof session.progressionRationale === "string" ? session.progressionRationale.trim() : "";
+  const note = `Adjusted to the plan limits: ${notes.join("; ")}.`;
+  session.progressionRationale = base ? `${base} ${note}` : note;
+}
 
 export const STRENGTH_LIMITS = {
   workingCapRatio: { pullUps: 0.85, pushUps: 0.75, plankSeconds: 0.8 } as Record<GoalMetric, number>,
@@ -328,6 +340,8 @@ export function clampWeeklyPlan(
 
   sessions.forEach((session, sessionIndex) => {
     if (!Array.isArray(session.exercises)) return;
+    // Athlete-facing notes, so the session text never quotes the old numbers.
+    const notes: string[] = [];
     for (const exercise of session.exercises) {
       const metric = metricForExercise(exercise.exercise);
       if (!metric) continue;
@@ -335,26 +349,31 @@ export function clampWeeklyPlan(
       const effort = exercise.plannedEffort as EffortLike | undefined;
       const field = metric === "plankSeconds" ? "seconds" : "reps";
       const entry = progression[metric];
+      const name = METRIC_NAME[metric];
+      const unit = METRIC_UNIT[metric];
 
       if (effort?.stimulus !== "test" && entry.cap !== null && goalValue(metric, exercise) > entry.cap) {
-        adjustments.push(`${where}: ${goalValue(metric, exercise)} lowered to the working cap of ${entry.cap} ${METRIC_UNIT[metric]}.`);
+        adjustments.push(`${where}: ${goalValue(metric, exercise)} lowered to the working cap of ${entry.cap} ${unit}.`);
+        notes.push(`${name} ${goalValue(metric, exercise)} -> ${entry.cap} ${unit} per set (working cap)`);
         exercise[field] = entry.cap;
       }
 
       if (!isUsefulGoalEffort(effort) || typeof exercise.sets !== "number") continue;
       if (exercise.sets > STRENGTH_LIMITS.goalSets.max) {
         adjustments.push(`${where}: ${exercise.sets} sets lowered to ${STRENGTH_LIMITS.goalSets.max}.`);
+        notes.push(`${name} ${exercise.sets} -> ${STRENGTH_LIMITS.goalSets.max} sets`);
         exercise.sets = STRENGTH_LIMITS.goalSets.max;
       } else if (exercise.sets >= 1 && exercise.sets < STRENGTH_LIMITS.goalSets.min) {
         adjustments.push(`${where}: ${exercise.sets} working set raised to ${STRENGTH_LIMITS.goalSets.min}.`);
+        notes.push(`${name} ${exercise.sets} -> ${STRENGTH_LIMITS.goalSets.min} sets`);
         exercise.sets = STRENGTH_LIMITS.goalSets.min;
       }
 
       if (!normal || entry.status === "free" || !entry.target) continue;
       if (goalValue(metric, exercise) > entry.target.max) {
-        adjustments.push(
-          `${where}: ${goalValue(metric, exercise)} lowered to ${entry.target.max} ${METRIC_UNIT[metric]} (${entry.status === "hold" ? "progression not earned" : "largest allowed progression step"}).`
-        );
+        const reason = entry.status === "hold" ? "progression not earned" : "largest allowed progression step";
+        adjustments.push(`${where}: ${goalValue(metric, exercise)} lowered to ${entry.target.max} ${unit} (${reason}).`);
+        notes.push(`${name} ${goalValue(metric, exercise)} -> ${entry.target.max} ${unit} per set (${reason})`);
         exercise[field] = entry.target.max;
       }
       const previousTarget = entry.previousTarget;
@@ -363,12 +382,15 @@ export function clampWeeklyPlan(
       const maxSetsAtHeldTarget = Math.min(STRENGTH_LIMITS.goalSets.max, previousSets + 1);
       if (goalValue(metric, exercise) > previousTarget && exercise.sets > previousSets) {
         adjustments.push(`${where}: sets lowered from ${exercise.sets} to ${previousSets} so the target and the sets do not rise together.`);
+        notes.push(`${name} ${exercise.sets} -> ${previousSets} sets (reps and sets do not rise together)`);
         exercise.sets = previousSets;
       } else if (exercise.sets > maxSetsAtHeldTarget) {
         adjustments.push(`${where}: sets lowered from ${exercise.sets} to ${maxSetsAtHeldTarget} (at most one more set than ${previousSets}).`);
+        notes.push(`${name} ${exercise.sets} -> ${maxSetsAtHeldTarget} sets (at most one set more than last week)`);
         exercise.sets = maxSetsAtHeldTarget;
       }
     }
+    annotateSession(session, notes);
   });
 
   return { plan: { ...plan, sessions }, adjustments };
