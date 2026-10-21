@@ -218,7 +218,7 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
           rules: [
             "taper_3w (15-21 days out): weekly km at most 80% of the pre-taper average; long run at most longRunCapKm.taper_3w.",
             "taper_2w (8-14 days out): weekly km 50-70% of the pre-taper average; long run at most longRunCapKm.taper_2w; keep one short quality session (the last one at least 8 days out).",
-            "race_week (1-7 days out): besides the race, only short easy runs or shakeouts of at most raceWeekRunCapKm each (40% of a normal easy run, max 8 km); strides inside an easy run are fine; no tempo, intervals, hills or long runs.",
+            "race_week (1-7 days out): besides the race, only short easy runs or shakeouts of at most raceWeekRunCapKm each (50% of a normal easy run, max 8 km); strides inside an easy run are fine; no tempo, intervals, hills or long runs.",
             "Inside 10 days: no hill session and no new hill or downhill load (climbing at most 1.5x usualClimbMPerKm, never capped below 150 m).",
             "post_race_1w: easy or recovery runs only, short; post_race_2w: back to easy volume at most 70% of the pre-taper average.",
             "Days in one window can sit in different phases: each run follows the rule of its own day."

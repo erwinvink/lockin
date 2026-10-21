@@ -117,8 +117,8 @@ test("clamp leaves the week alone when easy runs cannot absorb the excess, so va
 
 test("the race-day session is outside the weekly and long-run caps", () => {
   // Seven steady weeks so the pre-taper average (the 4 weeks before 21 days
-  // out) is on record. Race-week shakeouts are now capped at 40% of a normal
-  // easy run (8.1 km here, so 3 km), which is why they are 3 km each.
+  // out) is on record. Race-week shakeouts are capped at 50% of a normal
+  // easy run (8.1 km here, so 4 km); the 3 km shakeouts fit under it.
   const context = contextWith({
     recentRuns: steadyWeeks([45, 45, 45, 45, 45, 45, 45]),
     raceGoal: { name: "Ridge Ultra 60K", raceDate: "2026-05-17T00:00:00Z", distanceKm: 60, elevationGainM: 2400 },
@@ -591,7 +591,7 @@ test("12 days out the taper caps volume against the pre-taper average and phases
   assert.equal(race.weeklyKmCap, 30.7);
   assert.equal(guardrails.weeklyVolume.kind === "capped" && guardrails.weeklyVolume.capKm, 30.7);
   assert.equal(race.normalEasyRunKm, 9);
-  assert.equal(race.shortRunCapKm, 3.5, "40% of a normal 9 km easy run, to the nearest 0.5 km");
+  assert.equal(race.shortRunCapKm, 4.5, "50% of a normal 9 km easy run, to the nearest 0.5 km");
   assert.equal(race.longRunCapKm.taper_2w, 13.2, "60% of the recent longest 22 km");
   assert.equal(guardrails.qualityLimit?.max, 1);
 });
@@ -610,12 +610,12 @@ test("the taper clamp keeps one quality session, removes hills inside 10 days an
   assert.ok(messages.some((m) => m.includes("Run 2 (Downhill repeats) is a hills run on offset 2, 10 day(s) before the race: no new hill or downhill session inside 10 days")));
   assert.ok(messages.some((m) => m.includes("Run 2 (Downhill repeats) climbs 700 m over 10 km") && m.includes("at most 225 m")));
   assert.ok(messages.some((m) => m.includes("Run 4 (Long trail run) is a long run on offset 5, 7 day(s) before Trail 75K: only short easy runs or shakeouts")));
-  assert.ok(messages.some((m) => m.includes("race week shakeouts stay at or below 40% of a normal 9 km easy run (max 8 km): at most 3.5 km")));
+  assert.ok(messages.some((m) => m.includes("race week shakeouts stay at or below 50% of a normal 9 km easy run (max 8 km): at most 4.5 km")));
 
   const { week: clamped } = clampRunningWeek(week, context);
   assert.deepEqual(clamped.sessions.map((session) => session.kind), ["easy", "easy", "tempo", "easy"]);
   assert.equal(clamped.sessions[3].title, "Easy shakeout run");
-  assert.equal(clamped.sessions[3].distanceKm, 3.5);
+  assert.equal(clamped.sessions[3].distanceKm, 4.5);
   assert.ok(clamped.sessions[1].elevationMeters <= 225, "1.5x the usual 15 m/km over 10 km");
   assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });
 });
@@ -650,7 +650,7 @@ test("in race week only shakeouts surround the race, and a tempo becomes a shake
   assert.ok(validateRunningWeek(week, context).messages.some((m) => m.includes("Run 2 (Race-pace tempo) is a tempo run on offset 3, 3 day(s) before Trail 75K")));
   const { week: clamped, adjustments } = clampRunningWeek(week, context);
   assert.equal(clamped.sessions[1].kind, "easy");
-  assert.equal(clamped.sessions[1].distanceKm, 3.5);
+  assert.equal(clamped.sessions[1].distanceKm, 4.5);
   assert.equal(clamped.sessions[3].distanceKm, 75, "the race itself is untouched");
   assert.ok(adjustments.some((a) => a.includes("tempo changed to an easy run")));
   assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });

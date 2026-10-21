@@ -21,7 +21,7 @@ Enforced by the proxy (`outputRules.guardrails.raceWindow`). Each day of the rol
 
 - 15-21 days out: weekly km at most 80%; the long run at most 75% of the recent longest run.
 - 8-14 days out: weekly km 50-70% (capped at 70%); the long run at most 60% of the recent longest run; keep one short quality session (tempo or intervals), the last one at least 8 days out.
-- Race week (1-7 days out): besides the race, only short easy runs or shakeouts, each at most 40% of a normal easy run and at most 8 km; strides inside an easy run keep the legs sharp. No tempo, intervals, hills, or long runs. In an ultra the race itself carries the week's load, so the runs around it are shorter than the "half of normal volume" seen in shorter-race studies.
+- Race week (1-7 days out): besides the race, only short easy runs or shakeouts, each at most 50% of a normal easy run and at most 8 km; strides inside an easy run keep the legs sharp. No tempo, intervals, hills, or long runs. This matches the "about half of normal volume" seen in taper studies; the week's total stays low because every run besides the race is short and easy.
 - Inside 10 days: no hill session and no new hill or downhill load (climbing at most 1.5x the athlete's usual m/km, never capped below 150 m).
 - After the race: easy or recovery runs only in the first week (weekly km at most 40%), and at most 70% in the second week.
 - From 21 days out, one quality session per week at most.

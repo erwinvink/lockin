@@ -12,7 +12,7 @@ import type { CoachContext, RunningWeek, RunSummary } from "./types";
  *   long run at most 75% of the recent longest run.
  * - 8-14 days out: weekly km at most 70% (aim 50-70%), long run at most 60%.
  * - Race week (1-7 days out): only short easy runs or shakeouts, each at most
- *   40% of a normal easy run and at most 8 km (strides inside them are fine).
+ *   50% of a normal easy run and at most 8 km (strides inside them are fine).
  * - One short quality session at most from 21 days out, none inside 7 days.
  * - No hill session and no new hill load inside 10 days: climbing at most
  *   1.5x the athlete's usual m/km (and never capped below 150 m).
@@ -33,7 +33,7 @@ export const TAPER_LIMITS = {
     post_race_2w: 0.7
   } as Record<RaceDayPhase, number>,
   longRunRatio: { taper_3w: 0.75, taper_2w: 0.6 } as Partial<Record<RaceDayPhase, number>>,
-  shortRunRatio: 0.4,
+  shortRunRatio: 0.5,
   shortRunMaxKm: 8,
   shortRunMinKm: 3,
   /** Shakeout cap when the athlete has no normal easy run to measure. */
@@ -263,7 +263,7 @@ export function runRuleFor(session: RunningWeek["sessions"][number], limits: Run
     rule.maxKm = race.shortRunCapKm;
     rule.maxKmReason = race.normalEasyRunKm === null
       ? `race week shakeouts stay at or below ${race.shortRunCapKm} km`
-      : `race week shakeouts stay at or below 40% of a normal ${race.normalEasyRunKm} km easy run (max ${TAPER_LIMITS.shortRunMaxKm} km)`;
+      : `race week shakeouts stay at or below ${Math.round(TAPER_LIMITS.shortRunRatio * 100)}% of a normal ${race.normalEasyRunKm} km easy run (max ${TAPER_LIMITS.shortRunMaxKm} km)`;
   } else if (phase === "post_race_1w") {
     rule.allowedKinds = EASY_KINDS;
     rule.kindReason = `${-days} day(s) after ${race.raceName}: easy or recovery runs only`;
