@@ -158,12 +158,12 @@ export function computePeriodization({ request, readinessState }: PeriodizationI
   let due = false;
   let reason: string;
   const daysToRace = Number.isFinite(raceDate) ? Math.round((raceDate - weekStart) / DAY_MS) : null;
-  if (!dueByCount) {
-    reason = `${loadingWeeks} loading week(s) ${since}; a planned recovery week follows ${RECOVERY_CYCLE.loadingWeeksBeforeRecovery} loading weeks (3:1).`;
-  } else if (daysToRace !== null && daysToRace >= 0 && daysToRace <= RECOVERY_CYCLE.taperDays) {
-    reason = `${loadingWeeks} loading weeks ${since}, but the race is ${daysToRace} day(s) away: the taper replaces the recovery week.`;
+  if (daysToRace !== null && daysToRace >= 0 && daysToRace <= RECOVERY_CYCLE.taperDays) {
+    reason = `The race is ${daysToRace} day(s) away: the taper takes the place of planned recovery weeks.`;
   } else if (daysToRace !== null && daysToRace < 0 && daysToRace >= -RECOVERY_CYCLE.postRaceDays) {
-    reason = `${loadingWeeks} loading weeks ${since}, but the race was ${-daysToRace} day(s) ago: post-race recovery comes first.`;
+    reason = `The race was ${-daysToRace} day(s) ago: post-race recovery comes first.`;
+  } else if (!dueByCount) {
+    reason = `${loadingWeeks} loading week(s) ${since}; a planned recovery week follows ${RECOVERY_CYCLE.loadingWeeksBeforeRecovery} loading weeks (3:1).`;
   } else if (readinessState === "recovery_needed" || readinessState === "overreaching") {
     reason = `${loadingWeeks} loading weeks ${since}, but readiness is ${readinessState}: the reactive offload already backs off this week.`;
   } else {

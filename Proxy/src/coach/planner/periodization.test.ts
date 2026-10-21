@@ -175,7 +175,7 @@ test("a recovery week stays recognised when its first day still held a long run"
 test("the taper, the post-race weeks and a reactive state replace the planned recovery week", () => {
   const taper = periodization(request({ weekStart: blockDay(4, 1), weeklyKm: STEADY, raceDate: "2026-08-12T00:00:00Z" }));
   assert.equal(taper.recoveryWeekDue, false);
-  assert.match(taper.recoveryWeekReason, /the race is 16 day\(s\) away: the taper replaces the recovery week/);
+  assert.match(taper.recoveryWeekReason, /The race is 16 day\(s\) away: the taper takes the place of planned recovery weeks/);
 
   const painNow: TrainingLog = {
     sessionId: "s", completedAt: new Date(Date.parse(blockDay(4, 1)) - 6 * 60 * 60 * 1000).toISOString(), pullUps: 8, pushUps: 30,
