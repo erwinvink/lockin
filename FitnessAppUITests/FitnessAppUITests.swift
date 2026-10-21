@@ -342,7 +342,10 @@ final class FitnessAppUITests: XCTestCase {
         waitForExpectations(timeout: 240)
 
         XCTAssertFalse(elementContaining(app, "Not sent").exists)
-        XCTAssertTrue(app.descendants(matching: .any)["coach-chat-follow-ups"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            revealInChat(app, app.descendants(matching: .any)["coach-chat-follow-ups"], olderFirst: false),
+            "Expected follow-up questions under the last coach answer"
+        )
 
         // A proxy without an OpenAI key answers with the built-in quick
         // answers, whose copy is fixed. Model answers vary, so only their
@@ -351,7 +354,7 @@ final class FitnessAppUITests: XCTestCase {
             assertChatContains(app, "Keep going")
             assertChatContains(app, "one more honest")
             assertChatContains(app, "recent pain up to 4/10")
-            assertChatContains(app, "Earlier you asked about your long-term schedule, your biggest improvement point, and fatigue")
+            assertChatContains(app, "Earlier you asked about your biggest improvement point, motivation, and fatigue")
             assertChatContains(app, "against the 80% standard")
             assertChatContains(app, "Keep shoulders warm before pull work")
         }
@@ -449,24 +452,30 @@ final class FitnessAppUITests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let element = elementContaining(app, text)
+        if !revealInChat(app, elementContaining(app, text), olderFirst: true) {
+            XCTFail("Expected coach chat to contain: \(text)", file: file, line: line)
+        }
+    }
+
+    /// The chat only renders bubbles near the screen, so an element may need
+    /// scrolling into view: through older messages first, or newer first.
+    private func revealInChat(_ app: XCUIApplication, _ element: XCUIElement, olderFirst: Bool) -> Bool {
         if element.waitForExistence(timeout: 2) {
-            return
+            return true
         }
-
         let scrollView = app.scrollViews["coach-chat-scroll"]
-        for _ in 0..<5 {
-            if scrollView.exists {
-                scrollView.swipeUp()
-            } else {
-                app.swipeUp()
-            }
-            if element.waitForExistence(timeout: 1) {
-                return
+        let surface: XCUIElement = scrollView.exists ? scrollView : app
+        let towardOlder = { surface.swipeDown() }
+        let towardNewer = { surface.swipeUp() }
+        for swipe in olderFirst ? [towardOlder, towardNewer] : [towardNewer, towardOlder] {
+            for _ in 0..<10 {
+                swipe()
+                if element.waitForExistence(timeout: 1) {
+                    return true
+                }
             }
         }
-
-        XCTFail("Expected coach chat to contain: \(text)", file: file, line: line)
+        return false
     }
 
     private func waitForCoachTypingToFinish(_ app: XCUIApplication) {
