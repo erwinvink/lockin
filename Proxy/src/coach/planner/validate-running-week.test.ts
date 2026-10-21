@@ -300,7 +300,7 @@ test("allows the longest run on the race-day offset even when it is not the long
     summary: "Race week: short shakeouts, then the race effort on Sunday.",
     safetyFlags: [],
     sessions: [
-      run("Easy shakeout", 1, "easy", 6),
+      run("Easy shakeout", 1, "easy", 4),
       run("Recovery jog", 3, "recovery", 5),
       run("Pre-race shakeout", 5, "easy", 4),
       run("Race-day effort", 6, "long", 24)
@@ -329,7 +329,7 @@ test("keeps the race-day exemption stable across a DST transition", () => {
     summary: "Race week across the clock change, with the race effort on Sunday.",
     safetyFlags: [],
     sessions: [
-      run("Easy shakeout", 1, "easy", 6),
+      run("Easy shakeout", 1, "easy", 4),
       run("Recovery jog", 3, "recovery", 5),
       run("Pre-race shakeout", 5, "easy", 4),
       run("Race-day effort", 6, "long", 24)
@@ -498,7 +498,7 @@ test("rejects the longest run when it lands on neither the race day nor the long
     summary: "Race week, but the longest effort drifts to Thursday.",
     safetyFlags: [],
     sessions: [
-      run("Easy shakeout", 1, "easy", 6),
+      run("Easy shakeout", 1, "easy", 4),
       run("Long trail run", 3, "long", 24),
       run("Pre-race shakeout", 5, "easy", 5),
       run("Recovery jog", 6, "recovery", 4)
@@ -507,8 +507,10 @@ test("rejects the longest run when it lands on neither the race day nor the long
 
   const result = validateRunningWeek(week, context);
 
+  // Race week holds no long run (the long-run day is free there), so the
+  // drifting long run is now rejected by the race-week rule instead.
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("long-run day")));
+  assert.ok(result.messages.some((message) => message.includes("Run 2 (Long trail run) is a long run on offset 3") && message.includes("only short easy runs or shakeouts")));
 });
 
 test("rejects a non-integer day offset even when it falls inside 1 through 6", () => {
@@ -645,12 +647,13 @@ function wednesdayContext(): CoachContext {
 function raceExemptionWeek(): RunningWeek {
   // The longest run sits on dayOffset 5 — the race day in the DST tests —
   // while longRunDayOffset is 1, so acceptance hinges on the race exemption
-  // resolving the correct offset.
+  // resolving the correct offset. Race-week shakeouts are now capped (5 km
+  // without a normal easy run on record), so the first one is 4 km, not 6.
   return {
     summary: "Race week: easy running around the mid-week race effort.",
     safetyFlags: [],
     sessions: [
-      run("Easy shakeout", 1, "easy", 6),
+      run("Easy shakeout", 1, "easy", 4),
       run("Recovery jog", 3, "recovery", 5),
       run("Race-day effort", 5, "long", 24),
       run("Post-race jog", 6, "recovery", 4)

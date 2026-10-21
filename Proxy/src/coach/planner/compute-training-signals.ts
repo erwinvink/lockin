@@ -128,7 +128,7 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
 export const coachReferencePoints = [
   "Volume jumps: week-over-week load ratios are weak, contested evidence (acute:chronic ratios predict injury no better than chance in some cohorts) — treat a sharp rise vs the 4-week average as a hedged caution, never as an injury verdict.",
   "HRV gate: when overnight HRV is suppressed, favor easy work or rest that day; when balanced or rising, hard sessions are fine. Use it to gate intensity, not to rewrite the plan.",
-  "Taper: 8-14 days out, reduce running volume roughly 41-60% while keeping intensity and session frequency — do not add fitness in the final two weeks.",
+  "Taper: 15-21 days out run at most 80% of the pre-taper volume, 8-14 days out about 50-70% with one short quality session, and in race week only short shakeouts around the race — do not add fitness in the final two weeks.",
   "Downhill conditioning: trail runners who train downhill repeats show markedly less muscle damage and better strength retention; descent exposure matters for ultra prep, not just ascent.",
   "Strength serves the race: heavy (≥80% 1RM) strength work and plyometrics improve running economy — frame strength sessions as part of the ultra build, not a separate hobby.",
   "Long-run progression: grow the weekly long run gradually and respect recovery weeks; the longest recent run versus race distance is the key readiness gap to narrate."

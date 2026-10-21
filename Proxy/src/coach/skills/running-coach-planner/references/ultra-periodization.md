@@ -8,14 +8,23 @@ Use `weeksToRace` to pick the phase. Boundaries are guides, not hard cutoffs.
 - Build (~12 to ~6 weeks out): progress weekly volume, long-run distance, and elevation toward race demand. At most one quality session per week.
 - Peak (~6 to ~3 weeks out): biggest long runs and biggest elevation weeks of the cycle. Keep intensity controlled; specificity beats speed.
 - Taper (final 1-3 weeks): see the Taper section. Begin no later than 21 days out; 8-14 days is the evidence optimum.
+- Recovery weeks: every fourth block week (3:1), see Planned Recovery Weeks.
 
 ## Taper
 
 Verified prescription (Wang 2023 meta-analysis of 14 RCTs; outcomes are sub-ultra time trials, so treat exact percentages as the best available extrapolation for 50-100K):
 
 - Taper for 8-14 days when the block has gone well; never longer than 21 days.
-- Cut weekly volume progressively to a total reduction of 41-60% versus the pre-taper week. Cutting more than 60% adds nothing — race week still holds roughly half of normal volume.
-- Hold intensity and the athlete's established run frequency constant through the taper: keep short quality touches (strides, brief tempo) into race week. Shorten sessions; do not slow them all down, remove them, or inflate frequency to every available day.
+- Cut volume progressively (the meta-analysis optimum is a 41-60% total reduction) while holding intensity: shorten sessions rather than slowing them all down, keep the athlete's established run frequency where the caps allow, and never inflate frequency to every available day.
+
+Enforced by the proxy (`outputRules.guardrails.raceWindow`). Each day of the rolling week has its own phase, so one week can straddle two phases; percentages are of the pre-taper 4-week average (the four weeks before 21 days out):
+
+- 15-21 days out: weekly km at most 80%; the long run at most 75% of the recent longest run.
+- 8-14 days out: weekly km 50-70% (capped at 70%); the long run at most 60% of the recent longest run; keep one short quality session (tempo or intervals), the last one at least 8 days out.
+- Race week (1-7 days out): besides the race, only short easy runs or shakeouts, each at most 40% of a normal easy run and at most 8 km; strides inside an easy run keep the legs sharp. No tempo, intervals, hills, or long runs. In an ultra the race itself carries the week's load, so the runs around it are shorter than the "half of normal volume" seen in shorter-race studies.
+- Inside 10 days: no hill session and no new hill or downhill load (climbing at most 1.5x the athlete's usual m/km, never capped below 150 m).
+- After the race: easy or recovery runs only in the first week (weekly km at most 40%), and at most 70% in the second week.
+- From 21 days out, one quality session per week at most.
 
 ## Long-Run Progression
 
@@ -23,7 +32,15 @@ Established coaching practice, not verified science — treat these caps as prot
 
 - Increase the long run by no more than 10-15% per week.
 - Never schedule a long run above 1.4x the recent longest run (`guardrails.longRun.capKm`; enforced, a safety flag does not waive it). If race demand seems to require a bigger jump, hold the cap and explain the gap in the summary.
-- Hold or reduce the long run on recovery weeks and during taper.
+- Reduce the long run in recovery weeks (at most 70% of the recent longest) and during the taper (75% at 15-21 days out, 60% at 8-14 days out, none in race week except the race).
+
+## Planned Recovery Weeks
+
+- Rhythm 3:1: after three loading weeks in a row, counted from the plan block start or the last unloading week, the next block week is a planned recovery week (`coachContext.periodization.recoveryWeekDue` with `recoveryWeekReason`, limits in `outputRules.guardrails.recoveryWeek`). Ultra coaches commonly use 3:1, or 2:1 for older or heavier athletes.
+- A reactive offload (pain, very weak feedback, repeated very hard sessions, a deloaded session), a low-volume week, the taper, or the race resets the count; the taper replaces a recovery week that would fall inside 21 days of the race.
+- Running in a recovery week: weekly km 60-75% of the recent 4-week average (capped at 75%), the long run at most 70% of the recent longest run, the usual run frequency, and intensity kept but reduced: one short quality session at most (or strides inside an easy run).
+- Strength backs off in the same week; both disciplines recover together.
+- Say in the summary that this is a planned recovery week and why.
 
 ## Elevation Progression
 
