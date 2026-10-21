@@ -1,6 +1,6 @@
 import { nextLocalMidnight, startOfLocalDay, validTimeZone } from "../local-time";
 import { planBlockContext } from "./plan-block";
-import { addMonths, startOfMonthUTC, summarizeMonth, summarizeTrend } from "./summarize-training-history";
+import { addMonths, startOfMonthUTC, summarizeMonth, summarizeRollingTrend, summarizeTrend } from "./summarize-training-history";
 import type {
   CoachContext,
   CoachRequest,
@@ -14,6 +14,20 @@ import type {
 } from "./types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Readiness flags from pain and very weak feedback are time-based: a trigger
+ * counts for 7 days, or 14 when no strength log followed it (the athlete has
+ * not shown a pain-free session yet), and a later clean log clears it early.
+ */
+export const READINESS_WINDOWS = {
+  triggerDays: 7,
+  unconfirmedTriggerDays: 14,
+  /** A later log at or below this pain (and not very weak) clears a pain flag. */
+  cleanPainMax: 2,
+  /** A later log below this fatigue level (Weak = 8) and with pain below 4 clears a very-weak flag. */
+  cleanFatigueBelow: 7
+} as const;
 
 /**
  * Planned RPE assumed when a log carries none (manually logged or legacy
@@ -43,10 +57,14 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   const lastFullMonth = summarizeMonth(sortedLogs, lastFullMonthStart, false);
   const previousFullMonth = summarizeMonth(sortedLogs, previousFullMonthStart, false);
   const twoFullMonthTrend = summarizeTrend(lastFullMonth, previousFullMonth);
+  const blockStartMs = planBlockStartMs(request);
+  const rollingTrend = summarizeRollingTrend(sortedLogs, now, blockStartMs);
   const validCompletedMonthLogCount = validLogCount(sortedLogs, previousFullMonthStart, currentMonthStart);
   const validCurrentMonthLogCount = validLogCount(sortedLogs, currentMonthStart, addMonths(currentMonthStart, 1));
   const riskFlags = collectRiskFlags(
+    sortedLogs,
     last5Logs,
+    now,
     lastFullMonth,
     previousFullMonth,
     request.weeklySessions,
@@ -55,7 +73,14 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
   );
   const today = todayWindow(request, now);
   const adherence = summarizeAdherence(request, now, today);
-  const state = classifyState(riskFlags, twoFullMonthTrend.label, validCompletedMonthLogCount, validCurrentMonthLogCount, adherence);
+  const state = classifyState(
+    riskFlags,
+    twoFullMonthTrend.label,
+    rollingTrend.label,
+    validCompletedMonthLogCount,
+    validCurrentMonthLogCount,
+    adherence
+  );
 
   return {
     profile: {
@@ -76,6 +101,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       lastFullMonth,
       previousFullMonth,
       twoFullMonthTrend,
+      rollingTrend,
       bestRecentTests: {
         pullUps: latestKnownBest("pullUps", "loggedPullUps", sortedLogs, request.baseline.pullUps),
         pushUps: latestKnownBest("pushUps", "loggedPushUps", sortedLogs, request.baseline.pushUps),
@@ -108,7 +134,9 @@ function weeksToRace(raceDate: string, weekStart: string): number {
 }
 
 function collectRiskFlags(
+  sortedLogs: TrainingLog[],
   last5Logs: TrainingLog[],
+  now: Date,
   lastFullMonth: CoachContext["history"]["lastFullMonth"],
   previousFullMonth: CoachContext["history"]["previousFullMonth"],
   weeklySessions: number,
@@ -117,8 +145,20 @@ function collectRiskFlags(
 ): string[] {
   const flags: string[] = [];
 
-  if (last5Logs.some((log) => log.painLevel >= 4)) flags.push("recent_pain_level_4_or_higher");
-  if (last5Logs.some((log) => log.fatigueLevel >= 9)) flags.push("recent_how_you_felt_very_weak");
+  const unresolvedPain = unresolvedRecentTrigger(
+    sortedLogs,
+    now,
+    (log) => log.painLevel >= 4,
+    (log) => log.painLevel <= READINESS_WINDOWS.cleanPainMax && log.fatigueLevel < 9
+  );
+  if (unresolvedPain) flags.push("recent_pain_level_4_or_higher");
+  const unresolvedVeryWeak = unresolvedRecentTrigger(
+    sortedLogs,
+    now,
+    (log) => log.fatigueLevel >= 9,
+    (log) => log.fatigueLevel < READINESS_WINDOWS.cleanFatigueBelow && log.painLevel < 4
+  );
+  if (unresolvedVeryWeak) flags.push("recent_how_you_felt_very_weak");
   if (last5Logs.filter((log) => log.rpe >= 9).length >= 3) flags.push("repeated_high_perceived_effort");
   if (last5Logs.filter((log) => typeof log.rpeDelta === "number" && log.rpeDelta >= 2).length >= 2) {
     flags.push("recent_effort_above_plan");
@@ -143,6 +183,38 @@ function collectRiskFlags(
   }
 
   return flags;
+}
+
+/**
+ * The latest trigger log still in force: inside the trigger window (7 days,
+ * or 14 when no log at all followed it) and not followed by a clean log.
+ * Logs are strength sessions, so the clearing log is of the same discipline.
+ */
+export function unresolvedRecentTrigger(
+  sortedLogs: TrainingLog[],
+  now: Date,
+  isTrigger: (log: TrainingLog) => boolean,
+  isClean: (log: TrainingLog) => boolean
+): TrainingLog | null {
+  const nowMs = now.getTime();
+  const timed = sortedLogs
+    .map((log) => ({ log, at: Date.parse(log.completedAt) }))
+    .filter((entry) => Number.isFinite(entry.at) && entry.at <= nowMs);
+  for (let index = timed.length - 1; index >= 0; index -= 1) {
+    const { log, at } = timed[index];
+    if (!isTrigger(log)) continue;
+    const later = timed.slice(index + 1);
+    const ageDays = (nowMs - at) / DAY_MS;
+    const windowDays = later.length === 0 ? READINESS_WINDOWS.unconfirmedTriggerDays : READINESS_WINDOWS.triggerDays;
+    if (ageDays > windowDays) return null;
+    return later.some((entry) => isClean(entry.log)) ? null : log;
+  }
+  return null;
+}
+
+function planBlockStartMs(request: CoachRequest): number | null {
+  const start = typeof request.planBlockStartedAt === "string" ? Date.parse(request.planBlockStartedAt) : Number.NaN;
+  return Number.isFinite(start) ? start : null;
 }
 
 type TodayWindow = { start: number; end: number };
@@ -454,14 +526,18 @@ function latestWorkingPrescription(entries: GoalEntry[]): { target: number; sets
   return { target: top.target, sets: top.sets, date: latest.scheduledDate };
 }
 
+/** Flags that put readiness in recovery_needed. Month-level flags are watch items only. */
+export const RECOVERY_NEEDED_FLAGS: ReadonlySet<string> = new Set(["recent_pain_level_4_or_higher", "recent_how_you_felt_very_weak"]);
+
 function classifyState(
   riskFlags: string[],
-  trendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
+  monthTrendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
+  rollingTrendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
   validCompletedMonthLogCount: number,
   validCurrentMonthLogCount: number,
   adherence: CoachContext["adherence"]
 ): ContextState {
-  if (riskFlags.some((flag) => flag.includes("pain") || flag.includes("how_you_felt_very_weak"))) return "recovery_needed";
+  if (riskFlags.some((flag) => RECOVERY_NEEDED_FLAGS.has(flag))) return "recovery_needed";
   if (
     riskFlags.includes("repeated_high_perceived_effort") ||
     riskFlags.includes("recent_effort_above_plan")
@@ -469,11 +545,13 @@ function classifyState(
     return "overreaching";
   }
   const hasEarlyCurrentEvidence = validCurrentMonthLogCount >= 2;
-  if ((validCompletedMonthLogCount < 3 || trendLabel === "insufficient_history") && !hasEarlyCurrentEvidence) {
+  if ((validCompletedMonthLogCount < 3 || monthTrendLabel === "insufficient_history") && !hasEarlyCurrentEvidence) {
     return "insufficient_history";
   }
-  if (trendLabel === "flat" && adherence.completed >= Math.max(3, adherence.planned * 0.7)) return "plateau";
-  if (trendLabel === "declining") return "overreaching";
+  // Plateau and decline come from the rolling 3-week windows, so they show
+  // up within weeks instead of after two full calendar months.
+  if (rollingTrendLabel === "flat" && adherence.completed >= Math.max(3, adherence.planned * 0.7)) return "plateau";
+  if (rollingTrendLabel === "declining") return "overreaching";
   return "building";
 }
 

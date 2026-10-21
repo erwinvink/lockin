@@ -114,6 +114,22 @@ export type TrendSummary = {
   label: "improving" | "flat" | "declining" | "insufficient_history";
 };
 
+/** Best of the last N days against the best of the N days before (see summarizeRollingTrend). */
+export type RollingTrendSummary = TrendSummary & {
+  windowDays: number;
+  recent: RollingWindowSummary;
+  previous: RollingWindowSummary;
+};
+
+export type RollingWindowSummary = {
+  from: string;
+  to: string;
+  logCount: number;
+  pullUps: number | null;
+  pushUps: number | null;
+  plankSeconds: number | null;
+};
+
 export type RPECalibrationSummary = {
   recentPlannedLogCount: number;
   averageDeltaLast5: number | null;
@@ -141,6 +157,8 @@ export type CoachContext = {
     lastFullMonth: MonthSummary;
     previousFullMonth: MonthSummary;
     twoFullMonthTrend: TrendSummary;
+    /** Plateau and decline evidence: the last 21 days against the 21 before (logs since the block start). */
+    rollingTrend?: RollingTrendSummary;
     bestRecentTests: {
       pullUps: number | null;
       pushUps: number | null;

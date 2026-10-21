@@ -656,3 +656,159 @@ test("the previous working prescription is the top target of the latest week, te
   assert.equal(trend.latestWorkingDate, "2026-07-09T08:00:00Z");
   assert.equal(trend.latestTarget, 45, "latestTarget keeps its old meaning");
 });
+
+// Readiness is time-based: a pain >= 4 log counts for 7 days (14 while no
+// log followed it) and a later clean log (pain <= 2) clears it early.
+test("a clean pain-free log after a pain 5 log clears recovery_needed", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    trainingLogs: [
+      trainingLog("2026-07-01T10:00:00Z"),
+      trainingLog("2026-07-05T10:00:00Z"),
+      trainingLog("2026-07-10T10:00:00Z", { painLevel: 5 }),
+      trainingLog("2026-07-12T10:00:00Z", { painLevel: 0, fatigueLevel: 5 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.ok(!context.readiness.riskFlags.includes("recent_pain_level_4_or_higher"));
+  assert.notEqual(context.readiness.state, "recovery_needed");
+});
+
+test("pain stays a recovery flag until a log at pain 2 or lower follows it", () => {
+  const withLater = (painLevel: number) => baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    trainingLogs: [
+      trainingLog("2026-07-10T10:00:00Z", { painLevel: 5 }),
+      trainingLog("2026-07-12T10:00:00Z", { painLevel })
+    ]
+  });
+  const now = new Date("2026-07-13T08:00:00Z");
+
+  assert.equal(buildCoachContext(withLater(3), now).readiness.state, "recovery_needed", "pain 3 is not a clean log");
+  assert.notEqual(buildCoachContext(withLater(2), now).readiness.state, "recovery_needed");
+  const alone = baseRequest({ trainingLogs: [trainingLog("2026-07-10T10:00:00Z", { painLevel: 5 })] });
+  assert.equal(buildCoachContext(alone, now).readiness.state, "recovery_needed");
+});
+
+test("a pain log ages out after 7 days once training resumed, or 14 days without any later log", () => {
+  const now = new Date("2026-07-20T08:00:00Z");
+  const resumed = baseRequest({
+    trainingLogs: [
+      trainingLog("2026-07-10T10:00:00Z", { painLevel: 5 }),
+      trainingLog("2026-07-12T10:00:00Z", { painLevel: 3 })
+    ]
+  });
+  assert.ok(!buildCoachContext(resumed, now).readiness.riskFlags.includes("recent_pain_level_4_or_higher"), "10 days old, training resumed");
+
+  const silent = (completedAt: string) => baseRequest({ trainingLogs: [trainingLog(completedAt, { painLevel: 6 })] });
+  assert.ok(buildCoachContext(silent("2026-07-10T10:00:00Z"), now).readiness.riskFlags.includes("recent_pain_level_4_or_higher"),
+    "10 days old and nothing logged since: still unconfirmed");
+  assert.ok(!buildCoachContext(silent("2026-07-05T10:00:00Z"), now).readiness.riskFlags.includes("recent_pain_level_4_or_higher"),
+    "15 days old: aged out");
+});
+
+test("a pain flag from last month alone is a watch item, not recovery_needed", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    trainingLogs: [
+      trainingLog("2026-06-03T10:00:00Z", { painLevel: 5 }),
+      trainingLog("2026-06-10T10:00:00Z"),
+      trainingLog("2026-06-17T10:00:00Z"),
+      trainingLog("2026-07-02T10:00:00Z"),
+      trainingLog("2026-07-09T10:00:00Z")
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+  const evaluation = evaluateCoachRead(context, null);
+
+  assert.ok(context.readiness.riskFlags.includes("last_full_month_pain_flag"));
+  assert.notEqual(context.readiness.state, "recovery_needed");
+  assert.equal(evaluation.readiness.painOrFatigueFlag, false);
+});
+
+test("very weak feedback is cleared by a later normal-feeling log", () => {
+  const request = (fatigueLevel: number) => baseRequest({
+    trainingLogs: [
+      trainingLog("2026-07-10T10:00:00Z", { fatigueLevel: 10 }),
+      trainingLog("2026-07-12T10:00:00Z", { fatigueLevel })
+    ]
+  });
+  const now = new Date("2026-07-13T08:00:00Z");
+
+  assert.equal(buildCoachContext(request(8), now).readiness.state, "recovery_needed", "weak is not yet clean");
+  assert.notEqual(buildCoachContext(request(5), now).readiness.state, "recovery_needed");
+});
+
+// Plateau and decline come from rolling 3-week windows (best of the last 21
+// days vs the 21 before), not from two full calendar months.
+test("flat bests across two rolling 3-week windows read as a plateau within six weeks", () => {
+  const dates = ["06-02", "06-06", "06-10", "06-14", "06-18", "06-24", "06-28", "07-02", "07-06", "07-10"];
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    trainingLogs: dates.map((day) => trainingLog(`2026-${day}T10:00:00Z`, { pullUps: 8, pushUps: 30, plankSeconds: 90 })),
+    plannedSessions: dates.map((day, index) => plannedSession(`s${index}`, `2026-${day}T08:00:00Z`, "completed"))
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.equal(context.history.twoFullMonthTrend.label, "insufficient_history", "May is empty, so the month view cannot tell yet");
+  assert.equal(context.history.rollingTrend?.label, "flat");
+  assert.equal(context.readiness.state, "plateau");
+});
+
+test("lower bests in the last three weeks than the three before read as declining", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    trainingLogs: [
+      trainingLog("2026-06-05T10:00:00Z", { pullUps: 10, pushUps: 35 }),
+      trainingLog("2026-06-12T10:00:00Z", { pullUps: 10, pushUps: 36 }),
+      trainingLog("2026-06-19T10:00:00Z", { pullUps: 9, pushUps: 34 }),
+      trainingLog("2026-06-26T10:00:00Z", { pullUps: 8, pushUps: 30 }),
+      trainingLog("2026-07-03T10:00:00Z", { pullUps: 8, pushUps: 31 }),
+      trainingLog("2026-07-10T10:00:00Z", { pullUps: 7, pushUps: 30 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.equal(context.history.rollingTrend?.label, "declining");
+  assert.equal(context.history.rollingTrend?.pullUpsDelta, -2);
+  assert.equal(context.readiness.state, "overreaching");
+});
+
+test("the rolling trend needs two logs of a metric in each window", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    trainingLogs: [
+      trainingLog("2026-06-12T10:00:00Z", { pullUps: 10 }),
+      trainingLog("2026-06-26T10:00:00Z", { pullUps: 7 }),
+      trainingLog("2026-07-08T10:00:00Z", { pullUps: 7 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.equal(context.history.rollingTrend?.label, "insufficient_history");
+  assert.notEqual(context.readiness.state, "overreaching");
+});
+
+test("a lower retest at a new plan block is not read as a decline against the old block", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    planBlockStartedAt: "2026-07-01T00:00:00Z",
+    trainingLogs: [
+      trainingLog("2026-06-08T10:00:00Z", { pullUps: 12 }),
+      trainingLog("2026-06-15T10:00:00Z", { pullUps: 12 }),
+      trainingLog("2026-07-03T10:00:00Z", { pullUps: 8 }),
+      trainingLog("2026-07-10T10:00:00Z", { pullUps: 8 })
+    ]
+  });
+
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+
+  assert.equal(context.history.rollingTrend?.label, "insufficient_history");
+  assert.notEqual(context.readiness.state, "overreaching");
+});

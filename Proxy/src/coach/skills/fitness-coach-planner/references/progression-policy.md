@@ -43,8 +43,8 @@ Normal training weeks should be balanced enough to train the actual goal system,
 ## Training State
 
 Use `last5Logs` for immediate readiness.
-Use `lastFullMonth` and `previousFullMonth` for trend.
-Use `currentPartialMonth` only as an in-progress signal.
+Use `history.rollingTrend` (best of the last 21 days against the 21 days before, logs since the plan block start) for plateau and decline.
+Use `lastFullMonth`, `previousFullMonth`, and `currentPartialMonth` as background context only.
 Use profile notes and recent workout notes as safety context, especially when they mention pain, injury, form breakdown, soreness, equipment limits, or unusual life stress. Do not diagnose; adjust the plan conservatively and explain the adjustment in safety notes.
 
 Self-evaluation uses Garmin-style language:
@@ -56,10 +56,10 @@ Self-evaluation uses Garmin-style language:
 
 States:
 
-- `building`: recent readiness is acceptable and last full month is stable or improving.
-- `plateau`: adherence is good but best valid tests are flat versus the previous full month.
-- `overreaching`: repeated high perceived effort, repeated effort materially above plan, or declining performance is present but not severe enough for full recovery. A monthly volume increase without negative effort, fatigue, pain, or performance evidence remains `building`; it is only a watch item.
-- `recovery_needed`: pain >= 4, Very weak how-you-felt feedback, fatigueLevel >= 9, repeated deloads, or repeated missed sessions.
+- `building`: recent readiness is acceptable and the rolling trend is stable or improving.
+- `plateau`: adherence is good but the best logged values of the last 3 weeks equal those of the 3 weeks before (each window needs at least two logs of a metric).
+- `overreaching`: repeated high perceived effort, repeated effort materially above plan, or declining rolling bests is present but not severe enough for full recovery. A monthly volume increase without negative effort, fatigue, pain, or performance evidence remains `building`; it is only a watch item.
+- `recovery_needed`: pain >= 4 or Very weak how-you-felt feedback (fatigueLevel >= 9) in the last 7 days (14 days while no session was logged after it). A later clean session clears it early: pain 2 or lower clears a pain flag, Normal or better feedback with pain below 4 clears a very-weak flag. A pain flag from last month alone is a watch item, not `recovery_needed`.
 - `insufficient_history`: fewer than 3 valid logs in the last two completed months and fewer than 2 valid current-month logs.
 
 ## Adaptive Phase And Progression

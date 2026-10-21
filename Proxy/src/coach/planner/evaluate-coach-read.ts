@@ -1,3 +1,4 @@
+import { RECOVERY_NEEDED_FLAGS } from "./build-coach-context";
 import { flatGoalMetricsRequiringProgression } from "./coach-temperament";
 import type {
   CoachAdherenceBand,
@@ -81,7 +82,9 @@ function evaluateReadiness(context: CoachContext, signals: TrainingSignals | nul
   const painOrFatigueFlag =
     context.readiness.state === "recovery_needed" ||
     (typeof trainingReadiness === "number" && trainingReadiness < 30) ||
-    riskFlags.some((flag) => flag.includes("pain") || flag.includes("fatigue") || flag.includes("weak"));
+    // Only the time-based recent flags: a month-level pain flag is a watch
+    // item, not a reason to call for recovery all month.
+    riskFlags.some((flag) => RECOVERY_NEEDED_FLAGS.has(flag));
 
   return {
     state: context.readiness.state,
@@ -95,7 +98,7 @@ function evaluateReadiness(context: CoachContext, signals: TrainingSignals | nul
 
 function evaluateProgress(context: CoachContext): CoachEvaluation["progress"] {
   const flatGoalMetrics = flatGoalMetricsRequiringProgression(context).map((metric) => metric.label);
-  const trendLabel = context.history.twoFullMonthTrend.label;
+  const trendLabel = (context.history.rollingTrend ?? context.history.twoFullMonthTrend).label;
   const state: CoachProgressState = (() => {
     switch (trendLabel) {
       case "improving":
