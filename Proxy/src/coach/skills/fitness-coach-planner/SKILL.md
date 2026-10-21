@@ -38,6 +38,8 @@ The proxy also sends `trainingSignals` (running load, race countdown, HRV gate) 
 
 Do not infer these summaries from raw logs inside the model response.
 
+Plan continuity: `coachContext.currentPlan` holds the strength sessions already planned for the coming days (focus, goal work, hardest effort), and `outputRules.continuity` says whether anything changed since (`changeSignals`). With `keepUnlessChanged` true, keep each planned day's session: the same focus and goal targets (changes are flagged). With signals, change only what they call for. Either way, say in the summary what changed and why, or that nothing changed.
+
 ## References
 
 - `references/progression-policy.md`: readiness states, progression, deload, effort, split, and logging rules

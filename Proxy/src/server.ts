@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildCoachContext } from "./coach/planner/build-coach-context";
+import { withStoredCurrentPlan } from "./coach/planner/current-plan";
 import {
   disciplineCoachSystemPrompt,
   disciplineCoachTemperament,
@@ -374,7 +375,9 @@ async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTri
   }
 
   try {
-    const generated = await generateAutoPlan(trigger.request);
+    // The previous generated plan may be newer than what the app applied
+    // (nightly runs reuse the last request the app sent): keep that one.
+    const generated = await generateAutoPlan(trigger.request, decision.generatedPlan ?? null);
     const plan = await autoPlanStore.updateUser(userId, (user) => {
       return markAutoPlanGenerated(user, decision, generated);
     });
@@ -400,7 +403,8 @@ async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTri
 }
 
 async function generateAutoPlan(
-  payload: CoachRequest
+  payload: CoachRequest,
+  storedPlan: AutoPlanGeneratedPlan | null = null
 ): Promise<Omit<AutoPlanGeneratedPlan, "planRevisionId" | "generatedAt" | "localDate" | "source">> {
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set");
@@ -409,7 +413,8 @@ async function generateAutoPlan(
   const model = resolveCoachModel(payload.model);
 
   const skill = await loadSkillBundle();
-  const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+  const now = new Date();
+  const context = withStoredCurrentPlan(await enrichWithGarmin(buildCoachContext(payload, now), payload.userId), payload, storedPlan, now);
 
   if (!payload.running) {
     const result = await runStrengthWeekPipeline(strengthPipelineDeps(apiKey, model, skill, context, payload, "/plan/trigger"));
@@ -753,7 +758,8 @@ function buildRunningPromptPayload(
           ? "None of the selected running days is left this week. Return zero runs and explain that the next full week starts after the coming rest days."
           : "Use only availableDayOffsets for runs.",
       longRunDay: context.running?.longRunDay ?? null,
-      longRunDayOffset: context.running?.longRunDayOffset ?? null
+      longRunDayOffset: context.running?.longRunDayOffset ?? null,
+      ...(guidance?.continuity ? { continuity: guidance.continuity } : {})
     }
   };
 
@@ -883,6 +889,7 @@ function buildCoachPromptPayload(
     progression:
       "strengthGuardrails.progression is computed from coachContext.plannedWork.recentGoalPerformance and the previous working prescription, and it is enforced: for each goal metric keep the week's top working target inside allowedTopTarget and its sets at or below maxSetsOnTopTarget, or use setRoute (same target, one more set) when it is offered. Earned steps: pull-ups +1 rep; push-ups +1 below 15 reps, +1-2 below 30, +1-3 from 30; plank +5-10 s below 60 s, +5-15 s from 60 s. Never increase sets and the target together. Working values never exceed strengthGuardrails.workingCaps (tests excepted). Safety text alone cannot bypass earned progression.",
     strengthGuardrails: guidance?.guardrails ?? null,
+    ...(guidance?.continuity ? { continuity: guidance.continuity } : {}),
     phase:
       "Prefix summary with exactly one adaptive phase: Build:, Offload:, Restore:, Maintenance:, or Assessment:. Explain separately why pull-ups, push-ups, and plank progressed, held, or reduced. Do not force a four-week calendar wave.",
     scheduling: hasSelectedTrainingDays

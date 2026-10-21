@@ -1,4 +1,4 @@
-import { RECOVERY_NEEDED_FLAGS } from "./build-coach-context";
+import { RECOVERY_NEEDED_FLAGS } from "./readiness-flags";
 import { flatGoalMetricsRequiringProgression } from "./coach-temperament";
 import type {
   CoachAdherenceBand,

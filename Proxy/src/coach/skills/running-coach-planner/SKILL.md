@@ -31,6 +31,8 @@ The proxy also computes, next to `coachContext`:
 
 Use these numbers as given. Do not compute volumes, averages, or zones from raw runs yourself.
 
+Plan continuity: `coachContext.currentPlan` holds the runs (kind, distance, elevation, target) already planned for the coming days, and `outputRules.continuity` says whether anything changed since (`changeSignals`: a new log with pain, very weak feedback or effort off plan, a missed session, a readiness change, runs that moved the load, a Garmin wellness gate, a recovery week or race window). With `keepUnlessChanged` true, keep each planned day's run: same kind and within 15% of its distance (the proxy clamps the distance back and flags other changes). With signals, change only what they call for. Either way, say in the summary what changed and why, or that nothing changed.
+
 ## References
 
 - `references/ultra-periodization.md`: phases, long-run and elevation progression, intensity split, taper, and readiness gates

@@ -231,6 +231,38 @@ export type CoachContext = {
   block?: PlanBlockContext;
   /** Planned recovery weeks (computed from the request; absent in hand-built contexts). */
   periodization?: PeriodizationContext;
+  /** The plan made earlier for the coming days, and what changed since (plan continuity). */
+  currentPlan?: CurrentPlanContext;
+};
+
+export type CurrentPlanRun = {
+  dayOffset: number;
+  title: string;
+  kind: string | null;
+  distanceKm: number | null;
+  elevationMeters: number | null;
+  target: RunTarget | null;
+};
+
+export type CurrentPlanStrengthSession = {
+  dayOffset: number;
+  title: string;
+  focus: SessionFocus;
+  hardestEffort: EffortLabel | null;
+  goalWork: Array<{ exercise: string; sets: number; target: number; effort: string | null }>;
+};
+
+export type CurrentPlanContext = {
+  /** When that plan was generated; null when unknown (then the last day counts). */
+  generatedAt: string | null;
+  /** "app": the planned sessions the app sent; "auto_plan": a newer plan from the auto-plan store. */
+  source: "app" | "auto_plan";
+  runs: CurrentPlanRun[];
+  strengthSessions: CurrentPlanStrengthSession[];
+  /** Computed reasons the plan may change; empty means keep it. */
+  changeSignals: string[];
+  keepUnlessChanged: boolean;
+  rule: string;
 };
 
 export type BlockWeekClassification = "loading" | "recovery" | "reactive_offload" | "taper_or_race" | "low_volume" | "no_training";
