@@ -986,6 +986,76 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertNil(runs.first?.elevationLossM)
     }
 
+    func testMakeCoachRequestSendsThePlannedRunKindForLinkedRuns() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
+        let tempoSession = WorkoutSession(
+            scheduledDate: weekStart.addingTimeInterval(-2 * 86_400),
+            title: "Tempo blocks",
+            weekIndex: 0,
+            focus: .mixed,
+            status: .completed,
+            summary: "AI: tempo",
+            discipline: .running,
+            runKind: .tempo
+        )
+        let linked = RunLog(sessionId: tempoSession.id, completedAt: weekStart.addingTimeInterval(-2 * 86_400), distanceKm: 10, movingSeconds: 2_900)
+        let unlinked = RunLog(sessionId: RunLog.unattachedSessionId, completedAt: weekStart.addingTimeInterval(-86_400), distanceKm: 8, movingSeconds: 2_880, source: .garmin)
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [tempoSession],
+            raceGoal: raceGoalFixture(),
+            runLogs: [linked, unlinked],
+            weekStart: weekStart
+        )
+
+        let runs = try XCTUnwrap(request.running).recentRuns
+        XCTAssertEqual(runs.map(\.kind), ["tempo", nil], "Too few peers to infer the unlinked run")
+    }
+
+    func testMakeCoachRequestInfersOnlyClearRunKindsFromTheAthletesOwnRuns() throws {
+        let calendar = Calendar.current
+        let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
+        func run(_ daysAgo: Double, km: Double, secPerKm: Int, hr: Int, rpe: Int = 0) -> RunLog {
+            RunLog(
+                sessionId: RunLog.unattachedSessionId,
+                completedAt: weekStart.addingTimeInterval(-daysAgo * 86_400),
+                distanceKm: km,
+                movingSeconds: Int(km) * secPerKm,
+                elevationGainM: 60,
+                averageHr: hr,
+                rpe: rpe,
+                source: .garmin
+            )
+        }
+        let runLogs = [
+            run(12, km: 8, secPerKm: 360, hr: 140),
+            run(10, km: 10, secPerKm: 290, hr: 162),   // well above the median HR: tempo
+            run(8, km: 8, secPerKm: 365, hr: 138),
+            run(6, km: 24, secPerKm: 380, hr: 145),    // 24 km vs an 8-10 km median: long
+            run(4, km: 8, secPerKm: 350, hr: 146),     // between the bands: unknown
+            run(2, km: 9, secPerKm: 340, hr: 150, rpe: 3)  // athlete rated it easy
+        ]
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [],
+            raceGoal: raceGoalFixture(),
+            runLogs: runLogs,
+            weekStart: weekStart
+        )
+
+        let kinds = try XCTUnwrap(request.running).recentRuns.map(\.kind)
+        XCTAssertEqual(kinds, ["easy", "tempo", "easy", "long", nil, "easy"])
+    }
+
     func testMakeCoachRequestOmitsLongRunDayOffsetOutsidePlannableRange() throws {
         let calendar = Calendar.current
         // weekStart is a Monday, so monday maps to offset 0 and gets dropped everywhere.

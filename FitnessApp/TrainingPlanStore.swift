@@ -1005,6 +1005,53 @@ func updateRaceGoalBaselines(
     goal.longestRecentRunKm = (longestRecent * 10).rounded() / 10
 }
 
+/// The run kind the coach sees for a past run. A run linked to a planned
+/// running session reports that session's kind. Otherwise the kind is
+/// inferred only in clear cases, relative to the athlete's own recent runs
+/// (`peers`, at least five): clearly long by distance, an RPE of 1-4 (easy)
+/// or 7+ (tempo), heart rate at or below the median (easy) or 8%+ above it
+/// (tempo), or, without heart rate, a flat run 8%+ faster than the median
+/// pace (tempo) or slower than it (easy). Everything else stays nil, so the
+/// proxy's easy share is not guessed.
+func coachRunKind(for run: RunLog, plannedKindsBySessionId: [UUID: String], peers: [RunLog]) -> String? {
+    if let planned = plannedKindsBySessionId[run.sessionId], !planned.isEmpty {
+        return planned
+    }
+    guard run.distanceKm > 0, run.movingSeconds > 0 else { return nil }
+    let comparable = peers.filter { $0.distanceKm > 0 && $0.movingSeconds > 0 }
+    guard comparable.count >= 5 else { return nil }
+
+    let medianDistance = median(comparable.map(\.distanceKm))
+    if run.distanceKm >= 15, run.distanceKm >= medianDistance * 1.5 {
+        return RunKind.long.rawValue
+    }
+    if (1...4).contains(run.rpe) { return RunKind.easy.rawValue }
+    if run.rpe >= 7 { return RunKind.tempo.rawValue }
+
+    let peerHeartRates = comparable.map(\.averageHr).filter { $0 > 0 }
+    if run.averageHr > 0, peerHeartRates.count >= 5 {
+        let medianHr = median(peerHeartRates.map(Double.init))
+        if Double(run.averageHr) <= medianHr { return RunKind.easy.rawValue }
+        if Double(run.averageHr) >= medianHr * 1.08 { return RunKind.tempo.rawValue }
+        return nil
+    }
+
+    let gainPerKm = Double(run.elevationGainM) / run.distanceKm
+    guard gainPerKm <= 20 else { return nil }
+    let pace = Double(run.movingSeconds) / run.distanceKm
+    let medianPace = median(comparable.map { Double($0.movingSeconds) / $0.distanceKm })
+    if pace <= medianPace * 0.92 { return RunKind.tempo.rawValue }
+    if pace > medianPace { return RunKind.easy.rawValue }
+    return nil
+}
+
+private func median(_ values: [Double]) -> Double {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return 0 }
+    let middle = sorted.count / 2
+    return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+}
+
 /// Mirrors the sidecar's running filter (any typeKey containing "running" or
 /// "ultra": running, trail_running, ultra_run, treadmill_running, ...).
 private func isGarminRunningActivityType(_ type: String) -> Bool {
