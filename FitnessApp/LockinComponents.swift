@@ -181,35 +181,53 @@ struct IntegerField: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Text(title)
-                .font(.subheadline.weight(.medium))
+                .font(.lockinBody)
                 .foregroundStyle(AppTheme.text)
                 .lineLimit(2)
             Spacer()
-            TextField(title, value: clampedValue, format: .number)
+            // No grouping: "3100", not "3.100", while typing and on screen.
+            TextField(title, value: clampedValue, format: .number.grouping(.never))
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.trailing)
-                .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                .font(.trail(16, .semibold, relativeTo: .body).monospacedDigit())
                 .foregroundStyle(AppTheme.text)
+                .tint(AppTheme.text)
                 .focused($isFocused)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .frame(width: 92)
-                .background(AppTheme.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+                .frame(width: 84)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(AppTheme.surfaceRaised)
+                )
                 .overlay(
-                    RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                        .strokeBorder(isFocused ? AppTheme.accent : AppTheme.divider, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isFocused ? AppTheme.text : AppTheme.divider, lineWidth: isFocused ? 1.5 : 1)
                 )
                 .animation(.easeOut(duration: 0.15), value: isFocused)
             if !suffix.isEmpty {
                 Text(suffix)
-                    .font(.footnote)
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
                     .foregroundStyle(AppTheme.muted)
+                    .frame(minWidth: 24, alignment: .leading)
             }
         }
     }
+}
+
+/// Countdown on a race sign: days in the last two weeks, weeks before that.
+func raceCountdownText(_ raceDate: Date) -> String {
+    let calendar = Calendar.current
+    let days = calendar.dateComponents(
+        [.day],
+        from: calendar.startOfDay(for: Date()),
+        to: calendar.startOfDay(for: raceDate)
+    ).day ?? 0
+    if days <= 0 { return "Today" }
+    if days < 14 { return days == 1 ? "1 day" : "\(days) days" }
+    return "\(days / 7) wk"
 }
 
 // MARK: - Trailhead: trail marks

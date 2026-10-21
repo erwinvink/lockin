@@ -302,18 +302,6 @@ struct TodayView: View {
         return date.formatted(.dateTime.weekday(.wide))
     }
 
-    private func raceCountdownText(_ raceDate: Date) -> String {
-        let calendar = Calendar.current
-        let days = calendar.dateComponents(
-            [.day],
-            from: calendar.startOfDay(for: Date()),
-            to: calendar.startOfDay(for: raceDate)
-        ).day ?? 0
-        if days <= 0 { return "Today" }
-        if days < 14 { return days == 1 ? "1 day" : "\(days) days" }
-        return "\(days / 7) wk"
-    }
-
     private var weekDoneCountText: String {
         let week = thisWeekSessions
         guard !week.isEmpty else { return "" }

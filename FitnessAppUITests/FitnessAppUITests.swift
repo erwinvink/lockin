@@ -65,7 +65,7 @@ final class DesignScreenshotTour: XCTestCase {
 
         // Profile.
         app.tabBars.buttons["Profile"].tap()
-        XCTAssertTrue(app.staticTexts["Week schedule"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Strength days"].waitForExistence(timeout: 5))
         snap(app, "11-profile-top", in: directory)
         app.swipeUp()
         snap(app, "12-profile-middle", in: directory)
@@ -228,11 +228,11 @@ final class FitnessAppUITests: XCTestCase {
         onboardDefault(app)
 
         app.tabBars.buttons["Profile"].tap()
-        XCTAssertTrue(app.staticTexts["Profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Goals"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Profile"].exists)
         XCTAssertFalse(app.staticTexts["Local fallback plan"].exists)
         XCTAssertFalse(app.buttons["Regenerate local fallback week"].exists)
-        XCTAssertTrue(app.staticTexts["Week schedule"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Strength days"].waitForExistence(timeout: 5))
         tapWhenReady(app.buttons["Sa"], in: app)
         tapWhenReady(app.buttons["Tu"], in: app)
 
@@ -246,7 +246,7 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Profile"].tap()
         XCTAssertTrue(app.staticTexts["Reminder"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.switches["Enabled"].exists)
+        XCTAssertTrue(app.switches["Training reminder"].exists)
         XCTAssertTrue(app.datePickers["reminder-time-picker"].exists)
         XCTAssertFalse(app.buttons["Request and schedule"].exists)
         tapWhenReady(app.buttons["Wipe all app data"], in: app)
@@ -353,7 +353,7 @@ final class FitnessAppUITests: XCTestCase {
         onboardDefault(app)
 
         app.tabBars.buttons["Profile"].tap()
-        XCTAssertTrue(app.staticTexts["Profile"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Goals"].waitForExistence(timeout: 5))
         tapWhenReady(app.buttons["seed-demo-history-button"], in: app)
         XCTAssertTrue(app.alerts["Replace with demo history?"].waitForExistence(timeout: 5))
         app.alerts["Replace with demo history?"].buttons["Seed demo history"].tap()

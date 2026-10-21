@@ -27,13 +27,15 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ScreenBackground(title: "Profile") {
-                ProfileSummaryCard(profile: profile)
-                WeekScheduleCard(
+            // No screen title: the athlete's name heads the page.
+            ScreenBackground {
+                ProfileHeader(profile: profile)
+                GoalsSection(profile: profile)
+                StrengthDaysSection(
                     profile: profile,
                     onScheduleChange: saveTrainingDays
                 )
-                RunningGoalCard(
+                RaceGoalSection(
                     profile: profile,
                     raceGoal: raceGoals.first,
                     hasConfirmedRuns: runLogs.contains { $0.source == .garmin },
@@ -43,25 +45,25 @@ struct SettingsView: View {
                     onLongRunDayChange: saveLongRunDay,
                     onGoalChange: saveRaceGoalEdits
                 )
-                GarminCard(endpoint: coachEndpoint, userId: profile.id.uuidString, profile: profile)
-                ReminderSettingsCard(
+                GarminSection(endpoint: coachEndpoint, userId: profile.id.uuidString, profile: profile)
+                ReminderSection(
                     profile: profile,
                     onReminderToggle: saveReminderPreference,
                     onReminderTimeChange: saveReminderTime
                 )
                 #if DEBUG && targetEnvironment(simulator)
-                DemoHistorySeedCard(
+                DemoHistorySeedSection(
                     seedMessage: seedMessage,
                     seedError: seedError,
                     onSeedTap: { isShowingSeedConfirmation = true }
                 )
                 #endif
-                ResetCard(
+                DataSection(
                     resetError: resetError,
                     onResetTap: { isShowingResetConfirmation = true }
                 )
                 Text("iCloud · \(ModelContainerFactory.cloudKitContainerIdentifier)")
-                    .font(.system(size: 11))
+                    .font(.trail(11, .regular, relativeTo: .caption2))
                     .foregroundStyle(AppTheme.faint)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -253,29 +255,200 @@ struct SettingsView: View {
     #endif
 }
 
-private struct ProfileSummaryCard: View {
-    var profile: UserProfile
+// MARK: - Building blocks
+
+/// A Profile group: a 17pt title over its content. Settings read as a quiet
+/// list, so the groups sit a step below the 22pt section headers elsewhere.
+private struct ProfileGroup<Trailing: View, Content: View>: View {
+    var title: String
+    @ViewBuilder var trailing: Trailing
+    @ViewBuilder var content: Content
+
+    init(
+        _ title: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.trailing = trailing()
+        self.content = content()
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(profile.name)
-                    .font(.system(size: 24, weight: .semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.trail(17, .semibold, relativeTo: .headline))
                     .foregroundStyle(AppTheme.text)
-                Text("Target: \(profile.targetDate, format: .dateTime.day().month().year())")
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(AppTheme.muted)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                trailing
             }
-            VStack(spacing: 10) {
-                InfoLine(title: "Goals", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
-                InfoLine(title: "Training days", value: profile.trainingDayLabels.joined(separator: ", "))
-            }
+            content
         }
-        .ruled(verticalPadding: 16)
     }
 }
 
-private struct WeekScheduleCard: View {
+/// Rows on one white card, split by soft rules inset from the leading edge.
+private struct ProfileList<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content
+        }
+        .padding(.leading, 14)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                .fill(AppTheme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                .strokeBorder(AppTheme.divider, lineWidth: 1)
+        )
+    }
+}
+
+private struct ProfileRow<Content: View>: View {
+    var minHeight: CGFloat = 50
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            content
+        }
+        .padding(.trailing, 14)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
+    }
+}
+
+private struct ProfileValueRow: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        ProfileRow {
+            Text(title)
+                .font(.lockinBody)
+                .foregroundStyle(AppTheme.text)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.trail(16, .semibold, relativeTo: .body).monospacedDigit())
+                .foregroundStyle(AppTheme.text)
+                .multilineTextAlignment(.trailing)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct RowRule: View {
+    var body: some View {
+        Rectangle()
+            .fill(AppTheme.dividerSoft)
+            .frame(height: 1)
+    }
+}
+
+/// Lighter than the 2pt secondary button: for the second of two actions
+/// side by side.
+private struct QuietActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.trail(15, .semibold, relativeTo: .subheadline))
+            .foregroundStyle(AppTheme.text)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(
+                RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
+                    .fill(configuration.isPressed ? AppTheme.surfaceRaised : AppTheme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
+                    .strokeBorder(AppTheme.post.opacity(0.6), lineWidth: 1)
+            )
+    }
+}
+
+private struct NoteText: View {
+    var text: String
+    var isError = false
+
+    init(_ text: String, isError: Bool = false) {
+        self.text = text
+        self.isError = isError
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.trail(13, .regular, relativeTo: .footnote))
+            .foregroundStyle(isError ? AppTheme.markerRedText : AppTheme.muted)
+            .lineSpacing(1)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Sections
+
+private struct ProfileHeader: View {
+    var profile: UserProfile
+
+    private var displayName: String {
+        let trimmed = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Profile" : trimmed
+    }
+
+    private var subtitle: String {
+        let days = profile.trainingDays.count
+        let dayText = "\(days) training \(days == 1 ? "day" : "days")"
+        return profile.strictFormAccepted ? "Strict form only, \(dayText)" : dayText
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(String(displayName.prefix(1)).uppercased())
+                .font(.trail(24, .bold, relativeTo: .title2))
+                .foregroundStyle(AppTheme.text)
+                .frame(width: 56, height: 56)
+                .background(Circle().fill(AppTheme.sign))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayName)
+                    .font(.trail(28, .bold, relativeTo: .title1))
+                    .foregroundStyle(AppTheme.text)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .accessibilityAddTraits(.isHeader)
+                Text(subtitle)
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+            }
+        }
+        .padding(.top, 6)
+    }
+}
+
+private struct GoalsSection: View {
+    var profile: UserProfile
+
+    var body: some View {
+        ProfileGroup("Goals") {
+            ProfileList {
+                ProfileValueRow(title: "Pull-ups", value: "\(profile.goalPullUps)")
+                RowRule()
+                ProfileValueRow(title: "Push-ups", value: "\(profile.goalPushUps)")
+                RowRule()
+                ProfileValueRow(title: "Plank", value: format(seconds: profile.goalPlankSeconds))
+                RowRule()
+                ProfileValueRow(
+                    title: "Target date",
+                    value: profile.targetDate.formatted(.dateTime.day().month(.abbreviated).year())
+                )
+            }
+        }
+    }
+}
+
+private struct StrengthDaysSection: View {
     var profile: UserProfile
     var onScheduleChange: (Set<TrainingWeekday>) -> Void
 
@@ -287,16 +460,11 @@ private struct WeekScheduleCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SectionHeader("Week schedule")
-            TrainingDaysPicker(selectedDays: selectedDays)
-            InfoLine(title: "AI week shape", value: profile.trainingDayLabels.joined(separator: ", "))
-        }
-        .ruled(verticalPadding: 16)
+        TrainingDaysPicker(selectedDays: selectedDays, title: "Strength days")
     }
 }
 
-private struct RunningGoalCard: View {
+private struct RaceGoalSection: View {
     var profile: UserProfile
     var raceGoal: RaceGoal?
     var hasConfirmedRuns: Bool = false
@@ -307,8 +475,7 @@ private struct RunningGoalCard: View {
     var onGoalChange: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            SectionHeader("Running")
+        ProfileGroup("Race goal") {
             if let raceGoal {
                 RaceGoalEditor(
                     profile: profile,
@@ -320,18 +487,16 @@ private struct RunningGoalCard: View {
                     onGoalChange: onGoalChange
                 )
             } else {
-                Text("Set a race goal to unlock the ultra coach.")
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
-                Button(action: onCreateGoal) {
-                    Label("Set up running", systemImage: "figure.run")
-                        .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 12) {
+                    NoteText("Set a race goal to unlock the ultra coach. It plans your runs around the race and sends them to your watch.")
+                    Button(action: onCreateGoal) {
+                        Label("Set up running", systemImage: "figure.run")
+                    }
+                    .buttonStyle(SecondaryActionButtonStyle())
+                    .accessibilityIdentifier("running-setup-button")
                 }
-                .buttonStyle(SecondaryActionButtonStyle())
-                .accessibilityIdentifier("running-setup-button")
             }
         }
-        .ruled(verticalPadding: 16)
     }
 }
 
@@ -346,61 +511,98 @@ private struct RaceGoalEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            TextField("Race name", text: nameBinding)
-                .textInputAutocapitalization(.words)
-                .font(.subheadline)
-                .lockinField()
-            DatePicker("Race date", selection: raceDateBinding, displayedComponents: .date)
-                .font(.subheadline.weight(.medium))
-                .tint(AppTheme.accent)
-            IntegerField(title: "Distance", value: distanceBinding, range: 1...500, suffix: "km")
-            IntegerField(title: "Elevation gain", value: elevationBinding, range: 0...30_000, suffix: "m+")
-            if hasConfirmedRuns {
-                // Real run history owns these numbers; editable fields here
-                // would be silently overwritten on the next sync.
-                InfoLine(title: "Baseline weekly volume", value: "\(Int(goal.baselineWeeklyKm.rounded())) km")
-                InfoLine(title: "Longest recent run", value: "\(Int(goal.longestRecentRunKm.rounded())) km")
-                Text("Updated automatically from your Garmin runs.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(AppTheme.faint)
-            } else {
-                IntegerField(title: "Baseline weekly volume", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
-                IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
-                Text("Starting estimates — once real runs sync from Garmin these update themselves.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(AppTheme.faint)
-            }
-            TrainingDaysPicker(
-                selectedDays: runningDaysBinding,
-                title: "Available running days",
-                minDays: 1,
-                maxDays: 7,
-                caption: "Pick the days you can run. The coach may leave rest days open while you build.",
-                preventsEmptySelection: true
+            Signpost(
+                eyebrow: "Race day, \(goal.raceDate.formatted(.dateTime.day().month(.abbreviated)))",
+                title: goal.name.isEmpty ? "Race" : goal.name,
+                trailing: raceCountdownText(goal.raceDate),
+                grade: .mountain,
+                size: .small
             )
-            if !orderedRunningDays.isEmpty {
-                HStack {
-                    Text("Long run day")
-                        .font(.subheadline.weight(.medium))
+
+            ProfileList {
+                ProfileRow {
+                    Text("Race name")
+                        .font(.lockinBody)
                         .foregroundStyle(AppTheme.text)
-                    Spacer()
-                    Picker("Long run day", selection: longRunDayBinding) {
-                        ForEach(orderedRunningDays) { day in
-                            Text(day.title).tag(day)
-                        }
+                    TextField("Race name", text: nameBinding)
+                        .textInputAutocapitalization(.words)
+                        .multilineTextAlignment(.trailing)
+                        .font(.trail(16, .semibold, relativeTo: .body))
+                        .foregroundStyle(AppTheme.text)
+                        .tint(AppTheme.text)
+                }
+                RowRule()
+                ProfileRow {
+                    DatePicker("Race date", selection: raceDateBinding, displayedComponents: .date)
+                        .font(.lockinBody)
+                        .tint(AppTheme.text)
+                }
+                RowRule()
+                ProfileRow {
+                    IntegerField(title: "Distance", value: distanceBinding, range: 1...500, suffix: "km")
+                }
+                RowRule()
+                ProfileRow {
+                    IntegerField(title: "Climb", value: elevationBinding, range: 0...30_000, suffix: "m")
+                }
+                RowRule()
+                if hasConfirmedRuns {
+                    // Real run history owns these numbers; editable fields here
+                    // would be silently overwritten on the next sync.
+                    ProfileValueRow(title: "Weekly base", value: "\(Int(goal.baselineWeeklyKm.rounded())) km")
+                    RowRule()
+                    ProfileValueRow(title: "Longest recent run", value: "\(Int(goal.longestRecentRunKm.rounded())) km")
+                } else {
+                    ProfileRow {
+                        IntegerField(title: "Weekly base", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
                     }
-                    .pickerStyle(.menu)
-                    .tint(AppTheme.accent)
-                    .labelsHidden()
+                    RowRule()
+                    ProfileRow {
+                        IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
+                    }
                 }
             }
-            Button(role: .destructive) {
-                onRemoveGoal()
-            } label: {
-                Label("Remove race goal", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
+
+            NoteText(hasConfirmedRuns
+                ? "Weekly base and longest run update from your Garmin runs."
+                : "Weekly base and longest run are starting estimates. Once runs sync from Garmin, they update themselves.")
+
+            TrainingDaysPicker(
+                selectedDays: runningDaysBinding,
+                title: "Running days",
+                minDays: 1,
+                maxDays: 7,
+                caption: "Pick the days you can run. The coach may leave some of them as rest days while you build.",
+                preventsEmptySelection: true
+            )
+            .padding(.top, 6)
+
+            if !orderedRunningDays.isEmpty {
+                ProfileList {
+                    ProfileRow {
+                        Text("Long run day")
+                            .font(.lockinBody)
+                            .foregroundStyle(AppTheme.text)
+                        Spacer()
+                        Picker("Long run day", selection: longRunDayBinding) {
+                            ForEach(orderedRunningDays) { day in
+                                Text(day.title).tag(day)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .tint(AppTheme.text)
+                        .labelsHidden()
+                    }
+                }
             }
-            .buttonStyle(SecondaryActionButtonStyle())
+
+            Button(role: .destructive, action: onRemoveGoal) {
+                Text("Remove race goal")
+                    .font(.trail(15, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.markerRedText)
+                    .frame(minHeight: 44)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -469,7 +671,7 @@ private struct RaceGoalEditor: View {
     }
 }
 
-private struct GarminCard: View {
+private struct GarminSection: View {
     var endpoint: String
     var userId: String
     var profile: UserProfile
@@ -497,153 +699,189 @@ private struct GarminCard: View {
     @State private var watchRetryStatus: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Garmin") {
-                StatusPill(text: statusText, color: statusColor, systemImage: statusIcon)
-            }
-
-            if let connectedEmail = status?.connectedEmail, !connectedEmail.isEmpty {
-                InfoLine(title: "Account", value: connectedEmail)
-            }
-            InfoLine(title: "Last sync", value: relativeSyncText(epochSeconds: garminLastSyncAt))
-            InfoLine(title: "Watch plan", value: watchPlanText)
-
-            if let watchError = watchSyncStatus?.lastError, !watchError.isEmpty {
-                Text(watchError)
-                    .font(.footnote)
-                    .foregroundStyle(watchSyncStatus?.status == .failed ? AppTheme.warning : AppTheme.muted)
-            }
-
-            if isConnected {
-                Button(action: syncNow) {
-                    Label(isSyncing ? "Importing" : "Import Garmin data", systemImage: "arrow.triangle.2.circlepath")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryActionButtonStyle())
-                .accessibilityIdentifier("garmin-sync-now")
-                .disabled(isSyncing)
-                .opacity(isSyncing ? 0.55 : 1)
-            } else {
-                Button(action: { isShowingConnectForm.toggle() }) {
-                    Label(isShowingConnectForm ? "Hide sign-in fields" : "Connect Garmin", systemImage: "link")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryActionButtonStyle())
-                .accessibilityIdentifier("garmin-connect-toggle")
-            }
-
-            if isShowingConnectForm && !isConnected {
-                VStack(alignment: .leading, spacing: 10) {
-                    TextField("Garmin email", text: $garminEmail)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.emailAddress)
-                        .font(.subheadline)
-                        .lockinField()
-                        .accessibilityIdentifier("garmin-email-field")
-
-                    SecureField("Garmin password", text: $garminPassword)
-                        .font(.subheadline)
-                        .lockinField()
-                        .accessibilityIdentifier("garmin-password-field")
-
-                    if shouldShowMFAField {
-                        TextField("MFA code", text: $garminMFACode)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.numberPad)
-                            .font(.subheadline)
-                            .lockinField()
-                            .accessibilityIdentifier("garmin-mfa-field")
+        ProfileGroup("Garmin") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "applewatch")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(AppTheme.text)
+                        .frame(width: 28)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(statusText)
+                            .font(.trail(16, .semibold, relativeTo: .body))
+                            .foregroundStyle(needsAttention ? AppTheme.markerRedText : AppTheme.text)
+                        Text(lastSyncText)
+                            .font(.trail(13, .regular, relativeTo: .footnote))
+                            .foregroundStyle(AppTheme.muted)
                     }
-
-                    Button(action: connectGarmin) {
-                        Label(isConnecting ? "Connecting" : connectButtonTitle, systemImage: "checkmark.circle")
-                            .frame(maxWidth: .infinity)
+                    Spacer(minLength: 8)
+                    if status?.displayState.isHealthy == true {
+                        Label("Two-way", systemImage: "checkmark")
+                            .font(.trail(12, .semibold, relativeTo: .caption1))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(AppTheme.text))
                     }
-                    .buttonStyle(SecondaryActionButtonStyle())
-                    .accessibilityIdentifier("garmin-connect-submit")
-                    .disabled(isConnecting || garminEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || garminPassword.isEmpty)
-                    .opacity(isConnecting ? 0.55 : 1)
                 }
-            }
+                .accessibilityElement(children: .combine)
 
-            if let syncResult {
-                Text(syncResult)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
-            }
-
-            if let syncError {
-                Text(syncError)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.warning)
-            }
-
-            if shouldShowWatchRetry && isConnected {
-                Button(action: retryWatchSync) {
-                    Label(isRetryingWatchSync ? "Retrying watch sync" : "Retry watch sync", systemImage: "arrow.clockwise.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryActionButtonStyle())
-                .accessibilityIdentifier("garmin-watch-sync-retry")
-                .disabled(isRetryingWatchSync)
-                .opacity(isRetryingWatchSync ? 0.55 : 1)
-            }
-
-            if let watchRetryStatus {
-                Text(watchRetryStatus)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
-            }
-
-            if let connectMessage {
-                Text(connectMessage)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
-            }
-
-            if let connectError {
-                Text(connectError)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.warning)
-            }
-
-            HStack(spacing: 10) {
-                Button(action: { isShowingTroubleshoot.toggle() }) {
-                    Label("Troubleshoot", systemImage: "wrench.and.screwdriver")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(SecondaryActionButtonStyle())
-                .accessibilityIdentifier("garmin-troubleshoot")
+                NoteText("Pulls sleep, HRV, body battery and runs. Sends planned runs to your watch.")
 
                 if isConnected {
-                    Button(role: .destructive, action: disconnectGarmin) {
-                        Label(isDisconnecting ? "Disconnecting" : "Disconnect", systemImage: "xmark.circle")
-                            .frame(maxWidth: .infinity)
+                    VStack(spacing: 10) {
+                        if let connectedEmail = status?.connectedEmail, !connectedEmail.isEmpty {
+                            InfoLine(title: "Account", value: connectedEmail)
+                        }
+                        InfoLine(
+                            title: "Watch plan",
+                            value: watchPlanText,
+                            valueColor: watchSyncStatus?.status == .failed ? AppTheme.markerRedText : AppTheme.text
+                        )
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                if let watchError = watchSyncStatus?.lastError, !watchError.isEmpty {
+                    NoteText(watchError, isError: watchSyncStatus?.status == .failed)
+                }
+
+                HStack(spacing: 8) {
+                    if isConnected {
+                        Button(action: syncNow) {
+                            Text(isSyncing ? "Syncing" : "Sync now")
+                        }
+                        .buttonStyle(SecondaryActionButtonStyle())
+                        .accessibilityIdentifier("garmin-sync-now")
+                        .disabled(isSyncing)
+                        .opacity(isSyncing ? 0.55 : 1)
+                    } else {
+                        Button(action: { isShowingConnectForm.toggle() }) {
+                            Text(isShowingConnectForm ? "Cancel" : "Connect")
+                        }
+                        .buttonStyle(SecondaryActionButtonStyle())
+                        .accessibilityIdentifier("garmin-connect-toggle")
+                    }
+
+                    Button(action: { isShowingTroubleshoot.toggle() }) {
+                        Text("Troubleshoot")
+                    }
+                    .buttonStyle(QuietActionButtonStyle())
+                    .accessibilityIdentifier("garmin-troubleshoot")
+                }
+
+                if isShowingConnectForm && !isConnected {
+                    connectForm
+                }
+
+                if let syncResult {
+                    NoteText(syncResult)
+                }
+                if let syncError {
+                    NoteText(syncError, isError: true)
+                }
+
+                if shouldShowWatchRetry && isConnected {
+                    Button(action: retryWatchSync) {
+                        Label(isRetryingWatchSync ? "Retrying watch sync" : "Retry watch sync", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(SecondaryActionButtonStyle())
-                    .accessibilityIdentifier("garmin-disconnect")
-                    .disabled(isDisconnecting)
-                    .opacity(isDisconnecting ? 0.55 : 1)
+                    .accessibilityIdentifier("garmin-watch-sync-retry")
+                    .disabled(isRetryingWatchSync)
+                    .opacity(isRetryingWatchSync ? 0.55 : 1)
                 }
+
+                if let watchRetryStatus {
+                    NoteText(watchRetryStatus)
+                }
+                if let connectMessage {
+                    NoteText(connectMessage)
+                }
+                if let connectError {
+                    NoteText(connectError, isError: true)
+                }
+
+                if isShowingTroubleshoot {
+                    troubleshootPanel
+                }
+            }
+            .card(padding: 14)
+        }
+        .task { await loadStatus() }
+    }
+
+    private var connectForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Garmin email", text: $garminEmail)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.emailAddress)
+                .font(.lockinBody)
+                .tint(AppTheme.text)
+                .lockinField()
+                .accessibilityIdentifier("garmin-email-field")
+
+            SecureField("Garmin password", text: $garminPassword)
+                .font(.lockinBody)
+                .tint(AppTheme.text)
+                .lockinField()
+                .accessibilityIdentifier("garmin-password-field")
+
+            if shouldShowMFAField {
+                TextField("MFA code", text: $garminMFACode)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.numberPad)
+                    .font(.lockinBody)
+                    .tint(AppTheme.text)
+                    .lockinField()
+                    .accessibilityIdentifier("garmin-mfa-field")
             }
 
-            if isShowingTroubleshoot {
-                VStack(alignment: .leading, spacing: 6) {
-                    InfoLine(title: "Connection", value: statusText)
-                    if let lastError = status?.lastError, !lastError.isEmpty {
-                        Text(lastError)
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.warning)
-                    } else if statusFailed {
-                        Text("Lockin could not reach the coach proxy.")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.warning)
-                    }
+            Button(action: connectGarmin) {
+                Text(isConnecting ? "Connecting" : connectButtonTitle)
+            }
+            .buttonStyle(PrimaryActionButtonStyle())
+            .accessibilityIdentifier("garmin-connect-submit")
+            .disabled(isConnecting || garminEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || garminPassword.isEmpty)
+            .opacity(isConnecting ? 0.55 : 1)
+        }
+    }
+
+    private var troubleshootPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Hairline()
+            InfoLine(title: "Connection", value: statusText)
+            if let lastError = status?.lastError, !lastError.isEmpty {
+                NoteText(lastError, isError: true)
+            } else if statusFailed {
+                NoteText("Lockin could not reach the coach proxy.", isError: true)
+            } else {
+                NoteText("No errors reported.")
+            }
+            if isConnected {
+                Button(role: .destructive, action: disconnectGarmin) {
+                    Text(isDisconnecting ? "Disconnecting" : "Disconnect Garmin")
+                        .font(.trail(15, .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(AppTheme.markerRedText)
+                        .frame(minHeight: 44)
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("garmin-disconnect")
+                .disabled(isDisconnecting)
+                .opacity(isDisconnecting ? 0.55 : 1)
             }
         }
-        .ruled(verticalPadding: 16)
-        .task { await loadStatus() }
+    }
+
+    private var lastSyncText: String {
+        garminLastSyncAt > 0 ? "Last sync \(relativeSyncText(epochSeconds: garminLastSyncAt))" : "Never synced"
+    }
+
+    /// Red only for states the athlete should act on; "Not connected" and
+    /// "Checking" stay neutral.
+    private var needsAttention: Bool {
+        guard let status else { return statusFailed }
+        return status.loggedIn ? !status.ok : status.state == .mfaRequired
     }
 
     private func retryWatchSync() {
@@ -664,16 +902,6 @@ private struct GarminCard: View {
     private var statusText: String {
         guard let status else { return statusFailed ? "Unreachable" : "Checking" }
         return status.displayState.text
-    }
-
-    private var statusColor: Color {
-        guard let status else { return statusFailed ? AppTheme.warning : AppTheme.muted }
-        return status.displayState.isHealthy ? AppTheme.accent : AppTheme.warning
-    }
-
-    private var statusIcon: String {
-        guard let status else { return statusFailed ? "exclamationmark.triangle.fill" : "hourglass" }
-        return status.displayState.isHealthy ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
     }
 
     private func loadStatus() async {
@@ -840,96 +1068,94 @@ private struct GarminCard: View {
     }
 }
 
-private struct ReminderSettingsCard: View {
+
+private struct ReminderSection: View {
     var profile: UserProfile
     var onReminderToggle: (Bool) -> Void
     var onReminderTimeChange: (Date) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Reminder")
-
-            Toggle("Enabled", isOn: Binding(
-                get: { profile.remindersEnabled },
-                set: { newValue in
-                    onReminderToggle(newValue)
+        ProfileGroup("Reminder") {
+            ProfileList {
+                ProfileRow(minHeight: 54) {
+                    Toggle("Training reminder", isOn: Binding(
+                        get: { profile.remindersEnabled },
+                        set: { newValue in
+                            onReminderToggle(newValue)
+                        }
+                    ))
+                    .font(.lockinBody)
+                    .foregroundStyle(AppTheme.text)
+                    .tint(AppTheme.text)
                 }
-            ))
-            .font(.subheadline.weight(.medium))
-            .tint(AppTheme.accent)
-
-            DatePicker(
-                "Time",
-                selection: Binding(
-                    get: { profile.reminderTime },
-                    set: { onReminderTimeChange($0) }
-                ),
-                displayedComponents: .hourAndMinute
-            )
-            .font(.subheadline.weight(.medium))
-            .tint(AppTheme.accent)
-            .accessibilityIdentifier("reminder-time-picker")
+                RowRule()
+                ProfileRow {
+                    DatePicker(
+                        "Time",
+                        selection: Binding(
+                            get: { profile.reminderTime },
+                            set: { onReminderTimeChange($0) }
+                        ),
+                        displayedComponents: .hourAndMinute
+                    )
+                    .font(.lockinBody)
+                    .foregroundStyle(AppTheme.text)
+                    .tint(AppTheme.text)
+                    .accessibilityIdentifier("reminder-time-picker")
+                }
+            }
         }
-        .ruled(verticalPadding: 16)
     }
 }
 
-private struct ResetCard: View {
+private struct DataSection: View {
     var resetError: String?
     var onResetTap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("Reset")
-            Text("Deletes profile, measurements, goals, race goal, sessions, logs, runs, streak data, coach plans, coach decisions, and pending workout reminders.")
-                .font(.system(size: 12))
-                .foregroundStyle(AppTheme.faint)
-            Button(role: .destructive, action: onResetTap) {
-                Label("Wipe all app data", systemImage: "trash")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecondaryActionButtonStyle())
-            if let resetError {
-                Text(resetError)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.warning)
+        ProfileGroup("Data") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Training data stays on this iPhone, with a private iCloud backup. Wiping deletes your profile, goals, race goal, sessions, logs, runs, streaks, coach history and pending reminders.")
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(role: .destructive, action: onResetTap) {
+                    Text("Wipe all app data")
+                }
+                .buttonStyle(SecondaryActionButtonStyle())
+                if let resetError {
+                    NoteText(resetError, isError: true)
+                }
             }
         }
-        .ruled(verticalPadding: 16)
     }
 }
 
 #if DEBUG && targetEnvironment(simulator)
-private struct DemoHistorySeedCard: View {
+private struct DemoHistorySeedSection: View {
     var seedMessage: String?
     var seedError: String?
     var onSeedTap: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("Demo data")
-            Text("Loads a fake two-week training block with strength logs, Garmin-style runs, readiness, race goal, and coach state.")
-                .font(.system(size: 12))
-                .foregroundStyle(AppTheme.faint)
-            Button(action: onSeedTap) {
-                Label("Seed demo history", systemImage: "sparkles")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecondaryActionButtonStyle())
-            .accessibilityIdentifier("seed-demo-history-button")
+        ProfileGroup("Demo data") {
+            VStack(alignment: .leading, spacing: 12) {
+                NoteText("Loads a fake two-week training block with strength logs, Garmin-style runs, readiness, a race goal and a coach read. Simulator builds only.")
+                Button(action: onSeedTap) {
+                    Text("Seed demo history")
+                }
+                .buttonStyle(QuietActionButtonStyle())
+                .accessibilityIdentifier("seed-demo-history-button")
 
-            if let seedMessage {
-                Text(seedMessage)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
-            }
-            if let seedError {
-                Text(seedError)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.warning)
+                if let seedMessage {
+                    NoteText(seedMessage)
+                }
+                if let seedError {
+                    NoteText(seedError, isError: true)
+                }
             }
         }
-        .ruled(verticalPadding: 16)
     }
 }
 #endif

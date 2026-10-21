@@ -245,47 +245,53 @@ struct TrainingDaysPicker: View {
     var title: String = "Training days"
     var minDays: Int = 2
     var maxDays: Int = 6
-    var caption: String? = "Pick 2 to 6 days. The AI coach will only schedule future sessions on those selected days."
+    var caption: String? = "Pick 2 to 6 days. The coach only plans future sessions on these days."
     var preventsEmptySelection: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.trail(17, .semibold, relativeTo: .headline))
+                    .foregroundStyle(AppTheme.text)
                 Spacer()
                 Text("\(selectedDays.count) per week")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle((minDays...maxDays).contains(selectedDays.count) ? AppTheme.muted : AppTheme.warning)
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
+                    .foregroundStyle((minDays...maxDays).contains(selectedDays.count) ? AppTheme.muted : AppTheme.markerRedText)
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 ForEach(TrainingWeekday.allCases) { day in
                     let isSelected = selectedDays.contains(day)
+                    let isDisabled = isToggleDisabled(for: day)
                     Button {
                         toggle(day)
                     } label: {
                         Text(day.shortTitle)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(isSelected ? AppTheme.accentInk : AppTheme.muted)
+                            .font(.trail(14, isSelected ? .bold : .semibold, relativeTo: .subheadline))
+                            .foregroundStyle(isSelected ? Color.white : (isDisabled ? AppTheme.faint : AppTheme.text))
                             .frame(maxWidth: .infinity)
-                            .frame(height: 36)
-                            .background(isSelected ? AppTheme.accent : AppTheme.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
+                            .frame(height: 44)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(isSelected ? AppTheme.text : AppTheme.surface)
+                            )
                             .overlay(
-                                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .strokeBorder(isSelected ? .clear : AppTheme.divider, lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)
-                    .disabled(isToggleDisabled(for: day))
+                    .disabled(isDisabled)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                     .animation(.snappy(duration: 0.2), value: isSelected)
                     .sensoryFeedback(.selection, trigger: isSelected)
                 }
             }
             if let caption {
                 Text(caption)
-                    .font(.system(size: 12))
-                    .foregroundStyle(AppTheme.faint)
+                    .font(.trail(13, .regular, relativeTo: .footnote))
+                    .foregroundStyle(AppTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
