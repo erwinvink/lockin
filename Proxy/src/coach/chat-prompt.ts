@@ -185,6 +185,7 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
       },
       nextAction: evaluation.nextAction
     },
+    plannedRecoveryWeek: context.periodization?.recoveryWeekDue ? context.periodization.recoveryWeekReason : null,
     riskFlags: context.readiness.riskFlags.map(humanize),
     strength: {
       twoMonthTrend: humanize(context.history.twoFullMonthTrend.label),

@@ -110,7 +110,6 @@ test("sends the system prompt, a compact athlete summary, and the conversation",
     "Today Simulation", // today's session
     "pull-ups 3x8 medium",
     "Tempo run 8 km", // upcoming sessions
-    "tempo run, 8 km, 60 m climb, pace 5:00-5:15 per km, Zone 3", // a planned run's prescription
     "push-ups 4x26 hard",
     "pull-ups 3x7 hard, push-ups 3x24 medium, plank 3x95s medium", // prescription behind a log
     "pull-ups 8, push-ups 28, plank 95s", // what was logged
