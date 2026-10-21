@@ -163,6 +163,52 @@ final class DesignScreenshotTour: XCTestCase {
         snap(app, "new-plan-8-offline", in: directory)
     }
 
+    /// Needs a proxy (or a stub) answering POST /coach-chat; set
+    /// TEST_RUNNER_COACH_PROXY_ENDPOINT to point at it.
+    func testCaptureCoachChat() throws {
+        guard let directory = screenshotDirectory else {
+            throw XCTSkip("SCREENSHOT_DIR not set; the tour only runs for design capture.")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let app = XCUIApplication()
+        app.launchArguments = ["UITesting", "SeedTwoWeeksActivity"]
+        app.launchEnvironment["COACH_PROXY_ENDPOINT"] = ProcessInfo.processInfo.environment["COACH_PROXY_ENDPOINT"]
+            ?? "http://127.0.0.1:8787/generate-week-plan"
+        app.launch()
+        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 8))
+
+        app.tabBars.buttons["Coach"].tap()
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        let chatTab = app.buttons["Chat"]
+        XCTAssertTrue(chatTab.waitForExistence(timeout: 5))
+        chatTab.tap()
+        let input = app.textFields["coach-chat-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        snap(app, "chat-0-empty", in: directory)
+
+        input.tap()
+        input.typeText("What should I do today?")
+        app.buttons["coach-chat-send-button"].tap()
+        let status = app.staticTexts["coach-chat-status"]
+        expectation(for: NSPredicate(format: "label == %@", "2 messages"), evaluatedWith: status)
+        waitForExpectations(timeout: 60)
+        snap(app, "chat-1-model-answer", in: directory)
+
+        let followUps = app.descendants(matching: .any)["coach-chat-follow-ups"]
+        XCTAssertTrue(followUps.waitForExistence(timeout: 5))
+        followUps.buttons.firstMatch.tap()
+        expectation(for: NSPredicate(format: "label == %@", "4 messages"), evaluatedWith: status)
+        waitForExpectations(timeout: 60)
+        snap(app, "chat-2-follow-up-answer", in: directory)
+
+        let clearButton = app.buttons["coach-chat-clear-button"]
+        XCTAssertTrue(clearButton.waitForExistence(timeout: 5))
+        clearButton.tap()
+        sleepBriefly()
+        snap(app, "chat-3-clear-confirm", in: directory)
+    }
+
     private func snap(_ app: XCUIApplication, _ name: String, in directory: URL) {
         sleepBriefly()
         let screenshot = XCUIScreen.main.screenshot()
