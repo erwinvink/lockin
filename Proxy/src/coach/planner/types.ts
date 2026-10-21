@@ -229,6 +229,49 @@ export type CoachContext = {
   garmin?: { wellness: CoachWellnessDay[] };
   /** Present when the app sent planBlockStartedAt. */
   block?: PlanBlockContext;
+  /** Planned recovery weeks (computed from the request; absent in hand-built contexts). */
+  periodization?: PeriodizationContext;
+};
+
+export type BlockWeekClassification = "loading" | "recovery" | "reactive_offload" | "taper_or_race" | "low_volume" | "no_training";
+
+/** One complete plan-block week as the recovery-week rule read it. */
+export type BlockWeekSummary = {
+  blockWeek: number;
+  startsAt: string;
+  runningKm: number | null;
+  hardStrengthSets: number;
+  classification: BlockWeekClassification;
+  note: string;
+};
+
+/** Planned recovery weeks (3:1) on the plan-block calendar; see periodization.ts. */
+export type PeriodizationContext = {
+  cycle: "3:1";
+  /** Block week of weekStart (1-based); null without a block start. */
+  blockWeek: number | null;
+  /** Loading weeks in a row since the block start or the last unloading week. */
+  loadingWeeksSinceRecovery: number;
+  lastUnloadingWeek: { blockWeek: number; startsAt: string; classification: BlockWeekClassification; note: string } | null;
+  recoveryWeekDue: boolean;
+  recoveryWeekReason: string;
+  /** The limits of this recovery week, when one is due. */
+  recoveryWeek: {
+    startsAt: string;
+    endsAt: string;
+    /** Average weekly km of the four block weeks before this one. */
+    referenceWeeklyKm: number | null;
+    weeklyKmCap: number | null;
+    targetWeeklyKm: { low: number; high: number } | null;
+    longRunCapKm: number | null;
+    maxQualityRuns: number;
+    /** Hard strength sets prescribed in the last loading week. */
+    referenceHardStrengthSets: number | null;
+    hardStrengthSetCap: number | null;
+    maxHardStrengthSessions: number;
+    maxGoalSetsPerExercise: number;
+  } | null;
+  recentWeeks: BlockWeekSummary[];
 };
 
 /** Where the planned week sits in the athlete's current plan block. */
