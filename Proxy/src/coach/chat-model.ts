@@ -32,6 +32,7 @@ export type CoachChatModelCall = (
 
 export type CoachChatFallbackReason =
   | "no_api_key"
+  | "request_unreadable"
   | "model_http_error"
   | "model_timeout"
   | "model_call_failed"
@@ -86,7 +87,14 @@ export async function answerCoachChat(input: AnswerCoachChatInput): Promise<Coac
   }
 
   const timeoutMs = input.timeoutMs ?? coachChatTimeoutMs(input.env);
-  const body = buildCoachChatRequestBody({ ...input, messages, now: generatedAt });
+  let body: ReturnType<typeof buildCoachChatRequestBody>;
+  try {
+    body = buildCoachChatRequestBody({ ...input, messages, now: generatedAt });
+  } catch {
+    // A request field of an unexpected type (for example a non-string note)
+    // must not turn a chat turn into a 500: the quick answer still works.
+    return fallback("request_unreadable");
+  }
 
   let result: OpenAIResponseFetchResult | "timeout";
   try {

@@ -211,6 +211,25 @@ test("falls back when the model call errors, throws, or times out", async () => 
   }
 });
 
+test("falls back to the quick answer when a request field has an unexpected type", async () => {
+  const base = context();
+  assert.ok(base.history.last5Logs.length > 0, "fixture needs at least one log");
+  const badContext = {
+    ...base,
+    history: { ...base.history, last5Logs: base.history.last5Logs.map((log) => ({ ...log, notes: 42 as unknown as string })) }
+  };
+  const caller = recordingCaller(okResponse(modelAnswer));
+  const reasons: CoachChatFallbackReason[] = [];
+  const response = await answerCoachChat(chatInput(conversation, caller.call, {
+    context: badContext,
+    onFallback: (reason) => reasons.push(reason)
+  }));
+
+  assert.deepEqual(reasons, ["request_unreadable"]);
+  assert.equal(response.usedModel, false);
+  assert.equal(caller.bodies.length, 0);
+});
+
 test("falls back when the model output is truncated, not JSON, or has no answer", async () => {
   const incomplete: OpenAIResponseFetchResult = { ok: true, status: 200, json: { status: "incomplete", output: [] } };
   const cases: Array<[CoachChatFallbackReason, OpenAIResponseFetchResult]> = [
