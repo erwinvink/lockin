@@ -38,6 +38,8 @@ export type CoachRequest = {
   targetDate: string;
   trainingLogs: TrainingLog[];
   plannedSessions: PlannedSession[];
+  /** Local midnight the current plan block began (ISO-8601); optional for old clients. */
+  planBlockStartedAt?: string;
   running?: RunningRequest;
 };
 
@@ -187,6 +189,15 @@ export type CoachContext = {
   };
   running?: RunningContext;
   garmin?: { wellness: CoachWellnessDay[] };
+  /** Present when the app sent planBlockStartedAt. */
+  block?: PlanBlockContext;
+};
+
+/** Where the planned week sits in the athlete's current plan block. */
+export type PlanBlockContext = {
+  startedAt: string;
+  /** Whole weeks from the block start to weekStart, 1-based. */
+  weekInBlock: number;
 };
 
 export type PlannedGoalTrend = {

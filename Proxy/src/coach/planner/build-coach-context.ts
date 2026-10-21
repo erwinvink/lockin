@@ -1,4 +1,5 @@
 import { nextLocalMidnight, startOfLocalDay, validTimeZone } from "../local-time";
+import { planBlockContext } from "./plan-block";
 import { addMonths, startOfMonthUTC, summarizeMonth, summarizeTrend } from "./summarize-training-history";
 import type {
   CoachContext,
@@ -64,6 +65,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       }
     },
     adherence,
+    ...planBlockContext(request),
     plannedWork: summarizePlannedWork(request.plannedSessions, sortedLogs, request.weekStart, today),
     readiness: {
       state,
