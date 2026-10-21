@@ -191,10 +191,10 @@ final class FitnessAppUITests: XCTestCase {
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Progress"].exists)
-        XCTAssertTrue(app.staticTexts["STREAK"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["BEST"].exists)
-        XCTAssertTrue(app.staticTexts["MISSED TRAININGS"].exists)
-        XCTAssertTrue(app.staticTexts["PULL-UPS"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sessions in a row"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Best streak"].exists)
+        XCTAssertTrue(app.staticTexts["Missed"].exists)
+        XCTAssertTrue(app.staticTexts["Pull-ups"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["PENALTIES"].exists)
         XCTAssertFalse(app.buttons["History"].exists)
         XCTAssertFalse(app.buttons["Consistency details and benchmarks"].exists)
@@ -291,7 +291,7 @@ final class FitnessAppUITests: XCTestCase {
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Readiness"].exists)
-        XCTAssertTrue(app.staticTexts["RUNNING"].exists)
+        XCTAssertTrue(app.staticTexts["Weekly distance"].exists)
         // Longest run (6 weeks) from the confirmed seed long run; weekly sums are
         // weekday-dependent, so the stable longest-run value is asserted instead.
         // The decimal separator follows the simulator locale, so match both forms.
@@ -299,7 +299,7 @@ final class FitnessAppUITests: XCTestCase {
             NSPredicate(format: "label MATCHES %@", "16[.,]4 km")
         ).firstMatch
         XCTAssertTrue(longestRun.exists)
-        XCTAssertTrue(app.staticTexts["MISSED TRAININGS"].exists)
+        XCTAssertTrue(app.staticTexts["Missed"].exists)
         XCTAssertTrue(app.staticTexts["1"].exists)
         XCTAssertFalse(app.staticTexts["PENALTIES"].exists)
         XCTAssertFalse(app.buttons["Consistency details and benchmarks"].exists)
@@ -366,7 +366,7 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Progress"].tap()
         XCTAssertTrue(app.staticTexts["Readiness"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["RUNNING"].exists)
+        XCTAssertTrue(app.staticTexts["Weekly distance"].exists)
     }
 
     private func launchFreshApp() -> XCUIApplication {
