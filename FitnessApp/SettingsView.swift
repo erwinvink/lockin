@@ -5,6 +5,7 @@ import UIKit
 struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openTab) private var openTab
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
@@ -17,6 +18,7 @@ struct SettingsView: View {
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
+    @State private var newPlanDraft: NewPlanDraft?
     #if DEBUG && targetEnvironment(simulator)
     @State private var isShowingSeedConfirmation = false
     @State private var seedMessage: String?
@@ -58,6 +60,7 @@ struct SettingsView: View {
                     onSeedTap: { isShowingSeedConfirmation = true }
                 )
                 #endif
+                NewPlanSection(onStartTap: openNewPlan)
                 DataSection(
                     resetError: resetError,
                     onResetTap: { isShowingResetConfirmation = true }
@@ -66,6 +69,11 @@ struct SettingsView: View {
                     .font(.trail(11, .regular, relativeTo: .caption2))
                     .foregroundStyle(AppTheme.faint)
                     .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .sheet(item: $newPlanDraft) { draft in
+                NewPlanView(profile: profile, draft: draft) { planReady in
+                    if planReady { openTab(.today) }
+                }
             }
             .alert("Wipe all app data?", isPresented: $isShowingResetConfirmation) {
                 Button("Cancel", role: .cancel) {}
@@ -90,6 +98,10 @@ struct SettingsView: View {
             .onAppear(perform: refreshEnabledReminders)
             .onDisappear(perform: replanIfScheduleChanged)
         }
+    }
+
+    private func openNewPlan() {
+        newPlanDraft = NewPlanDraft.make(profile: profile, raceGoal: raceGoals.first, in: modelContext)
     }
 
     private func saveTrainingDays(_ days: Set<TrainingWeekday>) {
@@ -992,6 +1004,29 @@ private struct ReminderSection: View {
                     .tint(AppTheme.text)
                     .accessibilityIdentifier("reminder-time-picker")
                 }
+            }
+        }
+    }
+}
+
+/// The restart that keeps history; "Wipe all app data" below is the one
+/// that doesn't.
+private struct NewPlanSection: View {
+    var onStartTap: () -> Void
+
+    var body: some View {
+        FormGroup("New plan") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Want a fresh start? Redo your race, goals, numbers and training days, and the coach plans a new week. Your logs, runs, streaks and coach chat stay.")
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(action: onStartTap) {
+                    Text("Start a new plan")
+                }
+                .buttonStyle(PrimaryActionButtonStyle())
+                .accessibilityIdentifier("start-new-plan-button")
             }
         }
     }

@@ -4,34 +4,7 @@ import SwiftUI
 struct OnboardingView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var name = LockinCurrentUser.displayName
-    @State private var pullUps = 5
-    @State private var pushUps = 20
-    @State private var plankSeconds = 60
-    @State private var goalPullUps = 50
-    @State private var goalPushUps = 100
-    @State private var goalPlankSeconds = 300
-    @State private var selectedTrainingDays: Set<TrainingWeekday> = TrainingWeekday.defaultTrainingDays(for: 4)
-    @State private var targetDate = Calendar.current.date(byAdding: .year, value: 1, to: Date()) ?? Date()
-    @State private var selectedEquipment: Set<EquipmentKind> = [.pullUpBar, .yogaMat]
-    @State private var strictForm = true
-    @State private var painNotes = ""
-    @State private var isTrainingForRace = false
-    @State private var raceName = ""
-    @State private var raceDate = Calendar.current.date(byAdding: .weekOfYear, value: 16, to: Date()) ?? Date()
-    @State private var raceDistanceKm = 50
-    @State private var raceElevationGainM = 1000
-    @State private var runningDays: Set<TrainingWeekday> = [.tuesday, .thursday, .saturday]
-    @State private var longRunDay: TrainingWeekday = .saturday
-
-    /// Why "Create profile" is off, in the order the athlete meets the
-    /// controls. Nil when the profile can be created.
-    private var blockingReason: String? {
-        if !(2...6).contains(selectedTrainingDays.count) { return "Pick 2 to 6 strength days." }
-        if isTrainingForRace && runningDays.isEmpty { return "Pick at least one running day." }
-        if !selectedEquipment.contains(.pullUpBar) { return "Add a pull-up bar to continue." }
-        if !strictForm { return "Turn on strict reps to continue." }
-        return nil
-    }
+    @State private var inputs = PlanInputs()
 
     var body: some View {
         NavigationStack {
@@ -57,43 +30,43 @@ struct OnboardingView: View {
                 }
 
                 NowAndGoalSection(
-                    pullUps: $pullUps,
-                    pushUps: $pushUps,
-                    plankSeconds: $plankSeconds,
-                    goalPullUps: $goalPullUps,
-                    goalPushUps: $goalPushUps,
-                    goalPlankSeconds: $goalPlankSeconds,
-                    targetDate: $targetDate
+                    pullUps: $inputs.pullUps,
+                    pushUps: $inputs.pushUps,
+                    plankSeconds: $inputs.plankSeconds,
+                    goalPullUps: $inputs.goalPullUps,
+                    goalPushUps: $inputs.goalPushUps,
+                    goalPlankSeconds: $inputs.goalPlankSeconds,
+                    targetDate: $inputs.targetDate
                 )
 
                 TrainingDaysPicker(
-                    selectedDays: $selectedTrainingDays,
+                    selectedDays: $inputs.trainingDays,
                     title: "Strength days",
                     caption: "Pick 2 to 6 days. The coach only plans on these days."
                 )
 
                 RaceSection(
-                    isTrainingForRace: $isTrainingForRace,
-                    raceName: $raceName,
-                    raceDate: $raceDate,
-                    raceDistanceKm: $raceDistanceKm,
-                    raceElevationGainM: $raceElevationGainM,
-                    runningDays: $runningDays,
-                    longRunDay: $longRunDay
+                    isTrainingForRace: $inputs.isTrainingForRace,
+                    raceName: $inputs.raceName,
+                    raceDate: $inputs.raceDate,
+                    raceDistanceKm: $inputs.raceDistanceKm,
+                    raceElevationGainM: $inputs.raceElevationGainM,
+                    runningDays: $inputs.runningDays,
+                    longRunDay: $inputs.longRunDay
                 )
 
-                EquipmentSection(selectedEquipment: $selectedEquipment)
+                EquipmentSection(selectedEquipment: $inputs.equipment)
 
                 GuardrailsSection(
-                    strictForm: $strictForm,
-                    painNotes: $painNotes
+                    strictForm: $inputs.strictForm,
+                    painNotes: $inputs.painNotes
                 )
 
                 VStack(alignment: .leading, spacing: 8) {
                     Button("Create profile", action: completeOnboarding)
                         .buttonStyle(PrimaryActionButtonStyle())
-                        .disabled(blockingReason != nil)
-                    if let blockingReason {
+                        .disabled(inputs.blockingReason != nil)
+                    if let blockingReason = inputs.blockingReason {
                         Text(blockingReason)
                             .font(.trail(14, .semibold, relativeTo: .subheadline))
                             .foregroundStyle(AppTheme.markerRedText)
@@ -108,34 +81,32 @@ struct OnboardingView: View {
     private func completeOnboarding() {
         let profile = UserProfile(
             name: LockinCurrentUser.normalizedProfileName(name),
-            targetDate: targetDate,
-            weeklySessions: selectedTrainingDays.count,
-            trainingDays: selectedTrainingDays,
-            equipment: selectedEquipment,
-            baselinePullUps: pullUps,
-            baselinePushUps: pushUps,
-            baselinePlankSeconds: plankSeconds,
-            goalPullUps: goalPullUps,
-            goalPushUps: goalPushUps,
-            goalPlankSeconds: goalPlankSeconds,
-            strictFormAccepted: strictForm,
-            painNotes: painNotes
+            targetDate: inputs.targetDate,
+            weeklySessions: inputs.trainingDays.count,
+            trainingDays: inputs.trainingDays,
+            equipment: inputs.equipment,
+            baselinePullUps: inputs.pullUps,
+            baselinePushUps: inputs.pushUps,
+            baselinePlankSeconds: inputs.plankSeconds,
+            goalPullUps: inputs.goalPullUps,
+            goalPushUps: inputs.goalPushUps,
+            goalPlankSeconds: inputs.goalPlankSeconds,
+            strictFormAccepted: inputs.strictForm,
+            painNotes: inputs.painNotes
         )
         modelContext.insert(profile)
         modelContext.insert(RankState())
-        if isTrainingForRace {
+        if inputs.isTrainingForRace {
             modelContext.insert(
                 RaceGoal(
-                    name: raceName,
-                    raceDate: raceDate,
-                    distanceKm: Double(raceDistanceKm),
-                    elevationGainM: raceElevationGainM
+                    name: inputs.raceName,
+                    raceDate: inputs.raceDate,
+                    distanceKm: Double(inputs.raceDistanceKm),
+                    elevationGainM: inputs.raceElevationGainM
                 )
             )
-            profile.runningDays = runningDays
-            profile.longRunDay = runningDays.contains(longRunDay)
-                ? longRunDay
-                : TrainingWeekday.allCases.last { runningDays.contains($0) }
+            profile.runningDays = inputs.runningDays
+            profile.longRunDay = inputs.resolvedLongRunDay
         }
         try? modelContext.save()
     }
@@ -143,9 +114,24 @@ struct OnboardingView: View {
 
 // MARK: - Sections
 
+/// How a new plan sets its starting numbers.
+enum BaselineChoice: CaseIterable {
+    /// The current numbers from recent logs and the profile, as they are.
+    case keepCurrent
+    /// The athlete tests again and types what they got.
+    case retest
+
+    var title: String {
+        switch self {
+        case .keepCurrent: "Keep current"
+        case .retest: "Retest"
+        }
+    }
+}
+
 /// Where the athlete is now against where they want to get, one row per
 /// movement: the goal column carries the heavier outline.
-private struct NowAndGoalSection: View {
+struct NowAndGoalSection: View {
     @Binding var pullUps: Int
     @Binding var pushUps: Int
     @Binding var plankSeconds: Int
@@ -153,10 +139,34 @@ private struct NowAndGoalSection: View {
     @Binding var goalPushUps: Int
     @Binding var goalPlankSeconds: Int
     @Binding var targetDate: Date
+    /// New plan only: keep the current numbers (shown, not editable) or
+    /// retest. Onboarding leaves it nil and always edits.
+    var baselineChoice: Binding<BaselineChoice>? = nil
+
+    private var nowIsLocked: Bool {
+        baselineChoice?.wrappedValue == .keepCurrent
+    }
+
+    private var note: String {
+        switch baselineChoice?.wrappedValue {
+        case nil: "Your best strict set today, and where you want to get."
+        case .keepCurrent: "Now is your best strict set from recent logs. Pick Retest to type new numbers."
+        case .retest: "Do one strict max set of each, then type what you got."
+        }
+    }
 
     var body: some View {
         FormGroup("Now and goal") {
-            NoteText("Your best strict set today, and where you want to get.")
+            if let baselineChoice {
+                HStack(spacing: 6) {
+                    ForEach(BaselineChoice.allCases, id: \.self) { choice in
+                        SelectableChip(title: choice.title, isOn: baselineChoice.wrappedValue == choice) {
+                            baselineChoice.wrappedValue = choice
+                        }
+                    }
+                }
+            }
+            NoteText(note)
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
@@ -172,11 +182,11 @@ private struct NowAndGoalSection: View {
                 .accessibilityHidden(true)
 
                 ListCardRule()
-                NowGoalRow(title: "Pull-ups", now: $pullUps, nowRange: 0...100, goal: $goalPullUps, goalRange: 1...300)
+                NowGoalRow(title: "Pull-ups", now: $pullUps, nowRange: 0...100, goal: $goalPullUps, goalRange: 1...300, nowIsLocked: nowIsLocked)
                 ListCardRule()
-                NowGoalRow(title: "Push-ups", now: $pushUps, nowRange: 0...300, goal: $goalPushUps, goalRange: 1...500)
+                NowGoalRow(title: "Push-ups", now: $pushUps, nowRange: 0...300, goal: $goalPushUps, goalRange: 1...500, nowIsLocked: nowIsLocked)
                 ListCardRule()
-                NowGoalRow(title: "Plank", now: $plankSeconds, nowRange: 0...1_800, goal: $goalPlankSeconds, goalRange: 10...3_600, isDuration: true)
+                NowGoalRow(title: "Plank", now: $plankSeconds, nowRange: 0...1_800, goal: $goalPlankSeconds, goalRange: 10...3_600, isDuration: true, nowIsLocked: nowIsLocked)
                 ListCardRule()
                 DatePicker("Target date", selection: $targetDate, displayedComponents: .date)
                     .font(.lockinBody)
@@ -198,6 +208,7 @@ private struct NowGoalRow: View {
     @Binding var goal: Int
     var goalRange: ClosedRange<Int>
     var isDuration = false
+    var nowIsLocked = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -205,7 +216,7 @@ private struct NowGoalRow: View {
                 .font(.lockinBody)
                 .foregroundStyle(AppTheme.text)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            NowGoalField(label: "\(title) now", value: $now, range: nowRange, isDuration: isDuration, isGoal: false)
+            NowGoalField(label: "\(title) now", value: $now, range: nowRange, isDuration: isDuration, isGoal: false, isLocked: nowIsLocked)
             NowGoalField(label: "\(title) goal", value: $goal, range: goalRange, isDuration: isDuration, isGoal: true)
         }
         .frame(minHeight: 56)
@@ -220,6 +231,8 @@ private struct NowGoalField: View {
     var range: ClosedRange<Int>
     var isDuration: Bool
     var isGoal: Bool
+    /// Shows the value without a field: a kept number, not an input.
+    var isLocked = false
 
     @FocusState private var isFocused: Bool
 
@@ -233,6 +246,23 @@ private struct NowGoalField: View {
     private var isStrong: Bool { isGoal || isFocused }
 
     var body: some View {
+        if isLocked {
+            Text(isDuration ? MinuteSecondFormat().format(value) : "\(value)")
+                .font(.trail(17, .semibold, relativeTo: .body).monospacedDigit())
+                .foregroundStyle(AppTheme.text)
+                .frame(width: Self.width, height: 42)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(AppTheme.surfaceRaised)
+                )
+                .accessibilityLabel(label)
+                .accessibilityValue(isDuration ? MinuteSecondFormat().format(value) : "\(value)")
+        } else {
+            editableField
+        }
+    }
+
+    private var editableField: some View {
         field
             .keyboardType(isDuration ? .numbersAndPunctuation : .numberPad)
             .multilineTextAlignment(.center)
@@ -294,7 +324,7 @@ private struct MinuteSecondParser: ParseStrategy {
     }
 }
 
-private struct RaceSection: View {
+struct RaceSection: View {
     @Binding var isTrainingForRace: Bool
     @Binding var raceName: String
     @Binding var raceDate: Date
@@ -325,6 +355,7 @@ private struct RaceSection: View {
                             .foregroundStyle(AppTheme.text)
                         Spacer(minLength: 8)
                         TextField("Race name", text: $raceName)
+                            .accessibilityIdentifier("race-name-field")
                             .textInputAutocapitalization(.words)
                             .multilineTextAlignment(.trailing)
                             .font(.trail(16, .semibold, relativeTo: .body))
@@ -396,7 +427,7 @@ private struct RaceSection: View {
     }
 }
 
-private struct EquipmentSection: View {
+struct EquipmentSection: View {
     @Binding var selectedEquipment: Set<EquipmentKind>
 
     var body: some View {
@@ -404,33 +435,13 @@ private struct EquipmentSection: View {
             FlowLayout(spacing: 6) {
                 ForEach(EquipmentKind.allCases) { item in
                     let isOn = selectedEquipment.contains(item)
-                    Button {
+                    SelectableChip(title: item.title, isOn: isOn) {
                         if isOn {
                             selectedEquipment.remove(item)
                         } else {
                             selectedEquipment.insert(item)
                         }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if isOn {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 12, weight: .bold))
-                            }
-                            Text(item.title)
-                        }
-                        .font(.trail(15, isOn ? .semibold : .medium, relativeTo: .subheadline))
-                        .foregroundStyle(isOn ? Color.white : AppTheme.text)
-                        .padding(.horizontal, 14)
-                        .frame(height: 44)
-                        .background(Capsule().fill(isOn ? AppTheme.text : AppTheme.surface))
-                        .overlay(Capsule().strokeBorder(isOn ? Color.clear : AppTheme.post.opacity(0.6), lineWidth: 1))
-                        .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(item.title)
-                    .accessibilityAddTraits(isOn ? .isSelected : [])
-                    .animation(.snappy(duration: 0.2), value: isOn)
-                    .sensoryFeedback(.selection, trigger: isOn)
                 }
             }
             NoteText(
@@ -441,7 +452,7 @@ private struct EquipmentSection: View {
     }
 }
 
-private struct GuardrailsSection: View {
+struct GuardrailsSection: View {
     @Binding var strictForm: Bool
     @Binding var painNotes: String
 

@@ -120,6 +120,49 @@ final class DesignScreenshotTour: XCTestCase {
         snap(app, "00-onboarding-bottom", in: directory)
     }
 
+    func testCaptureNewPlan() throws {
+        guard let directory = screenshotDirectory else {
+            throw XCTSkip("SCREENSHOT_DIR not set; the tour only runs for design capture.")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let app = XCUIApplication()
+        app.launchArguments = ["UITesting", "SeedTwoWeeksActivity"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 8))
+
+        app.tabBars.buttons["Profile"].tap()
+        let startButton = app.buttons["start-new-plan-button"]
+        XCTAssertTrue(startButton.waitForExistence(timeout: 5))
+        var attempts = 0
+        while !startButton.isHittable, attempts < 8 {
+            app.swipeUp()
+            attempts += 1
+        }
+        app.swipeUp()
+        snap(app, "new-plan-0-profile-entry", in: directory)
+        startButton.tap()
+
+        XCTAssertTrue(app.staticTexts["Start over"].waitForExistence(timeout: 5))
+        snap(app, "new-plan-1-form-top", in: directory)
+        for index in 2...6 {
+            app.swipeUp()
+            snap(app, "new-plan-\(index)-form", in: directory)
+        }
+        let start = app.buttons["new-plan-start-button"]
+        attempts = 0
+        while !start.isHittable, attempts < 4 {
+            app.swipeUp()
+            attempts += 1
+        }
+        start.tap()
+        XCTAssertTrue(app.alerts["Start a new plan?"].waitForExistence(timeout: 5))
+        snap(app, "new-plan-7-confirm", in: directory)
+        app.alerts["Start a new plan?"].buttons["Start new plan"].tap()
+        XCTAssertTrue(app.staticTexts["Waiting for the coach"].waitForExistence(timeout: 10))
+        snap(app, "new-plan-8-offline", in: directory)
+    }
+
     private func snap(_ app: XCUIApplication, _ name: String, in directory: URL) {
         sleepBriefly()
         let screenshot = XCUIScreen.main.screenshot()
@@ -254,6 +297,67 @@ final class FitnessAppUITests: XCTestCase {
         app.alerts["Wipe all app data?"].buttons["Wipe everything"].tap()
         XCTAssertTrue(app.staticTexts["Set up lockin"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Create profile"].exists)
+    }
+
+    /// Profile > Start a new plan > confirm, on the seeded demo history. UI
+    /// tests never call the proxy, so planning takes the offline path; the
+    /// history must survive and the open plan must be gone.
+    func testStartNewPlanKeepsHistoryAndClearsTheOpenPlan() {
+        let app = XCUIApplication()
+        app.launchArguments = ["UITesting", "SeedTwoWeeksActivity"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Today Simulation"].waitForExistence(timeout: 8))
+
+        app.tabBars.buttons["Profile"].tap()
+        XCTAssertTrue(app.staticTexts["Goals"].waitForExistence(timeout: 5))
+        XCTAssertTrue(staticText(app, "Want a fresh start? Redo your race, goals, numbers and training days, and the coach plans a new week. Your logs, runs, streaks and coach chat stay.").waitForExistence(timeout: 5))
+        tapWhenReady(app.buttons["Start a new plan"], in: app)
+
+        // Pre-filled from the profile, the race goal and the best logged sets.
+        XCTAssertTrue(app.staticTexts["Start over"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["New plan"].firstMatch.exists)
+        // Profile's own race editor sits behind the sheet; this is the form's field.
+        XCTAssertEqual(app.textFields["race-name-field"].value as? String, "Eiger Ultra 51K")
+        XCTAssertTrue(app.buttons["Keep current"].isSelected)
+        XCTAssertEqual(app.staticTexts["Pull-ups now"].value as? String, "8")
+        XCTAssertEqual(app.staticTexts["Push-ups now"].value as? String, "28")
+        XCTAssertEqual(app.staticTexts["Plank now"].value as? String, "1:35")
+        XCTAssertTrue(app.staticTexts["Now is your best strict set from recent logs. Pick Retest to type new numbers."].exists)
+
+        tapWhenReady(app.buttons["45 min"], in: app)
+        XCTAssertTrue(app.buttons["45 min"].isSelected)
+        tapWhenReady(app.buttons["new-plan-start-button"], in: app)
+        let confirm = app.alerts["Start a new plan?"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(staticText(confirm, "Open sessions from today on are removed, also from your watch. Your logs, runs, readiness, streaks and coach chat stay.").exists)
+        confirm.buttons["Start new plan"].tap()
+
+        XCTAssertTrue(app.staticTexts["Waiting for the coach"].waitForExistence(timeout: 10))
+        XCTAssertTrue(staticText(app, "Your new goals are saved and the old open sessions are gone. lockin can't reach the coach right now, so it asks again the next time you open the app. You can also plan the week from Coach.").exists)
+        XCTAssertTrue(app.buttons["Try again"].exists)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["start-new-plan-button"].waitForExistence(timeout: 5))
+
+        // Log: history kept, the open sessions from today on are gone.
+        app.tabBars.buttons["Log"].tap()
+        XCTAssertTrue(app.staticTexts["Coming up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Nothing planned yet. Your coach plans the week from Coach."].exists)
+        XCTAssertFalse(app.staticTexts["Today Simulation"].exists)
+        XCTAssertFalse(app.buttons["week-plan-row-Pull Capacity"].exists)
+        XCTAssertTrue(app.staticTexts["Push + Core"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["No history yet."].exists)
+
+        // Coach: the old read is cleared and waits for the next one.
+        app.tabBars.buttons["Coach"].tap()
+        XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coach read needed"].exists)
+        XCTAssertFalse(app.staticTexts["Back on track"].exists)
+
+        // Progress: logged numbers and the race stay.
+        app.tabBars.buttons["Progress"].tap()
+        XCTAssertTrue(app.staticTexts["Progress"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Weekly distance"].exists)
+        XCTAssertTrue(app.staticTexts["Missed"].exists)
     }
 
     func testTwoWeekSeedPreviewDataSurfaces() {
@@ -396,6 +500,12 @@ final class FitnessAppUITests: XCTestCase {
         }
         XCTAssertTrue(element.isHittable)
         element.tap()
+    }
+
+    /// Exact-label lookup for copy longer than the 128-character limit of
+    /// subscript queries.
+    private func staticText(_ root: XCUIElement, _ label: String) -> XCUIElement {
+        root.staticTexts.matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
     private func askCoach(_ app: XCUIApplication, _ question: String, expect expectedText: String) {

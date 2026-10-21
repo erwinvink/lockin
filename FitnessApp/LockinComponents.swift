@@ -266,6 +266,38 @@ struct NoteText: View {
     }
 }
 
+/// A capsule choice: granite with a check when picked, white when not.
+/// Equipment, session length and starting numbers use it.
+struct SelectableChip: View {
+    var title: String
+    var isOn: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if isOn {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                }
+                Text(title)
+            }
+            .font(.trail(15, isOn ? .semibold : .medium, relativeTo: .subheadline))
+            .foregroundStyle(isOn ? Color.white : AppTheme.text)
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .background(Capsule().fill(isOn ? AppTheme.text : AppTheme.surface))
+            .overlay(Capsule().strokeBorder(isOn ? Color.clear : AppTheme.post.opacity(0.6), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .animation(.snappy(duration: 0.2), value: isOn)
+        .sensoryFeedback(.selection, trigger: isOn)
+    }
+}
+
 /// Lays children out left to right and wraps to a new row when one is full.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 8
