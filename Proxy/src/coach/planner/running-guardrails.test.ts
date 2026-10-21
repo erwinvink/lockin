@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { clampRunningWeek, easyRunReference, runningGuardrails } from "./running-guardrails";
+import { RECOVERY_RUN_LIMITS, TAPER_LIMITS } from "./running-phase-limits";
 import { validateRunningWeek } from "./validate-running-week";
 import type { CoachContext, RunKind, RunningContext, RunningWeek, RunSummary } from "./types";
 
@@ -115,15 +116,18 @@ test("clamp leaves the week alone when easy runs cannot absorb the excess, so va
 });
 
 test("the race-day session is outside the weekly and long-run caps", () => {
+  // Seven steady weeks so the pre-taper average (the 4 weeks before 21 days
+  // out) is on record. Race-week shakeouts are now capped at 40% of a normal
+  // easy run (8.1 km here, so 3 km), which is why they are 3 km each.
   const context = contextWith({
-    recentRuns: steadyWeeks([45, 45, 45, 45]),
+    recentRuns: steadyWeeks([45, 45, 45, 45, 45, 45, 45]),
     raceGoal: { name: "Ridge Ultra 60K", raceDate: "2026-05-17T00:00:00Z", distanceKm: 60, elevationGainM: 2400 },
     weeksToRace: 1
   });
   const week = runningWeek([
-    run("Easy shakeout", 1, "easy", 6),
-    run("Recovery jog", 3, "recovery", 5),
-    run("Pre-race shakeout", 5, "easy", 4),
+    run("Easy shakeout", 1, "easy", 3),
+    run("Recovery jog", 3, "recovery", 3),
+    run("Pre-race shakeout", 5, "easy", 3),
     run("Ridge Ultra 60K", 6, "long", 60)
   ]);
 
@@ -477,3 +481,208 @@ function emptyMonth(month: string, isPartial: boolean): CoachContext["history"][
     maxFatigue: 0
   };
 }
+
+// Planned recovery week: running backs off to 75% of the recent average,
+// the long run to 70% of the recent longest, and one quality session at most.
+function recoveryContext(): CoachContext {
+  const context = contextWith({ recentRuns: steadyWeeks([45, 45, 45, 45]), longestRecentRunKm: 20 });
+  context.periodization = {
+    cycle: "3:1",
+    blockWeek: 4,
+    loadingWeeksSinceRecovery: 3,
+    lastUnloadingWeek: null,
+    recoveryWeekDue: true,
+    recoveryWeekReason: "3 loading weeks since the block start: block week 4 is a planned recovery week (3:1).",
+    recoveryWeek: {
+      startsAt: WEEK_START,
+      endsAt: "2026-05-18T00:00:00Z",
+      referenceWeeklyKm: 45,
+      weeklyKmCap: 33.8,
+      targetWeeklyKm: { low: 27, high: 33.8 },
+      longRunCapKm: 14,
+      maxQualityRuns: 1,
+      referenceHardStrengthSets: 16,
+      hardStrengthSetCap: 9,
+      maxHardStrengthSessions: 1,
+      maxGoalSetsPerExercise: 3
+    },
+    recentWeeks: []
+  };
+  return context;
+}
+
+test("a recovery week caps volume, the long run and quality sessions, with the limit and value in each message", () => {
+  const context = recoveryContext();
+  const guardrails = runningGuardrails(context);
+  const week = runningWeek([
+    run("Easy aerobic run", 1, "easy", 8),
+    run("Tempo blocks", 3, "tempo", 10),
+    run("Long trail run", 5, "long", 20),
+    run("Hill repeats", 6, "hills", 8)
+  ]);
+  week.safetyFlags = ["Feeling great, keep it hard."];
+
+  assert.equal(guardrails.weeklyVolume.kind === "capped" && guardrails.weeklyVolume.capKm, 33.8);
+  assert.ok(guardrails.relaxations.some((relaxation) => relaxation.code === "planned_recovery_week"));
+  assert.equal(guardrails.qualityLimit?.max, 1);
+
+  const messages = validateRunningWeek(week, context, guardrails).messages;
+  assert.ok(messages.some((m) => m.includes("above this week's cap of 33.8 km (planned recovery week")), "safety flags do not waive it");
+  assert.ok(messages.some((m) => m.includes("Run 3 (Long trail run) is 20 km; in a recovery week the long run stays at or below 70% of the recent longest run: at most 14 km")));
+  assert.ok(messages.some((m) => m.includes("2 quality sessions (tempo, intervals, hills: runs 2, 4)") && m.includes("at most 1")));
+});
+
+test("the clamp turns a recovery week into a passable one", () => {
+  const context = recoveryContext();
+  const week = runningWeek([
+    run("Easy aerobic run", 1, "easy", 8),
+    run("Tempo blocks", 3, "tempo", 10),
+    run("Long trail run", 5, "long", 20),
+    run("Hill repeats", 6, "hills", 8)
+  ]);
+
+  const { week: clamped, adjustments } = clampRunningWeek(week, context);
+
+  assert.deepEqual(clamped.sessions.map((session) => session.kind), ["easy", "tempo", "long", "easy"]);
+  assert.equal(clamped.sessions[3].title, "Easy run");
+  assert.ok(clamped.sessions[3].notes.some((note) => note.includes("a recovery week keeps one short quality session at most")));
+  assert.equal(clamped.sessions[2].distanceKm, 14);
+  assert.ok(clamped.sessions.reduce((sum, session) => sum + session.distanceKm, 0) <= 33.8);
+  assert.ok(adjustments.some((a) => a.includes("hills changed to an easy run")));
+  assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });
+});
+
+test("an all-easy recovery week is fine", () => {
+  const context = recoveryContext();
+  const week = runningWeek([
+    run("Easy aerobic run", 1, "easy", 7),
+    run("Easy run with strides", 3, "easy", 7),
+    run("Easy long run", 5, "easy", 12),
+    run("Recovery jog", 6, "recovery", 5)
+  ]);
+
+  assert.deepEqual(validateRunningWeek(week, context), { accepted: true, messages: [] });
+});
+
+// Taper, 12 days out: offsets 1-4 sit 11-8 days out (taper_2w), offsets 5-6
+// 7-6 days out (race week). Seven steady 50 km weeks before.
+function taperContext(daysOut: number, runningDayOffsets = [1, 2, 4, 5]): CoachContext {
+  const raceDate = new Date(Date.parse(WEEK_START) + daysOut * DAY_MS).toISOString();
+  return contextWith({
+    recentRuns: steadyWeeks([50, 50, 50, 50, 50, 50, 50]),
+    longestRecentRunKm: 22,
+    raceGoal: { name: "Trail 75K", raceDate, distanceKm: 75, elevationGainM: 3000 },
+    weeksToRace: Math.ceil(daysOut / 7),
+    runningDays: ["tuesday", "wednesday", "friday", "saturday"],
+    runningDayOffsets,
+    longRunDay: "saturday",
+    longRunDayOffset: 5
+  });
+}
+
+test("12 days out the taper caps volume against the pre-taper average and phases each day", () => {
+  const guardrails = runningGuardrails(taperContext(12));
+  const race = guardrails.phase.race;
+
+  assert.ok(race);
+  assert.deepEqual(race.days.map((day) => day.phase), ["taper_2w", "taper_2w", "taper_2w", "taper_2w", "taper_2w", "race_week", "race_week"]);
+  assert.equal(race.referenceKm, 50);
+  // (5 x 70% + 2 x 40%) / 7 of 50 km.
+  assert.equal(race.weeklyKmCap, 30.7);
+  assert.equal(guardrails.weeklyVolume.kind === "capped" && guardrails.weeklyVolume.capKm, 30.7);
+  assert.equal(race.normalEasyRunKm, 9);
+  assert.equal(race.shortRunCapKm, 3.5, "40% of a normal 9 km easy run, to the nearest 0.5 km");
+  assert.equal(race.longRunCapKm.taper_2w, 13.2, "60% of the recent longest 22 km");
+  assert.equal(guardrails.qualityLimit?.max, 1);
+});
+
+test("the taper clamp keeps one quality session, removes hills inside 10 days and makes race week shakeouts", () => {
+  const context = taperContext(12);
+  const week = runningWeek([
+    run("Easy aerobic run", 1, "easy", 8),
+    run("Downhill repeats", 2, "hills", 10),
+    run("Tempo blocks", 4, "tempo", 8),
+    run("Long trail run", 5, "long", 18)
+  ]);
+  week.sessions[1].elevationMeters = 700;
+
+  const messages = validateRunningWeek(week, context).messages;
+  assert.ok(messages.some((m) => m.includes("Run 2 (Downhill repeats) is a hills run on offset 2, 10 day(s) before the race: no new hill or downhill session inside 10 days")));
+  assert.ok(messages.some((m) => m.includes("Run 2 (Downhill repeats) climbs 700 m over 10 km") && m.includes("at most 225 m")));
+  assert.ok(messages.some((m) => m.includes("Run 4 (Long trail run) is a long run on offset 5, 7 day(s) before Trail 75K: only short easy runs or shakeouts")));
+  assert.ok(messages.some((m) => m.includes("race week shakeouts stay at or below 40% of a normal 9 km easy run (max 8 km): at most 3.5 km")));
+
+  const { week: clamped } = clampRunningWeek(week, context);
+  assert.deepEqual(clamped.sessions.map((session) => session.kind), ["easy", "easy", "tempo", "easy"]);
+  assert.equal(clamped.sessions[3].title, "Easy shakeout run");
+  assert.equal(clamped.sessions[3].distanceKm, 3.5);
+  assert.ok(clamped.sessions[1].elevationMeters <= 225, "1.5x the usual 15 m/km over 10 km");
+  assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });
+});
+
+test("15-21 days out the weekly cap is 80% and the long run 75% of the recent longest", () => {
+  const context = taperContext(20, [1, 3, 5, 6]);
+  const guardrails = runningGuardrails(context);
+
+  // Six days at 80% and one (14 days out) at 70% of 50 km.
+  assert.equal(guardrails.weeklyVolume.kind === "capped" && guardrails.weeklyVolume.capKm, 39.3);
+  const week = runningWeek([
+    run("Easy aerobic run", 1, "easy", 8),
+    run("Tempo blocks", 3, "tempo", 8),
+    run("Long trail run", 5, "long", 20),
+    run("Recovery jog", 6, "recovery", 3)
+  ]);
+  assert.ok(validateRunningWeek(week, context).messages.some((m) => m.includes("15 days before the race the long run stays at or below 75% of the recent longest run: at most 16.5 km")));
+  const { week: clamped } = clampRunningWeek(week, context);
+  assert.equal(clamped.sessions[2].distanceKm, 16.5);
+  assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });
+});
+
+test("in race week only shakeouts surround the race, and a tempo becomes a shakeout", () => {
+  const context = taperContext(6, [1, 3, 5, 6]);
+  const week = runningWeek([
+    run("Easy shakeout", 1, "easy", 3),
+    run("Race-pace tempo", 3, "tempo", 8),
+    run("Pre-race shakeout", 5, "easy", 3),
+    run("Trail 75K", 6, "long", 75)
+  ]);
+
+  assert.ok(validateRunningWeek(week, context).messages.some((m) => m.includes("Run 2 (Race-pace tempo) is a tempo run on offset 3, 3 day(s) before Trail 75K")));
+  const { week: clamped, adjustments } = clampRunningWeek(week, context);
+  assert.equal(clamped.sessions[1].kind, "easy");
+  assert.equal(clamped.sessions[1].distanceKm, 3.5);
+  assert.equal(clamped.sessions[3].distanceKm, 75, "the race itself is untouched");
+  assert.ok(adjustments.some((a) => a.includes("tempo changed to an easy run")));
+  assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });
+});
+
+test("the first week after the race allows easy and recovery runs only", () => {
+  const context = taperContext(-2, [1, 3, 5, 6]);
+  const week = runningWeek([run("Recovery jog", 1, "recovery", 4), run("Tempo blocks", 3, "tempo", 6), run("Easy run", 5, "easy", 5)]);
+
+  const messages = validateRunningWeek(week, context).messages;
+  assert.ok(messages.some((m) => m.includes("Run 2 (Tempo blocks) is a tempo run on offset 3, 5 day(s) after Trail 75K: easy or recovery runs only")));
+  const { week: clamped } = clampRunningWeek(week, context);
+  assert.deepEqual(validateRunningWeek(clamped, context), { accepted: true, messages: [] });
+});
+
+test("the periodization reference states the taper and recovery-week numbers the proxy enforces", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const text = await readFile(join(process.cwd(), "src", "coach", "skills", "running-coach-planner", "references", "ultra-periodization.md"), "utf8");
+  const pct = (ratio: number) => `${Math.round(ratio * 100)}%`;
+
+  for (const expected of [
+    `15-21 days out: weekly km at most ${pct(TAPER_LIMITS.weeklyRatio.taper_3w)}`,
+    `the long run at most ${pct(TAPER_LIMITS.longRunRatio.taper_3w!)} of the recent longest run`,
+    `capped at ${pct(TAPER_LIMITS.weeklyRatio.taper_2w)}`,
+    `the long run at most ${pct(TAPER_LIMITS.longRunRatio.taper_2w!)} of the recent longest run`,
+    `each at most ${pct(TAPER_LIMITS.shortRunRatio)} of a normal easy run and at most ${TAPER_LIMITS.shortRunMaxKm} km`,
+    `Inside ${TAPER_LIMITS.noHillsWithinDays} days: no hill session`,
+    `${TAPER_LIMITS.newHillLoadFactor}x the athlete's usual m/km, never capped below ${TAPER_LIMITS.minElevationAllowanceM} m`,
+    `weekly km at most ${pct(TAPER_LIMITS.weeklyRatio.post_race_1w)}), and at most ${pct(TAPER_LIMITS.weeklyRatio.post_race_2w)} in the second week`,
+    `(capped at ${pct(RECOVERY_RUN_LIMITS.weeklyKmRatio)}), the long run at most ${pct(RECOVERY_RUN_LIMITS.longRunRatio)} of the recent longest run`
+  ]) {
+    assert.ok(text.includes(expected), `ultra-periodization.md should say: ${expected}`);
+  }
+});

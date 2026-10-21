@@ -3,6 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildCoachContext } from "./coach/planner/build-coach-context";
+import { withStoredCurrentPlan } from "./coach/planner/current-plan";
+import { EXERCISE_KINDS, schemaForExercises } from "./coach/planner/exercise-catalog";
 import {
   disciplineCoachSystemPrompt,
   disciplineCoachTemperament,
@@ -36,14 +38,14 @@ import {
   type AutoPlanTrigger
 } from "./coach/auto-plan";
 import { answerCoachChat, type CoachChatModelCall } from "./coach/chat-model";
-import { buildCoachContextFromClient, parseCoachChatPayload } from "./coach/chat-request";
+import { assertCoachRequestShape, buildCoachContextFromClient, parseCoachChatPayload, parseCoachRequestBody } from "./coach/chat-request";
 import { appTokenFromEnv, isAuthorizedAppRequest } from "./app-auth";
 import { createGarminEnricher } from "./garmin/garmin-enrichment";
 import { createGarminRouteHandler } from "./garmin/garmin-routes";
 import { GarminSyncInputError } from "./garmin/garmin-sync";
 import { GarminSyncStore } from "./garmin/garmin-sync-store";
 import { defaultCoachModel, filterAllowedModels, pickTextModelIDs, resolveCoachModel, withDefaultCoachModel } from "./model-selection";
-import { errorResponseFor, parseJSONBody, readRequestBody, RequestBodyTooLargeError } from "./http-body";
+import { ClientInputError, errorResponseFor, parseJSONBody, parseJSONObjectBody, readRequestBody, RequestBodyTooLargeError } from "./http-body";
 import { fetchOpenAIResponse, recordCoachValidationFailure, type OpenAIRequestTelemetry } from "./openai-telemetry";
 import { createLockinApiHandler } from "./storage/lockin-api";
 import { LockinStore } from "./storage/lockin-store";
@@ -112,7 +114,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     if (req.method === "POST" && req.url === "/plan/trigger") {
-      writeJSON(res, 200, await runAutoPlanTrigger(parseAutoPlanTrigger(JSON.parse(await readBody(req)))));
+      writeJSON(res, 200, await runAutoPlanTrigger(parseAutoPlanTrigger(parseJSONObjectBody(await readBody(req)))));
       return;
     }
 
@@ -122,10 +124,10 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      const payload = JSON.parse(await readBody(req)) as CoachRequest;
+      const payload = parseCoachRequestBody(await readBody(req));
       const model = resolveCoachModel(payload.model);
 
-      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const context = await enrichWithGarmin(buildCoachContextFromClient(payload), payload.userId);
       const trainingSignals = computeTrainingSignals(context);
       const evaluation = evaluateCoachRead(context, trainingSignals);
       const generated = await generateCoachVerdict(
@@ -177,7 +179,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
         return;
       }
 
-      const payload = JSON.parse(await readBody(req)) as CoachRequest;
+      const payload = parseCoachRequestBody(await readBody(req));
       const model = resolveCoachModel(payload.model);
 
       if (!payload.running) {
@@ -191,7 +193,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const [skill, runningSkill] = await Promise.all([loadSkillBundle(), loadRunningSkillBundle()]);
-      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const context = await enrichWithGarmin(buildCoachContextFromClient(payload), payload.userId);
 
       const result = await runCombinedWeekPipeline(
         combinedPipelineDeps(apiKey, model, skill, runningSkill, context, payload, "/generate-week")
@@ -222,11 +224,11 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       return;
     }
 
-    const payload = JSON.parse(await readBody(req)) as CoachRequest;
+    const payload = parseCoachRequestBody(await readBody(req));
     const model = resolveCoachModel(payload.model);
 
     const skill = await loadSkillBundle();
-    const context = buildCoachContext(payload);
+    const context = buildCoachContextFromClient(payload);
 
     const generated = await generateStrengthOnlyResponse(apiKey, model, skill, context, payload, "/generate-week-plan");
     if (!generated.ok) {
@@ -374,7 +376,9 @@ async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTri
   }
 
   try {
-    const generated = await generateAutoPlan(trigger.request);
+    // The previous generated plan may be newer than what the app applied
+    // (nightly runs reuse the last request the app sent): keep that one.
+    const generated = await generateAutoPlan(trigger.request, decision.generatedPlan ?? null);
     const plan = await autoPlanStore.updateUser(userId, (user) => {
       return markAutoPlanGenerated(user, decision, generated);
     });
@@ -400,7 +404,8 @@ async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTri
 }
 
 async function generateAutoPlan(
-  payload: CoachRequest
+  payload: CoachRequest,
+  storedPlan: AutoPlanGeneratedPlan | null = null
 ): Promise<Omit<AutoPlanGeneratedPlan, "planRevisionId" | "generatedAt" | "localDate" | "source">> {
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set");
@@ -409,7 +414,8 @@ async function generateAutoPlan(
   const model = resolveCoachModel(payload.model);
 
   const skill = await loadSkillBundle();
-  const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+  const now = new Date();
+  const context = withStoredCurrentPlan(await enrichWithGarmin(buildCoachContext(payload, now), payload.userId), payload, storedPlan, now);
 
   if (!payload.running) {
     const result = await runStrengthWeekPipeline(strengthPipelineDeps(apiKey, model, skill, context, payload, "/plan/trigger"));
@@ -577,8 +583,10 @@ function parseAutoPlanTrigger(payload: Record<string, unknown>): AutoPlanTrigger
   const source = autoPlanSource(payload.source);
   const request = payload.request;
   if (!isRecord(request)) {
-    throw new Error("request object is required");
+    throw new ClientInputError("request object is required");
   }
+  // A malformed request would otherwise be stored and fail every night.
+  assertCoachRequestShape(request);
   return {
     source,
     request: request as CoachRequest,
@@ -671,7 +679,7 @@ async function generateWeeklyPlan(
         type: "json_schema",
         name: "weekly_training_plan",
         strict: true,
-        schema: skill.weeklyPlanSchema
+        schema: schemaForExercises(skill.weeklyPlanSchema, context.profile.supportedExercises ?? EXERCISE_KINDS)
       }
     }
   }, telemetry);
@@ -751,7 +759,8 @@ function buildRunningPromptPayload(
           ? "None of the selected running days is left this week. Return zero runs and explain that the next full week starts after the coming rest days."
           : "Use only availableDayOffsets for runs.",
       longRunDay: context.running?.longRunDay ?? null,
-      longRunDayOffset: context.running?.longRunDayOffset ?? null
+      longRunDayOffset: context.running?.longRunDayOffset ?? null,
+      ...(guidance?.continuity ? { continuity: guidance.continuity } : {})
     }
   };
 
@@ -881,6 +890,7 @@ function buildCoachPromptPayload(
     progression:
       "strengthGuardrails.progression is computed from coachContext.plannedWork.recentGoalPerformance and the previous working prescription, and it is enforced: for each goal metric keep the week's top working target inside allowedTopTarget and its sets at or below maxSetsOnTopTarget, or use setRoute (same target, one more set) when it is offered. Earned steps: pull-ups +1 rep; push-ups +1 below 15 reps, +1-2 below 30, +1-3 from 30; plank +5-10 s below 60 s, +5-15 s from 60 s. Never increase sets and the target together. Working values never exceed strengthGuardrails.workingCaps (tests excepted). Safety text alone cannot bypass earned progression.",
     strengthGuardrails: guidance?.guardrails ?? null,
+    ...(guidance?.continuity ? { continuity: guidance.continuity } : {}),
     phase:
       "Prefix summary with exactly one adaptive phase: Build:, Offload:, Restore:, Maintenance:, or Assessment:. Explain separately why pull-ups, push-ups, and plank progressed, held, or reduced. Do not force a four-week calendar wave.",
     scheduling: hasSelectedTrainingDays

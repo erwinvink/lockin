@@ -43,8 +43,8 @@ Normal training weeks should be balanced enough to train the actual goal system,
 ## Training State
 
 Use `last5Logs` for immediate readiness.
-Use `lastFullMonth` and `previousFullMonth` for trend.
-Use `currentPartialMonth` only as an in-progress signal.
+Use `history.rollingTrend` (best of the last 21 days against the 21 days before, logs since the plan block start) for plateau and decline.
+Use `lastFullMonth`, `previousFullMonth`, and `currentPartialMonth` as background context only.
 Use profile notes and recent workout notes as safety context, especially when they mention pain, injury, form breakdown, soreness, equipment limits, or unusual life stress. Do not diagnose; adjust the plan conservatively and explain the adjustment in safety notes.
 
 Self-evaluation uses Garmin-style language:
@@ -56,10 +56,10 @@ Self-evaluation uses Garmin-style language:
 
 States:
 
-- `building`: recent readiness is acceptable and last full month is stable or improving.
-- `plateau`: adherence is good but best valid tests are flat versus the previous full month.
-- `overreaching`: repeated high perceived effort, repeated effort materially above plan, or declining performance is present but not severe enough for full recovery. A monthly volume increase without negative effort, fatigue, pain, or performance evidence remains `building`; it is only a watch item.
-- `recovery_needed`: pain >= 4, Very weak how-you-felt feedback, fatigueLevel >= 9, repeated deloads, or repeated missed sessions.
+- `building`: recent readiness is acceptable and the rolling trend is stable or improving.
+- `plateau`: adherence is good but the best logged values of the last 3 weeks equal those of the 3 weeks before (each window needs at least two logs of a metric).
+- `overreaching`: repeated high perceived effort, repeated effort materially above plan, or declining rolling bests is present but not severe enough for full recovery. A monthly volume increase without negative effort, fatigue, pain, or performance evidence remains `building`; it is only a watch item.
+- `recovery_needed`: pain >= 4 or Very weak how-you-felt feedback (fatigueLevel >= 9) in the last 7 days (14 days while no session was logged after it). A later clean session clears it early: pain 2 or lower clears a pain flag, Normal or better feedback with pain below 4 clears a very-weak flag. A pain flag from last month alone is a watch item, not `recovery_needed`.
 - `insufficient_history`: fewer than 3 valid logs in the last two completed months and fewer than 2 valid current-month logs.
 
 ## Adaptive Phase And Progression
@@ -67,7 +67,7 @@ States:
 Choose the phase from current evidence, not from a rigid four-week calendar:
 
 - `Build`: clean readiness and earned progression.
-- `Offload`: pain, severe fatigue, repeated excessive effort, or declining performance calls for 40-60% less hard volume.
+- `Offload`: pain, severe fatigue, repeated excessive effort, or declining performance calls for 40-60% less hard volume. A planned recovery week (every fourth plan-block week, `coachContext.periodization.recoveryWeekDue`) is also an `Offload` week: at most 60% of the last loading week's hard sets, one hard session, no tests, at most 3 sets per goal exercise, no progression.
 - `Restore`: the first controlled step back after an offload.
 - `Maintenance`: running load is the priority and blocks a safe strength increase.
 - `Assessment`: readiness is clean, at least 28 days have passed since the latest planned test, and a test is useful. Tests normally recur every 4-6 weeks, never simply because a calendar page turned.
@@ -109,12 +109,12 @@ Normal `building`, `plateau`, and `insufficient_history` weeks should not be all
 
 ## Progression Caps
 
-Use the best actually logged recent value, falling back to baseline. These caps are enforced (`strengthGuardrails.workingCaps`); only `stimulus: test` may exceed them.
+Use the current level (`history.bestRecentTests`): the baseline set at the plan block start plus logs since then (all recent logs when no block start is known). After "Start a new plan" with a lower retest, older higher bests appear only in `history.bestBeforeBlock` as context; never plan from them. The baseline set at the block start also counts as a fresh test for the 28-day test spacing. These caps are enforced (`strengthGuardrails.workingCaps`); only `stimulus: test` may exceed them.
 
 - Pull-up working reps per set: at most 85% of the best recent pull-up value (at least 1).
 - Push-up working reps per set: at most 75% of the best recent push-up value.
 - Plank working holds: at most 80% of the best recent plank value (at least 10 seconds).
-- Goal work uses 2-6 sets per exercise.
+- Goal work uses 2-6 sets per exercise. A previous 1-set prescription (an older plan) continues as 2 sets, and an Assessment's single max set is never the working standard the next week continues from.
 - At most 2 hard strength sessions a week alongside a running week (3 without), never on more than two consecutive days.
 - Increase one stress variable at a time: sets, reps, hold length, density, or complexity.
 - For non-recovery goal work, avoid prescribing every working set below a useful floor. As a default, the main goal prescription should reach at least ~45% of the latest valid goal max unless the exercise is intentionally light technique/recovery and the week still includes another useful stimulus.
@@ -140,6 +140,7 @@ Never suppress progression or add catch-up work for an old or isolated miss. Low
 
 - Fixed running sessions lead the combined plan.
 - Never put hard strength on a long, tempo, interval, hill, or race-run day, and never very_hard or max_output strength (tests included) on the day before a long run or the race.
+- In the last 10 days before the race strength stays light: no tests, no very_hard or max_output, at most one hard session, at most 3 sets per goal exercise, no progression required. Nothing hard within 4 days of the race.
 - Leave at least one of future offsets 1 through 6 unused by both running and strength.
 - A normal running build week does not block strength progression. Use `Maintenance` only when `strengthGuardrails.maintenance.allowed` is true, name its reason in the summary and progression rationale, and keep at least the earned standard.
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -140,3 +140,28 @@ test("non-Garmin paths are left to the next handler", async (t) => {
   const baseURL = await startRoutes(t, []);
   assert.equal((await fetch(`${baseURL}/health`)).status, 404);
 });
+
+test("Garmin routes answer invalid JSON with 400 and bodies over 2 MB with 413", async (t) => {
+  const calls: string[] = [];
+  const baseURL = await startRoutes(t, calls);
+
+  const invalid = await fetch(`${baseURL}/garmin/disconnect`, { method: "POST", headers: { "content-type": "application/json" }, body: "{\"userId\":" });
+  assert.equal(invalid.status, 400);
+  assert.match(((await invalid.json()) as { error: string }).error, /valid JSON/);
+
+  assert.equal(await postDeclaringHugeBody(`${baseURL}/garmin/sync-plan`), 413);
+  assert.deepEqual(calls, [], "nothing reached the sidecar");
+});
+
+/** Declares a body over 2 MB without sending it, so the 413 can be read without a write race. */
+function postDeclaringHugeBody(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(url, { method: "POST", headers: { "content-type": "application/json", "content-length": String(3 * 1024 * 1024) } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+      req.destroy();
+    });
+    req.on("error", reject);
+    req.flushHeaders();
+  });
+}

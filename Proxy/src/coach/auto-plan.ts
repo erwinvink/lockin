@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { localDateParts, validTimeZone, zonedDateTimeToUTC } from "./local-time";
 import { buildCoachContext } from "./planner/build-coach-context";
+import { logChangeReason } from "./planner/current-plan";
 import type { CoachRequest, RunningWeek, WeeklyPlan } from "./planner/types";
 
 export type AutoPlanSource = "manual" | "post_training" | "app_active" | "nightly";
@@ -439,17 +440,9 @@ function postTrainingSignalsNeedPlan(request: CoachRequest | null, now: Date): b
   const latestLog = [...request.trainingLogs]
     .filter((log) => Number.isFinite(Date.parse(log.completedAt)))
     .sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt))[0];
-  if (latestLog) {
-    if (latestLog.painLevel >= 4 || latestLog.fatigueLevel >= 9 || latestLog.rpe >= 9) {
-      return true;
-    }
-    if (typeof latestLog.rpeDelta === "number" && Math.abs(latestLog.rpeDelta) >= 2) {
-      return true;
-    }
-    const actualRPE = latestLog.actualRPE ?? latestLog.rpe;
-    if (typeof latestLog.plannedRPE === "number" && actualRPE > latestLog.plannedRPE + 1) {
-      return true;
-    }
+  // The same log signals that end plan continuity (current-plan.ts).
+  if (latestLog && logChangeReason(latestLog) !== null) {
+    return true;
   }
 
   const matchedPerformance = Object.values(buildCoachContext(request, now).plannedWork.recentGoalPerformance ?? {});

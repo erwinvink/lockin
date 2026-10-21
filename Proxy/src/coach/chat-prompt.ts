@@ -1,6 +1,7 @@
 import { COACH_CHAT_MAX_MESSAGES, truncateText, type CoachChatMessage } from "./chat";
 import { localDateParts, validTimeZone } from "./local-time";
 import { disciplineCoachSystemPrompt, disciplineCoachTemperament } from "./planner/coach-temperament";
+import { EXERCISE_CATALOG, isExerciseKind } from "./planner/exercise-catalog";
 import type { TrainingSignals } from "./planner/compute-training-signals";
 import type {
   CoachContext,
@@ -126,6 +127,15 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
       },
       startingBaseline: context.profile.baseline,
       bestRecent: context.history.bestRecentTests,
+      bestBeforeThisPlan: context.history.bestBeforeBlock
+        ? {
+            pullUps: context.history.bestBeforeBlock.pullUps,
+            pushUps: context.history.bestBeforeBlock.pushUps,
+            plankSeconds: context.history.bestBeforeBlock.plankSeconds,
+            planStarted: dateOnly(context.history.bestBeforeBlock.blockStartedAt, timeZone),
+            note: "Higher numbers from before the current plan started; the plan works from bestRecent."
+          }
+        : null,
       strengthDaysPerWeek: context.profile.weeklySessions,
       strengthDays: context.profile.trainingDays,
       equipment: context.profile.equipment,
@@ -175,9 +185,11 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
       },
       nextAction: evaluation.nextAction
     },
+    plannedRecoveryWeek: context.periodization?.recoveryWeekDue ? context.periodization.recoveryWeekReason : null,
     riskFlags: context.readiness.riskFlags.map(humanize),
     strength: {
       twoMonthTrend: humanize(context.history.twoFullMonthTrend.label),
+      lastThreeWeeksVsThreeBefore: context.history.rollingTrend ? humanize(context.history.rollingTrend.label) : null,
       goalWorkVsPrescription: goalWorkVsPrescription(context),
       effortVsPlan: {
         averageRpeAbovePlanLast5: context.history.rpeCalibration.averageDeltaLast5,
@@ -209,8 +221,10 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
           last7DaysDescentM: signals.running.last7DaysDescentM,
           longestRunLast6WeeksKm: round1(signals.running.longestRunLast6WeeksKm),
           recentLongRunsKm: signals.running.recentLongRunsKm.map(round1),
-          easySharePctLast4Weeks:
-            signals.running.easyShareLast4Weeks === null ? null : Math.round(signals.running.easyShareLast4Weeks * 100),
+          lowIntensityTimePctLast4Weeks:
+            signals.running.lowIntensityTimeShareLast4Weeks === null
+              ? null
+              : Math.round(signals.running.lowIntensityTimeShareLast4Weeks * 100),
           recentRuns: [...(context.running?.recentRuns ?? [])]
             .slice(-RECENT_RUNS_IN_PROMPT)
             .reverse()
@@ -270,13 +284,37 @@ function strengthLogSummary(log: TrainingLog, session: PlannedSession | undefine
 }
 
 function sessionSummary(session: PlannedSession, timeZone: string): Record<string, unknown> {
+  const isRun = isPlannedRun(session);
   return compact({
     date: dayLabel(new Date(session.scheduledDate), timeZone),
     title: session.title,
-    focus: session.focus,
+    focus: isRun ? null : session.focus,
     status: session.status,
+    run: isRun ? plannedRunSummary(session) : null,
     work: exercisesSummary(session.exercises ?? [])
   });
+}
+
+/** A planned run in athlete language: "Easy run, 10 km, 120 m climb, heart rate 132-145 bpm, Zone 2". */
+function plannedRunSummary(session: PlannedSession): string | null {
+  const parts = [
+    session.runKind ? `${humanize(session.runKind)} run` : null,
+    typeof session.distanceKm === "number" && session.distanceKm > 0 ? `${round1(session.distanceKm)} km` : null,
+    typeof session.elevationMeters === "number" && session.elevationMeters > 0 ? `${Math.round(session.elevationMeters)} m climb` : null,
+    session.target ? plannedRunTarget(session.target) : null,
+    session.zone?.trim() ? session.zone.trim() : null
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function plannedRunTarget(target: NonNullable<PlannedSession["target"]>): string | null {
+  if (target.type === "pace" && target.low > 0 && target.high > 0) return `pace ${formatPace(target.low)}-${formatPace(target.high)} per km`;
+  if (target.type === "hr" && target.low > 0 && target.high > 0) return `heart rate ${target.low}-${target.high} bpm`;
+  return null;
+}
+
+function isPlannedRun(session: PlannedSession): boolean {
+  return session.discipline === "running" || (typeof session.runKind === "string" && session.runKind.length > 0);
 }
 
 function exercisesSummary(exercises: PlannedExercisePrescription[]): string | null {
@@ -332,7 +370,7 @@ function exerciseName(exercise: string): string {
     case "pikePushUp": return "pike push-ups";
     case "deadHang": return "dead hang";
     case "shoulderMobility": return "shoulder mobility";
-    default: return humanize(exercise);
+    default: return isExerciseKind(exercise) ? EXERCISE_CATALOG[exercise].title.toLowerCase() : humanize(exercise);
   }
 }
 

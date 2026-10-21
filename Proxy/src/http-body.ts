@@ -73,6 +73,19 @@ export function parseJSONBody(text: string): unknown {
   }
 }
 
+/**
+ * A JSON object body. An empty body is `{}` when `allowEmpty` is set (the
+ * storage and Garmin routes accept that), else a 400 like invalid JSON.
+ */
+export function parseJSONObjectBody(text: string, options: { allowEmpty?: boolean } = {}): Record<string, unknown> {
+  if (options.allowEmpty && !text.trim()) return {};
+  const parsed = parseJSONBody(text);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ClientInputError("JSON object body is required");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export type ErrorResponse = { status: number; body: { error: string } };
 
 export const INTERNAL_ERROR_MESSAGE = "The coach proxy hit an internal error. Try again in a moment.";

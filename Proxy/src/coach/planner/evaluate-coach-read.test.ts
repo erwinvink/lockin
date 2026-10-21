@@ -207,7 +207,7 @@ function signals(options: {
       last7DaysDescentM: null,
       longestRunLast6WeeksKm: 0,
       recentLongRunsKm: [],
-      easyShareLast4Weeks: null,
+      lowIntensityTimeShareLast4Weeks: null,
       runCountLast7Days: 0
     },
     race: null,

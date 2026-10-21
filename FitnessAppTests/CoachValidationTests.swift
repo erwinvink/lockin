@@ -937,12 +937,14 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(running.recentRuns.first?.averageHr, 142)
     }
 
-    func testMakeCoachRequestCapsRecentRunsToMostRecentThirty() throws {
-        // 30 runs spans roughly the 90-day activity lookback at 3-4 runs/week.
+    func testMakeCoachRequestSendsTheLastTenWeeksOfRuns() throws {
+        // Ten weeks lets the proxy see a few full plan-block weeks and their
+        // 4-week averages when it decides on a planned recovery week. (This
+        // replaced the old 30-run cap, which covered only ~6 weeks at 5 runs a week.)
         let calendar = Calendar.current
         let weekStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 8)))
         let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
-        let runLogs = (1...35).map {
+        let runLogs = (1...100).map {
             RunLog(completedAt: weekStart.addingTimeInterval(-Double($0) * 86_400), distanceKm: Double($0), movingSeconds: 3_600)
         }
 
@@ -957,9 +959,79 @@ final class CoachValidationTests: XCTestCase {
         )
 
         let running = try XCTUnwrap(request.running)
-        XCTAssertEqual(running.recentRuns.count, 30)
-        XCTAssertEqual(running.recentRuns.first?.distanceKm, 30)
+        XCTAssertEqual(running.recentRuns.count, 70)
+        XCTAssertEqual(running.recentRuns.first?.distanceKm, 70)
         XCTAssertEqual(running.recentRuns.last?.distanceKm, 1)
+
+        let doubles = (1...140).map {
+            RunLog(completedAt: weekStart.addingTimeInterval(-Double($0) * 43_200), distanceKm: Double($0), movingSeconds: 1_800)
+        }
+        let capped = coachRecentRunLogs(from: doubles, weekStart: weekStart)
+        XCTAssertEqual(capped.count, 90, "at most 90 runs")
+        XCTAssertEqual(capped.last?.distanceKm, 1, "the most recent ones")
+    }
+
+    func testMakeCoachRequestSendsPlannedRunDetailsAndThePlanTime() throws {
+        let calendar = Calendar.current
+        let weekStart = calendar.startOfDay(for: Date())
+        let profile = runningProfileFixture(runningDays: [.tuesday, .saturday], longRunDay: .saturday)
+        let longRun = WorkoutSession(
+            scheduledDate: weekStart.addingTimeInterval(2 * 86_400),
+            title: "Long trail run",
+            weekIndex: 0,
+            focus: .mixed,
+            summary: "AI: long",
+            estimatedDurationMinutes: 150,
+            discipline: .running,
+            runKind: .long,
+            plannedDistanceKm: 24,
+            plannedElevationM: 600,
+            runTargetType: .hr,
+            runTargetLow: 135,
+            runTargetHigh: 148,
+            runZone: "Zone 2"
+        )
+        let strength = WorkoutSession(
+            scheduledDate: weekStart.addingTimeInterval(86_400),
+            title: "Pull strength",
+            weekIndex: 0,
+            focus: .pull,
+            summary: "AI: pull"
+        )
+        let generatedAt = weekStart.addingTimeInterval(-22 * 3_600)
+
+        let request = makeCoachRequest(
+            profile: profile,
+            modelID: "gpt-5-mini",
+            logs: [],
+            sessions: [longRun, strength],
+            raceGoal: raceGoalFixture(),
+            weekStart: weekStart,
+            currentPlanGeneratedAt: generatedAt
+        )
+
+        let run = try XCTUnwrap(request.plannedSessions.first { $0.title == "Long trail run" })
+        XCTAssertEqual(run.discipline, "running")
+        XCTAssertEqual(run.runKind, "long")
+        XCTAssertEqual(run.distanceKm, 24)
+        XCTAssertEqual(run.elevationMeters, 600)
+        XCTAssertEqual(run.durationMinutes, 150)
+        XCTAssertEqual(run.target, CoachPlannedRunTarget(type: "hr", low: 135, high: 148))
+        XCTAssertEqual(run.zone, "Zone 2")
+        let pull = try XCTUnwrap(request.plannedSessions.first { $0.title == "Pull strength" })
+        XCTAssertNil(pull.discipline)
+        XCTAssertNil(pull.runKind)
+        XCTAssertNil(pull.distanceKm)
+        XCTAssertNil(pull.target)
+        XCTAssertEqual(request.currentPlanGeneratedAt, generatedAt)
+
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder.coachEncoder.encode(request)) as? [String: Any])
+        let sessions = try XCTUnwrap(json["plannedSessions"] as? [[String: Any]])
+        let encodedPull = try XCTUnwrap(sessions.first { $0["title"] as? String == "Pull strength" })
+        XCTAssertNil(encodedPull["runKind"], "strength sessions carry no run keys")
+        XCTAssertNotNil(json["currentPlanGeneratedAt"])
+        XCTAssertEqual(request.supportedExercises, ExerciseKind.allCases.map(\.rawValue), "the proxy plans only exercises this app can show")
+        XCTAssertTrue(request.supportedExercises?.contains("negativePullUp") == true)
     }
 
     func testMakeCoachRequestCarriesElevationLossNilWhenZero() throws {

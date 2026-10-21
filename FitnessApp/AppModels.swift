@@ -98,6 +98,10 @@ struct PlannedEffort: Equatable {
     }
 }
 
+/// Every exercise the coach can plan. Mirrors the proxy's exercise library
+/// (Proxy/src/coach/skills/fitness-coach-planner/references/exercise-library.json);
+/// a proxy test keeps the two lists identical, because a plan with an
+/// unknown name is rejected here.
 enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
     case pullUp
     case pushUp
@@ -108,6 +112,22 @@ enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
     case pikePushUp
     case deadHang
     case shoulderMobility
+    case negativePullUp
+    case bandAssistedPullUp
+    case invertedRow
+    case archerPullUp
+    case lSitPullUp
+    case weightedPullUp
+    case kneePushUp
+    case diamondPushUp
+    case declinePushUp
+    case deficitPushUp
+    case archerPushUp
+    case weightedPushUp
+    case sidePlank
+    case longLeverPlank
+    case rkcPlank
+    case weightedPlank
 
     var id: String { rawValue }
 
@@ -122,6 +142,22 @@ enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
         case .pikePushUp: "Pike push-up"
         case .deadHang: "Dead hang"
         case .shoulderMobility: "Shoulder mobility"
+        case .negativePullUp: "Negative pull-up"
+        case .bandAssistedPullUp: "Band-assisted pull-up"
+        case .invertedRow: "Inverted row"
+        case .archerPullUp: "Archer pull-up"
+        case .lSitPullUp: "L-sit pull-up"
+        case .weightedPullUp: "Weighted pull-up"
+        case .kneePushUp: "Knee push-up"
+        case .diamondPushUp: "Diamond push-up"
+        case .declinePushUp: "Decline push-up"
+        case .deficitPushUp: "Deficit push-up"
+        case .archerPushUp: "Archer push-up"
+        case .weightedPushUp: "Weighted push-up"
+        case .sidePlank: "Side plank"
+        case .longLeverPlank: "Long-lever plank"
+        case .rkcPlank: "RKC plank"
+        case .weightedPlank: "Weighted plank"
         }
     }
 }

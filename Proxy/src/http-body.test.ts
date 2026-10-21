@@ -9,6 +9,7 @@ import {
   RequestBodyTooLargeError,
   errorResponseFor,
   parseJSONBody,
+  parseJSONObjectBody,
   readRequestBody
 } from "./http-body";
 
@@ -86,4 +87,12 @@ test("an oversized upload gets a 413 response instead of a dropped connection", 
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("a JSON object body is required; empty is {} only where the route allows it", () => {
+  assert.deepEqual(parseJSONObjectBody("{\"a\":1}"), { a: 1 });
+  assert.deepEqual(parseJSONObjectBody("  ", { allowEmpty: true }), {});
+  assert.throws(() => parseJSONObjectBody("  "), ClientInputError);
+  assert.throws(() => parseJSONObjectBody("[1,2]", { allowEmpty: true }), (error: unknown) => error instanceof ClientInputError && /JSON object/.test(error.message));
+  assert.throws(() => parseJSONObjectBody("{\"a\":", { allowEmpty: true }), (error: unknown) => error instanceof ClientInputError && /valid JSON/.test(error.message));
 });

@@ -1930,14 +1930,49 @@ final class PersistenceResetTests: XCTestCase {
         modelContext.insert(goal)
         modelContext.insert(staleStandalone)
         modelContext.insert(matchedLog)
+        // Two more runs, so the history is rich enough to replace the manual base.
+        for daysAgo in [14, 21] {
+            modelContext.insert(RunLog(
+                sessionId: RunLog.unattachedSessionId,
+                completedAt: calendar.date(byAdding: .day, value: -daysAgo, to: now) ?? now,
+                distanceKm: 10,
+                movingSeconds: 3_600,
+                garminActivityId: "garmin-10k-\(daysAgo)",
+                source: .garmin
+            ))
+        }
         try modelContext.save()
 
         let logs = try modelContext.fetch(FetchDescriptor<RunLog>())
         updateRaceGoalBaselines(goal: goal, logs: logs, now: now, calendar: calendar)
 
-        // One deduplicated 35 km run in the 28-day window: 35 / 4 weeks.
-        XCTAssertEqual(goal.baselineWeeklyKm, 8.8, accuracy: 0.01)
+        // The 35 km run counts once: (35 + 10 + 10) / 4 weeks = 13.75 (13.8), not 22.5.
+        XCTAssertEqual(goal.baselineWeeklyKm, 13.8, accuracy: 0.01)
         XCTAssertEqual(goal.longestRecentRunKm, 35, accuracy: 0.01)
+    }
+
+    func testUpdateRaceGoalBaselinesKeepsTheManualBaseWhileHistoryIsThin() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let calendar = Calendar.current
+        let now = Date()
+        let goal = RaceGoal(name: "Test Ultra", raceDate: now.addingTimeInterval(86_400 * 70), distanceKm: 50, elevationGainM: 2_000, baselineWeeklyKm: 45, longestRecentRunKm: 24)
+        modelContext.insert(goal)
+        modelContext.insert(RunLog(
+            sessionId: RunLog.unattachedSessionId,
+            completedAt: calendar.date(byAdding: .day, value: -20, to: now) ?? now,
+            distanceKm: 5,
+            movingSeconds: 1_800,
+            garminActivityId: "first-watch-run",
+            source: .garmin
+        ))
+        try modelContext.save()
+
+        updateRaceGoalBaselines(goal: goal, logs: try modelContext.fetch(FetchDescriptor<RunLog>()), now: now, calendar: calendar)
+
+        // One 5 km run on a new watch is not a weekly base of 1.3 km.
+        XCTAssertEqual(goal.baselineWeeklyKm, 45, accuracy: 0.01)
+        XCTAssertEqual(goal.longestRecentRunKm, 24, accuracy: 0.01)
     }
 
     func testUpdateRaceGoalBaselinesLeavesGoalUntouchedWithoutConfirmedRuns() throws {

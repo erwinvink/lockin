@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { ClientInputError, parseJSONObjectBody, readRequestBody, RequestBodyTooLargeError } from "../http-body";
 import { resolveAuthSecret, signAuthToken, verifyAuthToken, type PublicUser } from "./lockin-auth";
 import { LockinAuthError, LockinInputError, LockinStore } from "./lockin-store";
 
@@ -96,8 +97,14 @@ export function createLockinApiHandler(
       writeJSON(res, 404, { error: "Not found" });
       return true;
     } catch (error) {
-      if (error instanceof LockinInputError) {
+      if (error instanceof LockinInputError || error instanceof ClientInputError) {
         writeJSON(res, 400, { error: error.message });
+        return true;
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        // The rest of the body is not read; close instead of reusing the connection.
+        res.setHeader("connection", "close");
+        writeJSON(res, 413, { error: error.message });
         return true;
       }
       if (error instanceof LockinAuthError) {
@@ -134,28 +141,9 @@ function authenticateRequest(req: IncomingMessage, store: LockinStore, authSecre
   return user;
 }
 
+/** The JSON object body (empty means {}), capped at 2 MB: 413 above it, 400 for invalid JSON. */
 async function readJSON(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const body = await readBody(req);
-  if (!body.trim()) {
-    return {};
-  }
-  const parsed = JSON.parse(body) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new LockinInputError("JSON object body is required");
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      data += chunk;
-    });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
+  return parseJSONObjectBody(await readRequestBody(req), { allowEmpty: true });
 }
 
 function writeJSON(res: ServerResponse, status: number, body: unknown): void {

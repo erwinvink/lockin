@@ -980,7 +980,10 @@ private func preferredGarminRunLog(_ lhs: RunLog, _ rhs: RunLog) -> RunLog {
 /// covered made one run after three weeks off read as a full weekly base;
 /// the Garmin sync now pulls 90 days, so a first sync sees the whole window.
 /// Once real runs exist, a quiet window reads as 0 instead of keeping a
-/// stale pre-break value.
+/// stale pre-break value. While the recorded history is too thin to stand
+/// for a weekly base (fewer than 3 runs in six weeks and nothing older than
+/// four weeks, e.g. a new watch), the athlete's own numbers are kept: one
+/// short run must not turn a 45 km/week runner into a beginner.
 func updateRaceGoalBaselines(
     goal: RaceGoal,
     logs: [RunLog],
@@ -992,6 +995,9 @@ func updateRaceGoalBaselines(
 
     let fourWeeksAgo = calendar.date(byAdding: .day, value: -28, to: now) ?? now
     let sixWeeksAgo = calendar.date(byAdding: .day, value: -42, to: now) ?? now
+    let runsInSixWeeks = garminLogs.filter { $0.completedAt >= sixWeeksAgo && $0.completedAt <= now }.count
+    let historyReachesBack = garminLogs.contains { $0.completedAt < fourWeeksAgo }
+    guard runsInSixWeeks >= 3 || historyReachesBack else { return }
 
     let recentVolume = garminLogs
         .filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
@@ -1670,5 +1676,37 @@ func exerciseMovementDescription(_ exercise: ExerciseKind) -> String {
         "A timed hang from a bar: grip the bar, keep arms straight, keep shoulders active, and hold without swinging."
     case .shoulderMobility:
         "Slow arm circles: raise both arms forward to overhead, sweep them out and down, then reverse the direction. Stay pain-free."
+    case .negativePullUp:
+        "A slow lowering from the top of a pull-up: jump or step until your chin is over the bar, then lower for 3 to 5 seconds to straight arms."
+    case .bandAssistedPullUp:
+        "A pull-up with a band looped over the bar under one knee or foot: the band helps at the bottom, the form stays strict."
+    case .invertedRow:
+        "A horizontal pull under a low bar or a sturdy table: body straight, pull your chest to the bar, then lower with control."
+    case .archerPullUp:
+        "A wide-grip pull-up toward one hand while the other arm stays nearly straight. Alternate sides."
+    case .lSitPullUp:
+        "A strict pull-up with your legs held straight out in an L for the whole rep."
+    case .weightedPullUp:
+        "A strict pull-up with extra load: a dumbbell between your feet or a loaded backpack."
+    case .kneePushUp:
+        "A push-up from your knees: keep a straight line from knees to shoulders, chest to the floor, then press to locked arms."
+    case .diamondPushUp:
+        "A push-up with your hands together under your chest and elbows close to your body."
+    case .declinePushUp:
+        "A push-up with your feet raised on a step or bench: body straight, chest to the floor."
+    case .deficitPushUp:
+        "A push-up with your hands on two raised surfaces so your chest can sink below hand level. Move with control."
+    case .archerPushUp:
+        "A wide push-up where you lower toward one hand while the other arm stays straight. Alternate sides."
+    case .weightedPushUp:
+        "A strict push-up wearing a loaded backpack."
+    case .sidePlank:
+        "A side hold on one forearm: hips high, body in one straight line. Hold each side."
+    case .longLeverPlank:
+        "A plank with your forearms placed ahead of your shoulders: ribs down, glutes tight. Harder than a normal plank."
+    case .rkcPlank:
+        "A short, maximal-tension plank: pull your elbows toward your toes and squeeze glutes and thighs hard."
+    case .weightedPlank:
+        "A strict plank with a loaded backpack or a dumbbell resting on your upper back."
     }
 }

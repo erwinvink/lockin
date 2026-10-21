@@ -412,10 +412,16 @@ struct CoachPlanRequest: Codable, Equatable {
     /// Local midnight of the day the current plan block began, so the proxy
     /// can tell which week of the block it plans.
     var planBlockStartedAt: Date? = nil
+    /// When the coach generated the plan whose future sessions are sent, so
+    /// the proxy can tell what changed since then.
+    var currentPlanGeneratedAt: Date? = nil
     var running: CoachRunningRequest? = nil
     /// IANA zone of the athlete, so the proxy can find "today" and "due"
     /// with local midnights (DST-safe).
     var timeZone: String? = nil
+    /// Every exercise this app version can show and log. The proxy only
+    /// plans these (a request without the list gets the original nine).
+    var supportedExercises: [String]? = nil
 }
 
 struct CoachRunningGoal: Codable, Equatable {
@@ -558,6 +564,21 @@ struct CoachPlannedSession: Codable, Equatable {
     var focus: String
     var status: String
     var exercises: [CoachPlannedExercisePrescription] = []
+    /// Planned runs only: what the planner prescribed, so the planners can
+    /// keep the rest of the week and the chat can describe the run.
+    var discipline: String? = nil
+    var runKind: String? = nil
+    var distanceKm: Double? = nil
+    var elevationMeters: Int? = nil
+    var durationMinutes: Int? = nil
+    var target: CoachPlannedRunTarget? = nil
+    var zone: String? = nil
+}
+
+struct CoachPlannedRunTarget: Codable, Equatable {
+    var type: String
+    var low: Int
+    var high: Int
 }
 
 struct CoachPlannedExercisePrescription: Codable, Equatable {
@@ -1752,7 +1773,8 @@ func makeCoachRequestFromStore(profile: UserProfile, modelID: String, in modelCo
         prescriptions: try modelContext.fetch(FetchDescriptor<SetPrescription>(sortBy: [SortDescriptor(\.orderIndex)])),
         raceGoal: try modelContext.fetch(FetchDescriptor<RaceGoal>(sortBy: [SortDescriptor(\.createdAt)])).first,
         runLogs: try modelContext.fetch(FetchDescriptor<RunLog>(sortBy: [SortDescriptor(\.completedAt, order: .reverse)])),
-        weekStart: rollingPlanStart()
+        weekStart: rollingPlanStart(),
+        currentPlanGeneratedAt: latestAIPlan(from: try modelContext.fetch(FetchDescriptor<CoachPlan>()))?.generatedAt
     )
 }
 
@@ -1810,7 +1832,8 @@ func makeCoachRequest(
     raceGoal: RaceGoal? = nil,
     runLogs: [RunLog] = [],
     weekStart: Date = rollingPlanStart(),
-    timeZone: TimeZone = .current
+    timeZone: TimeZone = .current,
+    currentPlanGeneratedAt: Date? = nil
 ) -> CoachPlanRequest {
     let baseline = Baseline(
         pullUps: profile.baselinePullUps,
@@ -1824,7 +1847,7 @@ func makeCoachRequest(
         weekStart: weekStart
     ).filter { (1...6).contains($0) }
     let prescriptionsBySession = Dictionary(grouping: prescriptions, by: \.sessionId)
-    let recentRunLogs = Array(confirmedRunLogs(from: runLogs).suffix(30))
+    let recentRunLogs = coachRecentRunLogs(from: runLogs, weekStart: weekStart)
     let plannedRunKinds = Dictionary(
         sessions
             .filter { $0.discipline == .running && !$0.runKindRaw.isEmpty }
@@ -1917,14 +1940,14 @@ func makeCoachRequest(
                 plannedEffortReason: $0.plannedEffortReasonAtLog.isEmpty ? nil : $0.plannedEffortReasonAtLog
             )
         },
-        plannedSessions: coachPlannedSessions(from: sessions).map {
+        plannedSessions: coachPlannedSessions(from: sessions).map { session in
             CoachPlannedSession(
-                id: $0.id.uuidString,
-                scheduledDate: $0.scheduledDate,
-                title: $0.title,
-                focus: $0.focus.rawValue,
-                status: $0.status.rawValue,
-                exercises: (prescriptionsBySession[$0.id] ?? [])
+                id: session.id.uuidString,
+                scheduledDate: session.scheduledDate,
+                title: session.title,
+                focus: session.focus.rawValue,
+                status: session.status.rawValue,
+                exercises: (prescriptionsBySession[session.id] ?? [])
                     .sorted { $0.orderIndex < $1.orderIndex }
                     .map {
                         CoachPlannedExercisePrescription(
@@ -1935,12 +1958,23 @@ func makeCoachRequest(
                             plannedEffortLabel: $0.plannedEffortLabel?.rawValue,
                             plannedEffortStimulus: $0.plannedEffortStimulus?.rawValue
                         )
-                    }
+                    },
+                discipline: session.isRun ? Discipline.running.rawValue : nil,
+                runKind: session.isRun && !session.runKindRaw.isEmpty ? session.runKindRaw : nil,
+                distanceKm: session.isRun ? session.plannedDistanceKm : nil,
+                elevationMeters: session.isRun ? session.plannedElevationM : nil,
+                durationMinutes: session.isRun ? session.estimatedDurationMinutes : nil,
+                target: session.isRun && !session.runTargetTypeRaw.isEmpty
+                    ? CoachPlannedRunTarget(type: session.runTargetTypeRaw, low: session.runTargetLow, high: session.runTargetHigh)
+                    : nil,
+                zone: session.isRun && !session.runZone.isEmpty ? session.runZone : nil
             )
         },
         planBlockStartedAt: Calendar.current.startOfDay(for: profile.planBlockStartedAt),
+        currentPlanGeneratedAt: currentPlanGeneratedAt,
         running: running,
-        timeZone: timeZone.identifier
+        timeZone: timeZone.identifier,
+        supportedExercises: ExerciseKind.allCases.map(\.rawValue)
     )
 }
 
@@ -1959,6 +1993,14 @@ func coachHistoryLogs(from logs: [PerformanceLog], now: Date = Date()) -> [Perfo
     return logs
         .filter { $0.completedAt >= cutoff }
         .sorted { $0.completedAt < $1.completedAt }
+}
+
+/// Confirmed runs from the last 10 weeks (at most 90), oldest first: enough
+/// for the coach to see a few full block weeks plus their 4-week averages
+/// when it decides on a planned recovery week.
+func coachRecentRunLogs(from runLogs: [RunLog], weekStart: Date) -> [RunLog] {
+    let cutoff = Calendar.current.date(byAdding: .day, value: -70, to: weekStart) ?? Date.distantPast
+    return Array(confirmedRunLogs(from: runLogs).filter { $0.completedAt >= cutoff }.suffix(90))
 }
 
 func coachPlannedSessions(from sessions: [WorkoutSession], now: Date = Date()) -> [WorkoutSession] {

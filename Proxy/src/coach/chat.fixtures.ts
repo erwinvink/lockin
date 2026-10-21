@@ -131,7 +131,21 @@ export function chatRequest(): CoachRequest {
         status: "planned",
         exercises: [{ exercise: "pullUp", sets: 3, targetReps: 8, targetSeconds: 0, plannedEffortLabel: "medium" }]
       },
-      { id: "tempo", scheduledDate: "2026-06-30T00:00:00Z", title: "Tempo run 8 km", focus: "mixed", status: "planned", exercises: [] },
+      {
+        id: "tempo",
+        scheduledDate: "2026-06-30T00:00:00Z",
+        title: "Tempo run 8 km",
+        focus: "mixed",
+        status: "planned",
+        exercises: [],
+        discipline: "running",
+        runKind: "tempo",
+        distanceKm: 8,
+        elevationMeters: 60,
+        durationMinutes: 42,
+        target: { type: "pace", low: 300, high: 315 },
+        zone: "Zone 3"
+      },
       {
         id: "push",
         scheduledDate: "2026-07-01T00:00:00Z",
@@ -165,7 +179,7 @@ export function signals(): TrainingSignals {
       last7DaysDescentM: 0,
       longestRunLast6WeeksKm: 16.4,
       recentLongRunsKm: [16.4],
-      easyShareLast4Weeks: 0.67,
+      lowIntensityTimeShareLast4Weeks: 0.82,
       runCountLast7Days: 2
     },
     race: { daysToRace: 98, weeksToRace: 14, taperStatus: "training" },

@@ -1,5 +1,6 @@
 import { computeTrainingSignals, type TrainingSignals } from "./planner/compute-training-signals";
-import { clampRunningWeek, runningGuardrails, runningGuardrailsForPrompt } from "./planner/running-guardrails";
+import { CONTINUITY_RULE, continuityState, keepRunningContinuity, strengthContinuityNotes, type ContinuityState } from "./planner/current-plan";
+import { clampRunningWeek, runningGuardrails, runningGuardrailsForPrompt, type RunningGuardrails } from "./planner/running-guardrails";
 import { clampWeeklyPlan, strengthGuardrailsForPrompt } from "./planner/strength-guardrails";
 import { strengthMaintenanceReason, validateCombinedWeek } from "./planner/validate-combined-week";
 import { validateRunningWeek } from "./planner/validate-running-week";
@@ -20,13 +21,18 @@ export type PlannedRunSummary = Pick<RunningWeek["sessions"][number], "dayOffset
 export type RunningPlannerGuidance = {
   trainingSignals: TrainingSignals | null;
   guardrails: Record<string, unknown>;
+  continuity?: ContinuityGuidance | null;
 };
 
 export type StrengthPlannerGuidance = {
   trainingSignals: TrainingSignals | null;
   guardrails: Record<string, unknown>;
   plannedRuns?: PlannedRunSummary[];
+  continuity?: ContinuityGuidance | null;
 };
+
+/** What the planners are told about keeping coachContext.currentPlan. */
+export type ContinuityGuidance = { keepUnlessChanged: boolean; changeSignals: string[]; rule: string };
 
 export type PipelineFailure =
   | { ok: false; reason: "upstream"; status: number; body: string }
@@ -64,14 +70,24 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
   const now = deps.now ?? new Date();
   const signals = computeTrainingSignals(context, now);
   const guardrails = runningGuardrails(context, { now, signals });
-  const runningGuidance: RunningPlannerGuidance = { trainingSignals: signals, guardrails: runningGuardrailsForPrompt(guardrails) };
+  const continuity = continuityState(context, wellnessChangeSignals(guardrails));
+  const continuityGuidance = toContinuityGuidance(continuity);
+  const runningGuidance: RunningPlannerGuidance = {
+    trainingSignals: signals,
+    guardrails: runningGuardrailsForPrompt(guardrails),
+    continuity: continuityGuidance
+  };
 
   const running = await generateValidated<RunningWeek>({
     stage: "running",
     generate: (repair) => deps.generateRunning(runningGuidance, repair),
     prepare: (week) => {
-      const clamped = clampRunningWeek(week, context, guardrails);
-      return { value: clamped.week, adjustments: clamped.adjustments };
+      // Continuity first, so the caps still win over a kept distance.
+      const kept = continuity?.keep && context.currentPlan
+        ? keepRunningContinuity(week, context.currentPlan)
+        : { week, adjustments: [] };
+      const clamped = clampRunningWeek(kept.week, context, guardrails);
+      return { value: clamped.week, adjustments: [...kept.adjustments, ...clamped.adjustments] };
     },
     validate: (week) => validateRunningWeek(week, context, guardrails).messages,
     record: deps.recordValidationFailure
@@ -90,7 +106,8 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
   const strengthGuidance: StrengthPlannerGuidance = {
     trainingSignals: signals,
     guardrails: strengthGuardrailsForPrompt(context, { maintenance, maintenanceReason }),
-    plannedRuns
+    plannedRuns,
+    continuity: continuityGuidance
   };
 
   const strength = await generateValidated<WeeklyPlan>({
@@ -98,7 +115,8 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
     generate: (repair) => deps.generateStrength(strengthGuidance, repair),
     prepare: (plan) => {
       const clamped = clampWeeklyPlan(plan, context, { maintenance });
-      return { value: clamped.plan, adjustments: clamped.adjustments };
+      const notes = continuity?.keep && context.currentPlan ? strengthContinuityNotes(clamped.plan, context.currentPlan) : [];
+      return { value: clamped.plan, adjustments: [...clamped.adjustments, ...notes] };
     },
     validate: (plan) => [
       ...validateWeeklyPlan(plan, context, { allowProgressionHoldForRunning: maintenance }).messages,
@@ -121,22 +139,36 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
 export async function runStrengthWeekPipeline(deps: StrengthPipelineDeps): Promise<StrengthPipelineResult> {
   const { context } = deps;
   const signals = computeTrainingSignals(context, deps.now ?? new Date());
+  const continuity = continuityState(context);
   const guidance: StrengthPlannerGuidance = {
     trainingSignals: signals,
-    guardrails: strengthGuardrailsForPrompt(context)
+    guardrails: strengthGuardrailsForPrompt(context),
+    continuity: toContinuityGuidance(continuity)
   };
   const strength = await generateValidated<WeeklyPlan>({
     stage: "strength",
     generate: (repair) => deps.generateStrength(guidance, repair),
     prepare: (plan) => {
       const clamped = clampWeeklyPlan(plan, context);
-      return { value: clamped.plan, adjustments: clamped.adjustments };
+      const notes = continuity?.keep && context.currentPlan ? strengthContinuityNotes(clamped.plan, context.currentPlan) : [];
+      return { value: clamped.plan, adjustments: [...clamped.adjustments, ...notes] };
     },
     validate: (plan) => validateWeeklyPlan(plan, context).messages,
     record: deps.recordValidationFailure
   });
   if (!strength.ok) return strength;
   return { ok: true, strengthWeek: strength.value, adjustments: strength.adjustments, repairs: strength.repairs };
+}
+
+/** Garmin and recent-run warnings count as change signals for continuity. */
+function wellnessChangeSignals(guardrails: RunningGuardrails): string[] {
+  return guardrails.relaxations
+    .filter((relaxation) => relaxation.code === "wellness_gate" || relaxation.code === "recent_run_distress")
+    .map((relaxation) => relaxation.detail);
+}
+
+function toContinuityGuidance(continuity: ContinuityState | null): ContinuityGuidance | null {
+  return continuity ? { keepUnlessChanged: continuity.keep, changeSignals: continuity.signals, rule: CONTINUITY_RULE } : null;
 }
 
 async function generateValidated<T>(input: {

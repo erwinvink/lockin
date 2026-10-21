@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { ClientInputError, parseJSONObjectBody, readRequestBody, RequestBodyTooLargeError } from "../http-body";
 import { connectGarmin, deleteWorkouts, disconnectGarmin, garminSnapshot, garminStatus, pushWorkouts } from "./garmin-client";
 import {
   GarminSyncInputError,
@@ -101,8 +102,13 @@ export function createGarminRouteHandler(deps: GarminRouteDeps): (req: IncomingM
         writeJSON(res, 400, { error: error.message });
         return true;
       }
-      if (error instanceof SyntaxError) {
-        writeJSON(res, 400, { error: "request body must be valid JSON" });
+      if (error instanceof ClientInputError) {
+        writeJSON(res, 400, { error: error.message });
+        return true;
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        res.setHeader("connection", "close");
+        writeJSON(res, 413, { error: error.message });
         return true;
       }
       throw error;
@@ -132,18 +138,9 @@ function sinceDays(url: URL): number {
   return raw !== null && raw.trim() !== "" && Number.isFinite(parsed) ? parsed : 7;
 }
 
+/** The JSON object body (empty means {}), capped at 2 MB: 413 above it, 400 for invalid JSON. */
 async function readJSON(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const raw = await new Promise<string>((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      data += chunk;
-    });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
-  const parsed = raw.trim() ? (JSON.parse(raw) as unknown) : {};
-  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  return parseJSONObjectBody(await readRequestBody(req), { allowEmpty: true });
 }
 
 function writeJSON(res: ServerResponse, status: number, body: unknown): void {

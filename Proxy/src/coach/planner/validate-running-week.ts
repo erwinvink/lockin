@@ -10,6 +10,7 @@ import {
   targetProblem,
   type RunningGuardrails
 } from "./running-guardrails";
+import { QUALITY_RUN_KINDS, runRuleFor } from "./running-phase-limits";
 import type { CoachContext, RunningWeek } from "./types";
 
 export { runningDayAvailability } from "./running-guardrails";
@@ -35,7 +36,10 @@ export function validateRunningWeek(
   const allowed = availability.offsets;
   const hasSelectedDays = !availability.unconstrained;
   const hasAvailableDays = allowed.length > 0;
+  // Any computed reason lowers the run floor; floor-only reasons (a profile
+  // pain note) do not allow an all-easy build week.
   const relaxed = guardrails.relaxations.length > 0;
+  const relaxedQuality = guardrails.relaxations.some((relaxation) => !relaxation.floorOnly);
 
   if (hasAvailableDays && week.sessions.length === 0) {
     messages.push("Running week must contain at least one run when future running days are available.");
@@ -80,14 +84,19 @@ export function validateRunningWeek(
   }
 
   if (guardrails.weeklyVolume.kind === "capped") {
-    const { capKm, referenceKm, basis } = guardrails.weeklyVolume;
+    const { capKm, referenceKm, basis, phase } = guardrails.weeklyVolume;
     const plannedKm = countedWeeklyKm(week, guardrails);
     if (plannedKm > capKm + 0.05) {
+      const why = phase
+        ? basis
+        : `${Math.round(RUNNING_LIMITS.weeklyJumpRatio * 100)}% or ${RUNNING_LIMITS.weeklyMinimumStepKm} km above ${referenceKm} km, ${basis}`;
       messages.push(
-        `Planned running volume is ${plannedKm} km (race-day session excluded), above this week's cap of ${capKm} km (${Math.round(RUNNING_LIMITS.weeklyJumpRatio * 100)}% or ${RUNNING_LIMITS.weeklyMinimumStepKm} km above ${referenceKm} km, ${basis}). Remove at least ${round1(plannedKm - capKm)} km, mainly from easy or recovery runs; safety flags cannot waive this cap.`
+        `Planned running volume is ${plannedKm} km (race-day session excluded), above this week's cap of ${capKm} km (${why}). Remove at least ${round1(plannedKm - capKm)} km, mainly from easy or recovery runs; safety flags cannot waive this cap.`
       );
     }
   }
+
+  messages.push(...phaseRuleMessages(week, guardrails));
 
   if (guardrails.longRun) {
     const { capKm, recentLongestKm } = guardrails.longRun;
@@ -113,7 +122,7 @@ export function validateRunningWeek(
   // Mirror of the strength coach's no-all-light rule: far from the race with
   // no computed reason, a week of only easy/recovery runs is not a build week.
   const weeksToRace = running?.weeksToRace ?? 0;
-  if (week.sessions.length >= 3 && hardRuns.length === 0 && weeksToRace > 3 && !relaxed) {
+  if (week.sessions.length >= 3 && hardRuns.length === 0 && weeksToRace > 3 && !relaxedQuality) {
     messages.push(
       `A normal build week needs at least one quality session (long, tempo, intervals, or hills); this week has ${week.sessions.length} easy or recovery runs and no computed reason (readiness, taper, wellness gate, recent-run warning) for an all-easy week.`
     );
@@ -128,11 +137,16 @@ export function validateRunningWeek(
   const maxDistance = week.sessions.reduce((max, session) => Math.max(max, session.distanceKm), 0);
   const longRunDayOffset = running?.longRunDayOffset;
   const longestRuns = week.sessions.filter((session) => session.distanceKm === maxDistance);
+  // Race week and the week after the race hold no long run, so the long-run
+  // day is free there.
+  const longRunDayPhase = guardrails.phase.race?.days.find((day) => day.dayOffset === longRunDayOffset)?.phase;
+  const longRunDayHasNoLongRun = longRunDayPhase === "race_week" || longRunDayPhase === "post_race_1w";
   if (
     typeof longRunDayOffset === "number" &&
     longRunDayOffset >= 1 &&
     longRunDayOffset <= 6 &&
     hasSelectedDays &&
+    !longRunDayHasNoLongRun &&
     longestRuns.length > 0 &&
     maxDistance > 0
   ) {
@@ -145,6 +159,39 @@ export function validateRunningWeek(
   }
 
   return { accepted: messages.length === 0, messages };
+}
+
+/** Recovery-week and race-window rules, each run by its own day. */
+function phaseRuleMessages(week: RunningWeek, guardrails: RunningGuardrails): string[] {
+  const phase = guardrails.phase;
+  if (!phase.recoveryWeek && !phase.race) return [];
+  const messages: string[] = [];
+  week.sessions.forEach((session, index) => {
+    const rule = runRuleFor(session, phase);
+    const label = `Run ${index + 1} (${session.title})`;
+    if (rule.allowedKinds && !rule.allowedKinds.has(session.kind)) {
+      const fix = rule.allowedKinds.has("tempo") ? "an easy run or a flat session" : "an easy or recovery run";
+      messages.push(`${label} is a ${session.kind} run on offset ${session.dayOffset}, ${rule.kindReason}. Make it ${fix}.`);
+    }
+    if (rule.maxKm !== null && session.distanceKm > rule.maxKm + 0.05) {
+      messages.push(`${label} is ${session.distanceKm} km; ${rule.maxKmReason}: at most ${rule.maxKm} km. Shorten it by at least ${round1(session.distanceKm - rule.maxKm)} km.`);
+    }
+    if (rule.maxElevationM !== null && session.elevationMeters > rule.maxElevationM) {
+      messages.push(`${label} climbs ${session.elevationMeters} m over ${session.distanceKm} km; ${rule.elevationReason}: at most ${rule.maxElevationM} m. Pick a flatter route.`);
+    }
+  });
+  const limit = guardrails.qualityLimit;
+  if (limit) {
+    const quality = week.sessions
+      .map((session, index) => ({ session, index }))
+      .filter(({ session }) => QUALITY_RUN_KINDS.has(session.kind) && !isRaceDaySession(session, guardrails));
+    if (quality.length > limit.max) {
+      messages.push(
+        `The week has ${quality.length} quality sessions (tempo, intervals, hills: runs ${quality.map(({ index }) => index + 1).join(", ")}); ${limit.reason}, so at most ${limit.max}. Change ${quality.length - limit.max} of them to easy runs.`
+      );
+    }
+  }
+  return messages;
 }
 
 function consecutiveHardRunMessages(week: RunningWeek, context: CoachContext, guardrails: RunningGuardrails): string[] {

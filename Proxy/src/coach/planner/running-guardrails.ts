@@ -1,4 +1,12 @@
 import { computeTrainingSignals, type TrainingSignals } from "./compute-training-signals";
+import {
+  phaseWeeklyCap,
+  QUALITY_RUN_KINDS,
+  qualityRunLimit,
+  runningPhaseLimits,
+  runRuleFor,
+  type RunningPhaseLimits
+} from "./running-phase-limits";
 import type { CoachContext, RunningWeek, RunSummary, RunTarget } from "./types";
 
 /**
@@ -21,8 +29,13 @@ export const RUNNING_LIMITS = {
   weeklyJumpRatio: 0.15,
   /** ...or reference + 3 km, whichever is larger (small bases need room). */
   weeklyMinimumStepKm: 3,
-  /** First week back after 4+ weeks without a run. */
+  /**
+   * First week back after 4+ weeks without a run, and the floor of the cap
+   * while there are fewer than 3 runs in the last 6 weeks (one short run
+   * must not shrink the cap below what no runs at all would allow).
+   */
   returningFromBreakCapKm: 20,
+  sparseHistoryRunCount: 3,
   longRunCapRatio: 1.4,
   paceSecPerKm: { min: 150, max: 720 },
   hrBpm: { min: 80, max: 210 },
@@ -43,12 +56,19 @@ export type RunningRelaxationCode =
   | "post_race_recovery"
   | "wellness_gate"
   | "recent_run_distress"
-  | "missing_run_history";
+  | "missing_run_history"
+  | "profile_pain_note"
+  | "planned_recovery_week";
 
-export type RunningRelaxation = { code: RunningRelaxationCode; detail: string };
+/**
+ * A computed reason that lowers the run-count floor. `floorOnly` reasons (a
+ * profile pain note) allow fewer runs but never an all-easy build week.
+ */
+export type RunningRelaxation = { code: RunningRelaxationCode; detail: string; floorOnly?: boolean };
 
 export type WeeklyVolumeLimit =
-  | { kind: "capped"; referenceKm: number; capKm: number; basis: string }
+  /** `phase`: a recovery-week or race-window cap is the binding one. */
+  | { kind: "capped"; referenceKm: number; capKm: number; basis: string; phase?: boolean }
   | { kind: "waived"; reason: string };
 
 export type EasyRunReference = {
@@ -72,6 +92,10 @@ export type RunningGuardrails = {
   raceDayOffset: number | null;
   recentRunCountLast6Weeks: number;
   easyReference: EasyRunReference | null;
+  /** Recovery week and race window (taper, race week, post-race) rules. */
+  phase: RunningPhaseLimits;
+  /** Most tempo, interval and hill runs this window allows (recovery week, taper), or null. */
+  qualityLimit: { max: number; reason: string } | null;
 };
 
 export type RunningGuardrailOptions = {
@@ -91,17 +115,43 @@ export function runningGuardrails(context: CoachContext, options: RunningGuardra
     ? running.recentRuns.filter((run) => withinDaysBefore(run, anchorMs, RUNNING_LIMITS.recentRunWindowDays)).length
     : 0;
 
+  const longRun = longRunLimit(context, signals);
+  const fallbackWeeklyKm = signals && running && running.recentRuns.length > 0 ? signals.running.fourWeekAvgKm : running?.baselineWeeklyKm ?? null;
+  const phase = runningPhaseLimits(context, longRun?.recentLongestKm ?? null, fallbackWeeklyKm);
+  const weeklyVolume = withPhaseCap(weeklyVolumeLimit(context, signals, recentRunCountLast6Weeks), phase);
+  const relaxations = computedRelaxations(context, anchorMs, raceDayOffset);
+  if (phase.recoveryWeek) {
+    relaxations.push({ code: "planned_recovery_week", detail: phase.recoveryWeek.reason });
+  }
   return {
     anchor: now.toISOString(),
-    relaxations: computedRelaxations(context, anchorMs, raceDayOffset),
-    weeklyVolume: weeklyVolumeLimit(context, signals),
-    longRun: longRunLimit(context, signals),
-    frequency: running ? runFrequencyPolicy(context, availability.offsets.length, recentRunCountLast6Weeks) : null,
+    relaxations,
+    weeklyVolume,
+    longRun,
+    frequency: running
+      ? feasibleFrequency(runFrequencyPolicy(context, availability.offsets.length, recentRunCountLast6Weeks), weeklyVolume)
+      : null,
     availability,
     backToBackLongRunsAllowed: backToBackLongRunsAllowed(context),
     raceDayOffset,
     recentRunCountLast6Weeks,
-    easyReference: running ? easyRunReference(running.recentRuns, anchorMs) : null
+    easyReference: running ? easyRunReference(running.recentRuns, anchorMs) : null,
+    phase,
+    qualityLimit: qualityRunLimit(phase)
+  };
+}
+
+/** The lower of the normal cap and a recovery-week or race-window cap. */
+function withPhaseCap(limit: WeeklyVolumeLimit, phase: RunningPhaseLimits): WeeklyVolumeLimit {
+  const phaseCap = phaseWeeklyCap(phase);
+  if (!phaseCap) return limit;
+  if (limit.kind === "capped" && limit.capKm <= phaseCap.capKm) return limit;
+  return {
+    kind: "capped",
+    referenceKm: limit.kind === "capped" ? limit.referenceKm : 0,
+    capKm: phaseCap.capKm,
+    basis: phaseCap.basis,
+    phase: true
   };
 }
 
@@ -114,7 +164,9 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
             referenceKm: guardrails.weeklyVolume.referenceKm,
             capKm: guardrails.weeklyVolume.capKm,
             basis: guardrails.weeklyVolume.basis,
-            rule: "Sum of planned distances (race-day session excluded) must be at most capKm. Over the cap, the proxy shortens easy and recovery runs."
+            rule: guardrails.weeklyVolume.phase
+              ? "Sum of planned distances (race-day session excluded) must be at most capKm. Over the cap, the proxy shortens easy and recovery runs first, then the long run and the quality session."
+              : "Sum of planned distances (race-day session excluded) must be at most capKm. Over the cap, the proxy shortens easy and recovery runs."
           }
         : { waived: true, reason: guardrails.weeklyVolume.reason },
     longRun: guardrails.longRun
@@ -137,10 +189,43 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
     },
     computedRelaxations: guardrails.relaxations,
     computedRelaxationRule:
-      "Only these computed reasons allow fewer runs than frequency.minRuns or an all-easy week. Safety flags never waive a limit.",
+      "Only these computed reasons allow fewer runs than frequency.minRuns; all of them except floorOnly ones (a profile pain note) also allow an all-easy week. Safety flags never waive a limit.",
     raceDayOffset: guardrails.raceDayOffset,
     recentRunCountLast6Weeks: guardrails.recentRunCountLast6Weeks,
     easyReference: guardrails.easyReference,
+    recoveryWeek: guardrails.phase.recoveryWeek
+      ? {
+          reason: guardrails.phase.recoveryWeek.reason,
+          weeklyKmCap: guardrails.phase.recoveryWeek.weeklyKmCap,
+          targetWeeklyKm: guardrails.phase.recoveryWeek.targetWeeklyKm,
+          longRunCapKm: guardrails.phase.recoveryWeek.longRunCapKm,
+          maxQualityRuns: guardrails.phase.recoveryWeek.maxQualityRuns,
+          rule:
+            "Planned recovery week: keep the run frequency, cut volume to targetWeeklyKm, shorten the long run to longRunCapKm or less, and keep intensity with at most one short quality session (or strides inside an easy run). Say in the summary that this is a planned recovery week and why."
+        }
+      : null,
+    raceWindow: guardrails.phase.race
+      ? {
+          raceName: guardrails.phase.race.raceName,
+          daysToRaceAtWeekStart: guardrails.phase.race.daysToRaceAtWeekStart,
+          days: guardrails.phase.race.days.filter((day) => day.dayOffset >= 1),
+          preTaperReferenceKm: guardrails.phase.race.referenceKm,
+          weeklyKmCap: guardrails.phase.race.weeklyKmCap,
+          longRunCapKm: guardrails.phase.race.longRunCapKm,
+          normalEasyRunKm: guardrails.phase.race.normalEasyRunKm,
+          raceWeekRunCapKm: guardrails.phase.race.shortRunCapKm,
+          usualClimbMPerKm: guardrails.phase.race.usualElevationPerKm,
+          rules: [
+            "taper_3w (15-21 days out): weekly km at most 80% of the pre-taper average; long run at most longRunCapKm.taper_3w.",
+            "taper_2w (8-14 days out): weekly km 50-70% of the pre-taper average; long run at most longRunCapKm.taper_2w; keep one short quality session (the last one at least 8 days out).",
+            "race_week (1-7 days out): besides the race, only short easy runs or shakeouts of at most raceWeekRunCapKm each (40% of a normal easy run, max 8 km); strides inside an easy run are fine; no tempo, intervals, hills or long runs.",
+            "Inside 10 days: no hill session and no new hill or downhill load (climbing at most 1.5x usualClimbMPerKm, never capped below 150 m).",
+            "post_race_1w: easy or recovery runs only, short; post_race_2w: back to easy volume at most 70% of the pre-taper average.",
+            "Days in one window can sit in different phases: each run follows the rule of its own day."
+          ]
+        }
+      : null,
+    qualityLimit: guardrails.qualityLimit,
     targetBounds: {
       paceSecPerKm: [RUNNING_LIMITS.paceSecPerKm.min, RUNNING_LIMITS.paceSecPerKm.max],
       hrBpm: [RUNNING_LIMITS.hrBpm.min, RUNNING_LIMITS.hrBpm.max],
@@ -223,6 +308,8 @@ export function clampRunningWeek(
     }
   });
 
+  clampPhaseRules(sessions, guardrails, adjustments);
+
   if (guardrails.longRun) {
     const cap = guardrails.longRun.capKm;
     sessions.forEach((session, index) => {
@@ -244,26 +331,118 @@ export function clampRunningWeek(
     if (excess > 0.05) {
       const easy = counted.filter((session) => EASY_RUN_KINDS.has(session.kind) && session.distanceKm > 0);
       const reducible = easy.reduce((sum, session) => sum + (session.distanceKm - easyFloor(session.distanceKm)), 0);
-      if (reducible >= excess) {
-        const share = excess / reducible;
-        for (const session of easy) {
-          const floor = easyFloor(session.distanceKm);
-          const target = session.distanceKm - (session.distanceKm - floor) * share;
-          const next = Math.max(floor, floorHalf(target));
-          if (next < session.distanceKm) {
-            scaleSession(session, next);
-            session.notes.push("Shortened to keep this week inside the weekly volume cap.");
-          }
+      // In a recovery week or the race window the cut is large, so the long
+      // run and the quality session give up to 40% too once the easy runs
+      // are at their floor.
+      const others = guardrails.weeklyVolume.phase
+        ? counted.filter((session) => !EASY_RUN_KINDS.has(session.kind) && session.distanceKm > 0)
+        : [];
+      const otherReducible = others.reduce((sum, session) => sum + (session.distanceKm - phaseFloor(session.distanceKm)), 0);
+      if (reducible + otherReducible >= excess) {
+        const fromEasy = Math.min(excess, reducible);
+        shortenProportionally(easy, fromEasy, reducible, easyFloor, "Shortened to keep this week inside the weekly volume cap.");
+        const rest = counted.reduce((sum, session) => sum + Math.max(0, session.distanceKm), 0) - cap;
+        if (rest > 0.05 && otherReducible > 0) {
+          shortenProportionally(others, Math.min(rest, otherReducible), otherReducible, phaseFloor, "Shortened to keep this lighter week inside its volume cap.");
         }
         const after = counted.reduce((sum, session) => sum + Math.max(0, session.distanceKm), 0);
         adjustments.push(
-          `Weekly volume ${round1(total)} km was above the ${cap} km cap; easy and recovery runs were shortened to ${round1(after)} km total.`
+          `Weekly volume ${round1(total)} km was above the ${cap} km cap; ${others.length > 0 && rest > 0.05 ? "easy runs, then the long run and quality session," : "easy and recovery runs"} were shortened to ${round1(after)} km total.`
         );
       }
     }
   }
 
   return { week: { ...week, sessions }, adjustments };
+}
+
+/**
+ * Recovery-week and race-window fixes: runs whose day allows only easy
+ * running (race week, the first week after the race), hill sessions inside
+ * 10 days, and quality sessions beyond the window's limit become easy runs;
+ * runs over their day's distance cap are shortened and climbing inside 10
+ * days is lowered to the athlete's usual terrain.
+ */
+function clampPhaseRules(sessions: RunningWeek["sessions"], guardrails: RunningGuardrails, adjustments: string[]) {
+  const phase = guardrails.phase;
+  if (!phase.recoveryWeek && !phase.race) return;
+
+  sessions.forEach((session, index) => {
+    const rule = runRuleFor(session, phase);
+    if (rule.allowedKinds && !rule.allowedKinds.has(session.kind) && rule.kindReason) {
+      const before = `${session.kind}`;
+      const title = session.title;
+      convertToEasy(session, rule.kindReason, rule.phase === "race_week", guardrails.easyReference);
+      adjustments.push(`Run ${index + 1} (${title}): ${before} changed to an easy run (${rule.kindReason}).`);
+    }
+  });
+
+  const limit = guardrails.qualityLimit;
+  if (limit) {
+    let kept = 0;
+    sessions.forEach((session, index) => {
+      if (!QUALITY_RUN_KINDS.has(session.kind) || isRaceDaySession(session, guardrails)) return;
+      kept += 1;
+      if (kept <= limit.max) return;
+      const before = session.kind;
+      const title = session.title;
+      convertToEasy(session, limit.reason, false, guardrails.easyReference);
+      adjustments.push(`Run ${index + 1} (${title}): ${before} changed to an easy run (${limit.reason}).`);
+    });
+  }
+
+  sessions.forEach((session, index) => {
+    const rule = runRuleFor(session, phase);
+    if (rule.maxKm !== null && session.distanceKm > rule.maxKm + 0.05) {
+      const before = session.distanceKm;
+      scaleSession(session, floorHalf(rule.maxKm));
+      session.notes.push(`Shortened to ${session.distanceKm} km: ${rule.maxKmReason}.`);
+      adjustments.push(`Run ${index + 1} (${session.title}): shortened from ${before} km to ${session.distanceKm} km (${rule.maxKmReason}, cap ${rule.maxKm} km).`);
+    }
+    if (rule.maxElevationM !== null && session.elevationMeters > rule.maxElevationM) {
+      const before = session.elevationMeters;
+      session.elevationMeters = rule.maxElevationM;
+      session.notes.push(`Pick a route with about ${rule.maxElevationM} m of climbing at most: ${rule.elevationReason}.`);
+      adjustments.push(`Run ${index + 1} (${session.title}): climbing lowered from ${before} m to ${rule.maxElevationM} m (${rule.elevationReason}).`);
+    }
+  });
+}
+
+function convertToEasy(session: RunningWeek["sessions"][number], reason: string, shakeout: boolean, reference: EasyRunReference | null) {
+  session.kind = "easy";
+  session.title = shakeout ? "Easy shakeout run" : "Easy run";
+  session.purpose = `Easy aerobic running: ${reason}.`;
+  session.zone = "Zone 2";
+  const target = referenceTarget(session, reference) ?? noTarget();
+  session.target = target;
+  if (target.type === "pace" && session.distanceKm > 0) {
+    session.durationMinutes = Math.round((session.distanceKm * (target.low + target.high)) / 2 / 60);
+  }
+  session.notes.push(`Changed to an easy run: ${reason}.`);
+}
+
+function shortenProportionally(
+  sessions: RunningWeek["sessions"],
+  amount: number,
+  reducible: number,
+  floorOf: (distanceKm: number) => number,
+  note: string
+) {
+  if (amount <= 0 || reducible <= 0) return;
+  const share = Math.min(1, amount / reducible);
+  for (const session of sessions) {
+    const floor = floorOf(session.distanceKm);
+    const target = session.distanceKm - (session.distanceKm - floor) * share;
+    const next = Math.max(floor, floorHalf(target));
+    if (next < session.distanceKm) {
+      scaleSession(session, next);
+      session.notes.push(note);
+    }
+  }
+}
+
+function phaseFloor(distanceKm: number): number {
+  return Math.min(distanceKm, distanceKm * 0.6);
 }
 
 export function describeTarget(target: RunTarget): string {
@@ -393,6 +572,14 @@ function computedRelaxations(context: CoachContext, anchorMs: number, raceDayOff
     if (running.recentRuns.length === 0 && (running.baselineWeeklyKm || 0) <= 0) {
       relaxations.push({ code: "missing_run_history", detail: "No run history and no baseline weekly volume." });
     }
+
+    if (hasProfilePainNote(context.profile.profileNotes)) {
+      relaxations.push({
+        code: "profile_pain_note",
+        detail: "The athlete's profile notes mention pain or an injury: fewer runs than the floor are fine; the caps and the quality-session rule stay.",
+        floorOnly: true
+      });
+    }
   }
 
   const gate = wellnessGate(context, anchorMs);
@@ -415,18 +602,46 @@ function wellnessGate(context: CoachContext, anchorMs: number): RunningRelaxatio
   return null;
 }
 
-function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | null): WeeklyVolumeLimit {
+/**
+ * The athlete's own pain or injury note. The app appends a session-length
+ * sentence to the profile notes; that alone is not a pain note.
+ */
+export function hasProfilePainNote(profileNotes: string | undefined): boolean {
+  const withoutSessionCap = (profileNotes ?? "").replace(/Keep each strength session within \d+ minutes\.?/gi, "");
+  return withoutSessionCap.trim().length > 0;
+}
+
+/**
+ * Keeps the run-count floor reachable under the weekly cap: minRuns easy
+ * runs of the minimum length must fit, else the floor drops to what fits.
+ */
+function feasibleFrequency(policy: RunFrequencyPolicy, weeklyVolume: WeeklyVolumeLimit): RunFrequencyPolicy {
+  if (weeklyVolume.kind !== "capped") return policy;
+  const fits = Math.floor((weeklyVolume.capKm + 1e-9) / RUNNING_LIMITS.easyRunMinimumKm);
+  if (policy.minRuns <= fits) return policy;
+  const minRuns = Math.max(0, fits);
+  return {
+    ...policy,
+    minRuns,
+    basis: `${policy.basis}; at most ${minRuns} runs of ${RUNNING_LIMITS.easyRunMinimumKm} km fit the ${weeklyVolume.capKm} km cap`
+  };
+}
+
+function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | null, recentRunCount: number): WeeklyVolumeLimit {
   const running = context.running;
   if (!running) return { kind: "waived", reason: "No running context." };
   const baseline = running.baselineWeeklyKm || 0;
+  const returnCap = RUNNING_LIMITS.returningFromBreakCapKm;
+  const sparse = recentRunCount < RUNNING_LIMITS.sparseHistoryRunCount;
 
   if (running.recentRuns.length === 0 || !signals) {
     if (baseline > 0) {
+      const cap = capFrom(baseline);
       return {
         kind: "capped",
         referenceKm: round1(baseline),
-        capKm: capFrom(baseline),
-        basis: `the athlete's baseline of ${round1(baseline)} km/week (no run history was sent)`
+        capKm: Math.max(cap, returnCap),
+        basis: `the athlete's baseline of ${round1(baseline)} km/week (no run history was sent)${cap < returnCap ? `, raised to the ${returnCap} km return cap` : ""}`
       };
     }
     return { kind: "waived", reason: "No run history and no baseline weekly volume: plan a minimal assessment week." };
@@ -443,10 +658,19 @@ function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | nul
       basis: `no runs in the last 4 weeks, so the return week is capped at ${RUNNING_LIMITS.returningFromBreakCapKm} km`
     };
   }
+  const cap = capFrom(reference);
+  if (sparse && cap < returnCap) {
+    return {
+      kind: "capped",
+      referenceKm: round1(reference),
+      capKm: returnCap,
+      basis: `only ${recentRunCount} run(s) in the last 6 weeks, so the ${returnCap} km return cap applies instead of 15% above ${round1(reference)} km`
+    };
+  }
   return {
     kind: "capped",
     referenceKm: round1(reference),
-    capKm: capFrom(reference),
+    capKm: cap,
     basis: `the larger of the last 7 days (${last7} km) and the 4-week average (${fourWeekAvg} km)`
   };
 }
