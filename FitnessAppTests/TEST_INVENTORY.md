@@ -282,6 +282,35 @@ This file is the durable human-readable test list for the lockin app. It records
   - Verifies no planned sessions remain.
   - Verifies missed/completed counts, performance logs, penalty points, streak, and consistency.
 
+### New Plan
+
+- `testStartNewPlanKeepsHistoryAndReplacesTheOpenPlan`
+  - Removes every planned session from today on with its blocks and prescriptions; keeps completed, missed, overdue-planned and today's completed sessions.
+  - Queues only the pushed Garmin workout id for deletion.
+  - Keeps performance logs, run logs, readiness snapshots, rank and coach chat; clears coach plans, decisions and reads.
+  - Writes the new inputs to the profile, sets `planBlockStartedAt` to now, and edits the race goal in place so its run-history baselines stay.
+
+- `testStartNewPlanWithoutARaceRemovesTheRaceGoal`
+  - Turning the race off removes the race goal; nothing is queued for Garmin.
+
+- `testStartNewPlanAddsARaceGoalWhenThereWasNone`
+  - Adds a race goal (trimmed name) and the default running days when the profile had none.
+
+- `testPlanBlockStartReadsAsCreationDateUntilANewPlanStarts`
+  - Profiles from before new plans existed read `planBlockStartedAt` as `createdAt`.
+
+- `testCurrentNumbersPreferRecentBestThenLatestThenProfile`
+  - Current numbers use the best logged set of the last four weeks, else the latest logged set, else the profile baseline.
+
+- `testPlanInputsPrefillFromProfileAndRaceGoal`
+  - The new-plan form starts from the profile, race goal and current numbers.
+
+- `testCoachRequestSendsPlanBlockStartAsLocalMidnight`
+  - `planBlockStartedAt` is encoded as the ISO date of the block start's local midnight; legacy profiles send their creation day.
+
+- `testCoachProfileNotesCarryTheSessionLength`
+  - A session length adds a "Keep each strength session within N minutes." line to the coach notes.
+
 ## Current Automated UI Tests
 
 - `testOnboardingScreenShowsGoalSetup`
@@ -310,6 +339,12 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testProfileResetFlowUsesAIOnlyPlanCreation`
   - Completes onboarding.
   - Tests Profile/Settings, confirms local fallback controls are absent, verifies reminder toggle/time picker, reset alert, and reset returning to onboarding.
+
+- `testStartNewPlanKeepsHistoryAndClearsTheOpenPlan`
+  - Launches with the seeded two-week activity fixture and opens Profile > Start a new plan.
+  - Verifies the form is pre-filled (race name, kept current numbers 8 / 28 / 1:35), picks a session length and confirms.
+  - Planning takes the offline path (UI tests never call the proxy) and shows "Waiting for the coach".
+  - Verifies Log keeps history with nothing coming up, Coach shows "Coach read needed" instead of the old read, and Progress keeps its data.
 
 - `testTwoWeekSeedPreviewDataSurfaces`
   - Launches with the seeded two-week activity fixture.

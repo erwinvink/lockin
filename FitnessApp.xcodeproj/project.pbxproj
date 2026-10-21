@@ -25,6 +25,7 @@
 		AA0000000000000000000115 /* LockinComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000231 /* LockinComponents.swift */; };
 		AA0000000000000000000116 /* TrainingPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000232 /* TrainingPlanStore.swift */; };
 		AA0000000000000000000117 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000233 /* OnboardingView.swift */; };
+		AA00000000000000000001A1 /* NewPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000002A1 /* NewPlanView.swift */; };
 		AA0000000000000000000118 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000234 /* TodayView.swift */; };
 		AA0000000000000000000119 /* WorkoutInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000235 /* WorkoutInfoView.swift */; };
 		AA000000000000000000011A /* CalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000236 /* CalendarView.swift */; };
@@ -75,6 +76,7 @@
 		AA0000000000000000000231 /* LockinComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockinComponents.swift; sourceTree = "<group>"; };
 		AA0000000000000000000232 /* TrainingPlanStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingPlanStore.swift; sourceTree = "<group>"; };
 		AA0000000000000000000233 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		AA00000000000000000002A1 /* NewPlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000234 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000235 /* WorkoutInfoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutInfoView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000236 /* CalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarView.swift; sourceTree = "<group>"; };
@@ -135,6 +137,7 @@
 				AA0000000000000000000231 /* LockinComponents.swift */,
 				AA0000000000000000000232 /* TrainingPlanStore.swift */,
 				AA0000000000000000000233 /* OnboardingView.swift */,
+				AA00000000000000000002A1 /* NewPlanView.swift */,
 				AA0000000000000000000234 /* TodayView.swift */,
 				AA0000000000000000000235 /* WorkoutInfoView.swift */,
 				AA0000000000000000000236 /* CalendarView.swift */,
@@ -319,6 +322,7 @@
 				AA0000000000000000000115 /* LockinComponents.swift in Sources */,
 				AA0000000000000000000116 /* TrainingPlanStore.swift in Sources */,
 				AA0000000000000000000117 /* OnboardingView.swift in Sources */,
+				AA00000000000000000001A1 /* NewPlanView.swift in Sources */,
 				AA0000000000000000000118 /* TodayView.swift in Sources */,
 				AA0000000000000000000119 /* WorkoutInfoView.swift in Sources */,
 				AA000000000000000000011A /* CalendarView.swift in Sources */,
