@@ -48,7 +48,7 @@ final class DesignScreenshotTour: XCTestCase {
 
         // Log.
         app.tabBars.buttons["Log"].tap()
-        XCTAssertTrue(app.staticTexts["Session history"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["History"].waitForExistence(timeout: 5))
         snap(app, "08-log-top", in: directory)
         app.swipeUp()
         snap(app, "09-log-scrolled", in: directory)
@@ -176,9 +176,9 @@ final class FitnessAppUITests: XCTestCase {
 
         app.tabBars.buttons["Log"].tap()
         XCTAssertTrue(app.staticTexts["Log"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["No open activities."].exists)
-        XCTAssertTrue(app.staticTexts["Session history"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coming up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Nothing planned yet. Your coach plans the week from Coach."].exists)
+        XCTAssertTrue(app.staticTexts["History"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["No history yet."].exists)
         XCTAssertFalse(app.navigationBars["Log"].exists)
         XCTAssertFalse(app.staticTexts["DONE"].exists)
@@ -271,8 +271,8 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(app.buttons["exercise-checkbox-unchecked"].exists)
 
         app.tabBars.buttons["Log"].tap()
-        XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Session history"].exists)
+        XCTAssertTrue(app.staticTexts["Coming up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["History"].exists)
         XCTAssertTrue(app.staticTexts["Today Simulation"].exists)
         XCTAssertTrue(app.staticTexts["Core Control"].exists)
         XCTAssertTrue(app.staticTexts["Push + Core"].exists)
@@ -282,10 +282,9 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(futureWorkout.waitForExistence(timeout: 5))
         futureWorkout.tap()
         XCTAssertTrue(app.staticTexts["Workout details"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Workout preview"].exists)
         XCTAssertTrue(app.staticTexts["Warm-up"].exists)
         XCTAssertTrue(app.staticTexts["Pull-up"].exists)
-        XCTAssertTrue(app.staticTexts["Available to log on the scheduled day."].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Opens on '")).firstMatch.exists)
         XCTAssertFalse(app.buttons["exercise-checkbox-unchecked"].exists)
         app.buttons["Done"].tap()
 
@@ -315,7 +314,7 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Read new session"].exists)
 
         app.tabBars.buttons["Log"].tap()
-        XCTAssertTrue(app.staticTexts["OPEN ACTIVITIES"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Coming up"].waitForExistence(timeout: 5))
     }
 
     func testCoachChatAnswersSixConnectedQuestionsWithSeededTrainingData() throws {
