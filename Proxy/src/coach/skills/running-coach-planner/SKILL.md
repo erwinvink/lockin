@@ -26,7 +26,7 @@ Use the deterministic `coachContext` built by the proxy before the model call. I
 
 The proxy also computes, next to `coachContext`:
 
-- `trainingSignals.running`: `last7DaysKm`, `prior7DaysKm`, `fourWeekAvgKm`, `volumeVsFourWeekPct`, `longestRunLast6WeeksKm`, `recentLongRunsKm`, `easyShareLast4Weeks`, descent and ascent; `trainingSignals.race.taperStatus`; `trainingSignals.wellness.hrvGate`
+- `trainingSignals.running`: `last7DaysKm`, `prior7DaysKm`, `fourWeekAvgKm`, `volumeVsFourWeekPct`, `longestRunLast6WeeksKm`, `recentLongRunsKm`, `lowIntensityTimeShareLast4Weeks` (the 80/20 split by time; long runs count as low intensity, so about 0.8 is a normal build week), descent and ascent; `trainingSignals.race.taperStatus`; `trainingSignals.wellness.hrvGate`
 - `outputRules.guardrails`: the limits the proxy enforces after you answer — `weeklyVolume` (reference and `capKm`), `longRun.capKm`, `frequency` (min and max runs), `hardRuns`, `computedRelaxations`, `raceDayOffset`, `easyReference` (the athlete's own easy pace and heart-rate band), and `targetBounds`
 
 Use these numbers as given. Do not compute volumes, averages, or zones from raw runs yourself.

@@ -219,8 +219,10 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
           last7DaysDescentM: signals.running.last7DaysDescentM,
           longestRunLast6WeeksKm: round1(signals.running.longestRunLast6WeeksKm),
           recentLongRunsKm: signals.running.recentLongRunsKm.map(round1),
-          easySharePctLast4Weeks:
-            signals.running.easyShareLast4Weeks === null ? null : Math.round(signals.running.easyShareLast4Weeks * 100),
+          lowIntensityTimePctLast4Weeks:
+            signals.running.lowIntensityTimeShareLast4Weeks === null
+              ? null
+              : Math.round(signals.running.lowIntensityTimeShareLast4Weeks * 100),
           recentRuns: [...(context.running?.recentRuns ?? [])]
             .slice(-RECENT_RUNS_IN_PROMPT)
             .reverse()

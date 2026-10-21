@@ -165,7 +165,7 @@ export function signals(): TrainingSignals {
       last7DaysDescentM: 0,
       longestRunLast6WeeksKm: 16.4,
       recentLongRunsKm: [16.4],
-      easyShareLast4Weeks: 0.67,
+      lowIntensityTimeShareLast4Weeks: 0.82,
       runCountLast7Days: 2
     },
     race: { daysToRace: 98, weeksToRace: 14, taperStatus: "training" },
