@@ -4,6 +4,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \UserProfile.createdAt) private var profiles: [UserProfile]
+    @AppStorage(ModelContainerFactory.recoveredStoreBackupKey) private var recoveredStoreBackupPath = ""
     #if DEBUG
     @State private var didSeedPreviewData = false
     #endif
@@ -23,6 +24,14 @@ struct RootView: View {
         // system chrome (alerts, sheets, keyboard, glass tab bar) on the same
         // snow ground when the phone is in dark mode.
         .preferredColorScheme(.light)
+        .alert("Your training data couldn't be opened", isPresented: Binding(
+            get: { !recoveredStoreBackupPath.isEmpty },
+            set: { if !$0 { recoveredStoreBackupPath = "" } }
+        )) {
+            Button("OK", role: .cancel) { recoveredStoreBackupPath = "" }
+        } message: {
+            Text("lockin started with an empty store so it doesn't crash. The old data was kept as a backup on this iPhone: \(recoveredStoreBackupPath)")
+        }
         .task {
             #if DEBUG
             seedPreviewDataIfRequested()

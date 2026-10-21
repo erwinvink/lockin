@@ -8,18 +8,26 @@ struct TodayView: View {
     @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
+    @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var performanceLogs: [PerformanceLog]
     @Query(sort: \GarminDailySnapshot.date, order: .reverse) private var snapshots: [GarminDailySnapshot]
     @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @Query private var ranks: [RankState]
 
     var profile: UserProfile
     @State private var loggingSession: WorkoutSession?
+    @State private var loggingRun: WorkoutSession?
     @State private var pendingLoggingSessionID: UUID?
     @State private var previewSession: WorkoutSession?
     @State private var workoutCardResetID = UUID()
 
+    /// Today's planned sessions plus yesterday's unlogged ones, so a late
+    /// evening session can still be logged the next morning.
     private var dueSessions: [WorkoutSession] {
-        duePlannedSessions(from: sessions)
+        duePlannedSessions(from: sessions) + lateLoggableSessions(from: sessions, logs: performanceLogs, runLogs: runLogs)
+    }
+
+    private func isFromYesterday(_ session: WorkoutSession) -> Bool {
+        Calendar.current.isDateInYesterday(session.scheduledDate)
     }
 
     private var futureSession: WorkoutSession? {
@@ -79,7 +87,7 @@ struct TodayView: View {
 
     private var thisWeekKm: Double {
         guard let weekInterval else { return 0 }
-        return confirmedGarminRunLogs(from: runLogs)
+        return confirmedRunLogs(from: runLogs)
             .filter { weekInterval.start <= $0.completedAt && $0.completedAt < weekInterval.end }
             .reduce(0) { $0 + $1.distanceKm }
     }
@@ -115,6 +123,9 @@ struct TodayView: View {
             }
             .sheet(item: $loggingSession, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { session in
                 LogWorkoutView(session: session, profile: profile)
+            }
+            .sheet(item: $loggingRun) { session in
+                LogRunView(mode: .log(session), profile: profile)
             }
             .sheet(item: $previewSession) { session in
                 FutureWorkoutPreviewSheet(
@@ -203,7 +214,7 @@ struct TodayView: View {
                         if index > 0 {
                             SignpostStack {
                                 Signpost(
-                                    eyebrow: "Also today",
+                                    eyebrow: isFromYesterday(session) ? "Yesterday, not logged yet" : "Also today",
                                     title: session.title,
                                     trailing: signDurationText(minutes: durationMinutes(session)),
                                     grade: session.plannedEffortLabel.map(TrailGrade.init),
@@ -212,7 +223,7 @@ struct TodayView: View {
                             }
                         }
                         if session.isRun {
-                            RunRouteSection(session: session)
+                            RunRouteSection(session: session, onLog: { loggingRun = session })
                         } else {
                             StrengthRouteSection(
                                 session: session,
@@ -274,14 +285,15 @@ struct TodayView: View {
     }
 
     private func dueEyebrow(_ session: WorkoutSession) -> String {
+        let day = isFromYesterday(session) ? "Yesterday" : "Today"
         if session.isRun {
-            return session.plannedDistanceKm > 0 ? "Today, \(runDistanceText(km: session.plannedDistanceKm))" : "Today"
+            return session.plannedDistanceKm > 0 ? "\(day), \(runDistanceText(km: session.plannedDistanceKm))" : day
         }
         let count = prescriptionsForSession(session).count
         switch count {
-        case 0: return "Today"
-        case 1: return "Today, 1 movement"
-        default: return "Today, \(count) movements"
+        case 0: return day
+        case 1: return "\(day), 1 movement"
+        default: return "\(day), \(count) movements"
         }
     }
 
@@ -338,7 +350,7 @@ struct TodayView: View {
     }
 
     private func beginLogging(_ session: WorkoutSession) {
-        guard session.status == .planned else { return }
+        guard session.status == .planned || session.status == .missed else { return }
         pendingLoggingSessionID = session.id
         loggingSession = session
     }
@@ -346,7 +358,7 @@ struct TodayView: View {
     private func resetCheckedWorkoutIfLogWasCancelled() {
         guard let pendingLoggingSessionID else { return }
         let session = sessions.first { $0.id == pendingLoggingSessionID }
-        if session?.status == .planned {
+        if session?.status == .planned || session?.status == .missed {
             workoutCardResetID = UUID()
         }
         self.pendingLoggingSessionID = nil
@@ -574,6 +586,7 @@ private struct RouteRow: View {
 
 private struct RunRouteSection: View {
     var session: WorkoutSession
+    var onLog: () -> Void = {}
 
     private var purposeText: String {
         var purpose = session.summary
@@ -671,6 +684,12 @@ private struct RunRouteSection: View {
             .card(padding: 0)
 
             WatchStatusRow(session: session)
+
+            // Garmin completes runs automatically; this is for runs without
+            // the watch, or when Garmin isn't connected.
+            Button("Log run by hand", action: onLog)
+                .buttonStyle(SecondaryActionButtonStyle())
+                .accessibilityIdentifier("log-run-button")
         }
     }
 }

@@ -7,15 +7,20 @@ private enum LogMetricField: Hashable {
     case plankSeconds
 }
 
+/// The RPE the plan asked for, or 0 when the session has none. Display only:
+/// the slider's starting value comes from `initialLoggedRPE(for:)`.
+private func plannedRPE(for session: WorkoutSession) -> Int {
+    if (1...10).contains(session.plannedEffortTargetRPE) {
+        return session.plannedEffortTargetRPE
+    }
+    return session.plannedEffortLabel?.defaultTargetRPE ?? 0
+}
+
 struct LogWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query private var ranks: [RankState]
-    @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var previousLogs: [PerformanceLog]
-    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
-    @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     // Configuration, not state: fixed per build flavor (see LocalCoachClient).
     private let endpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
@@ -27,11 +32,18 @@ struct LogWorkoutView: View {
     @State private var pullUpsText = ""
     @State private var pushUpsText = ""
     @State private var plankSecondsText = ""
-    @State private var rpe = 7
-    @State private var didApplyPlannedRPE = false
+    @State private var rpe: Int
     @State private var painLevel = 0
     @State private var howFelt = 3
     @State private var notes = ""
+    @State private var isSaving = false
+    @State private var saveError: String?
+
+    init(session: WorkoutSession, profile: UserProfile) {
+        self.session = session
+        self.profile = profile
+        _rpe = State(initialValue: initialLoggedRPE(for: session))
+    }
 
     private var sessionPrescriptions: [SetPrescription] {
         prescriptions
@@ -78,13 +90,6 @@ struct LogWorkoutView: View {
             && (!shouldLogPlank || parsedLogValue(plankSecondsText, range: 0...3_600) != nil)
     }
 
-    private var plannedRPEForLog: Int {
-        if (1...10).contains(session.plannedEffortTargetRPE) {
-            return session.plannedEffortTargetRPE
-        }
-        return session.plannedEffortLabel?.defaultTargetRPE ?? 0
-    }
-
     private var sessionMetaText: String {
         let date = session.scheduledDate.formatted(.dateTime.weekday(.wide).day().month(.wide))
         let minutes = estimatedWorkoutDurationMinutes(for: session, prescriptions: sessionPrescriptions)
@@ -97,7 +102,7 @@ struct LogWorkoutView: View {
                 LogSessionHeader(
                     title: session.title,
                     meta: sessionMetaText,
-                    plannedRPE: plannedRPEForLog
+                    plannedRPE: plannedRPE(for: session)
                 )
 
                 LoggedWorkSection(
@@ -113,7 +118,7 @@ struct LogWorkoutView: View {
                     focusedField: $focusedLogField
                 )
 
-                EffortSection(rpe: $rpe, plannedRPE: plannedRPEForLog)
+                EffortSection(rpe: $rpe, plannedRPE: plannedRPE(for: session))
 
                 PainSection(painLevel: $painLevel)
 
@@ -121,9 +126,13 @@ struct LogWorkoutView: View {
 
                 NotesSection(notes: $notes)
 
+                if let saveError {
+                    SaveErrorText(text: saveError)
+                }
+
                 Button("Save log", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
-                    .disabled(!requiredLogFieldsAreValid)
+                    .disabled(!requiredLogFieldsAreValid || isSaving)
             }
             .navigationTitle("Log session")
             .navigationBarTitleDisplayMode(.inline)
@@ -140,137 +149,53 @@ struct LogWorkoutView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
-            .onAppear(perform: applyPlannedRPE)
         }
         .presentationBackground(AppTheme.background)
     }
 
-    /// Effort starts at what the plan asked for, so logging "as planned" is
-    /// one tap and a harder or easier session is a deliberate change.
-    private func applyPlannedRPE() {
-        guard !didApplyPlannedRPE else { return }
-        didApplyPlannedRPE = true
-        if (1...10).contains(plannedRPEForLog) {
-            rpe = plannedRPEForLog
-        }
-    }
-
     private func save() {
         focusedLogField = nil
-        guard requiredLogFieldsAreValid else { return }
+        guard requiredLogFieldsAreValid, !isSaving else { return }
+        isSaving = true
+        saveError = nil
 
-        let loggedPullUps = shouldLogPullUps
-        let loggedPushUps = shouldLogPushUps
-        let loggedPlankSeconds = shouldLogPlank
-        let savedPullUps = shouldLogPullUps ? parsedLogValue(pullUpsText, range: 0...300) ?? 0 : latestPullUps
-        let savedPushUps = shouldLogPushUps ? parsedLogValue(pushUpsText, range: 0...500) ?? 0 : latestPushUps
-        let savedPlankSeconds = shouldLogPlank ? parsedLogValue(plankSecondsText, range: 0...3_600) ?? 0 : latestPlankSeconds
-        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: howFelt)
-        let log = PerformanceLog(
-            sessionId: session.id,
-            pullUps: savedPullUps,
-            pushUps: savedPushUps,
-            plankSeconds: savedPlankSeconds,
-            loggedPullUps: loggedPullUps,
-            loggedPushUps: loggedPushUps,
-            loggedPlankSeconds: loggedPlankSeconds,
+        let entry = StrengthLogEntry(
+            pullUps: shouldLogPullUps ? parsedLogValue(pullUpsText, range: 0...300) ?? 0 : latestPullUps,
+            pushUps: shouldLogPushUps ? parsedLogValue(pushUpsText, range: 0...500) ?? 0 : latestPushUps,
+            plankSeconds: shouldLogPlank ? parsedLogValue(plankSecondsText, range: 0...3_600) ?? 0 : latestPlankSeconds,
+            loggedPullUps: shouldLogPullUps,
+            loggedPushUps: shouldLogPushUps,
+            loggedPlankSeconds: shouldLogPlank,
             rpe: rpe,
-            plannedRPE: plannedRPEForLog,
-            plannedEffortLabelAtLog: session.plannedEffortLabel,
-            plannedEffortReasonAtLog: session.plannedEffortReason,
             painLevel: painLevel,
-            fatigueLevel: fatigueLevel,
+            howFelt: howFelt,
             notes: notes
         )
-        modelContext.insert(log)
-        session.status = painLevel >= 4 || fatigueLevel >= 9 ? .deload : .completed
 
-        let outcome = TrainingEngine().score(
-            log: SessionLogInput(
-                completed: true,
-                pullUps: savedPullUps,
-                pushUps: savedPushUps,
-                plankSeconds: savedPlankSeconds,
-                loggedPullUps: loggedPullUps,
-                loggedPushUps: loggedPushUps,
-                loggedPlankSeconds: loggedPlankSeconds,
-                rpe: rpe,
-                painLevel: painLevel,
-                fatigueLevel: fatigueLevel
-            ),
-            plannedSession: nil
-        )
-        let rank = ranks.first ?? RankState()
-        if ranks.isEmpty { modelContext.insert(rank) }
-        applyScoreOutcome(outcome, to: rank)
-
-        if outcome.didTriggerDeload {
-            let coachPlan = CoachPlan(weekStart: Date(), summary: outcome.reason, source: .rules, validationStatus: .clamped)
-            modelContext.insert(coachPlan)
-            modelContext.insert(CoachDecision(planId: coachPlan.id, rationale: outcome.reason, safetyFlags: ["auto-deload"]))
-        }
-
+        let result: (log: PerformanceLog, outcome: ScoreOutcome)
         do {
-            try modelContext.save()
-            queueCoachVerdictRefresh(sourceLogID: log.id, logsIncludingSavedLog: previousLogs + [log])
-            queueAutoPlanAfterTraining(logsIncludingSavedLog: previousLogs + [log])
+            result = try recordStrengthLog(entry, for: session, in: modelContext)
         } catch {
-            // Keep the current UX quiet; failed saves leave the sheet without starting a coach refresh.
+            // Nothing was saved; keep the sheet open so the athlete can retry.
+            isSaving = false
+            saveError = "Could not save this log: \(error.localizedDescription)"
+            return
         }
-        dismiss()
-    }
 
-    private func queueCoachVerdictRefresh(sourceLogID: UUID, logsIncludingSavedLog: [PerformanceLog]) {
-        UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
-        let request = makeCoachRequest(
-            profile: profile,
-            modelID: selectedModelID,
-            logs: logsIncludingSavedLog,
-            sessions: sessions,
-            prescriptions: prescriptions,
-            raceGoal: raceGoals.first,
-            runLogs: runLogs,
-            weekStart: rollingPlanStart()
-        )
-
+        let sourceLogID = result.log.id
+        let didTriggerDeload = result.outcome.didTriggerDeload
         Task {
-            await refreshCoachVerdict(request: request, sourceLogID: sourceLogID)
-        }
-    }
-
-    private func refreshCoachVerdict(request: CoachPlanRequest, sourceLogID: UUID) async {
-        do {
-            let response = try await LocalCoachClient(endpointString: endpoint).generateVerdict(request: request)
-            modelContext.insert(CoachVerdict(response: response, sourceLogId: sourceLogID))
-            try modelContext.save()
-            UserDefaults.standard.set(false, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
-        } catch {
-            UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
-        }
-    }
-
-    private func queueAutoPlanAfterTraining(logsIncludingSavedLog: [PerformanceLog]) {
-        let request = makeCoachRequest(
-            profile: profile,
-            modelID: selectedModelID,
-            logs: logsIncludingSavedLog,
-            sessions: sessions,
-            prescriptions: prescriptions,
-            raceGoal: raceGoals.first,
-            runLogs: runLogs,
-            weekStart: rollingPlanStart()
-        )
-
-        Task {
-            _ = await AutoPlanCoordinator.trigger(
+            await afterTrainingLogged(
                 endpoint: endpoint,
-                source: .postTraining,
-                reason: "Strength training was completed.",
-                request: request,
                 profile: profile,
+                modelID: selectedModelID,
+                sourceLogId: sourceLogID,
+                didTriggerDeload: didTriggerDeload,
+                reason: "Strength training was completed.",
                 in: modelContext
             )
         }
+        dismiss()
     }
 
     private func parsedLogValue(_ text: String, range: ClosedRange<Int>) -> Int? {
@@ -280,7 +205,243 @@ struct LogWorkoutView: View {
     }
 }
 
-// MARK: - Header
+/// Everything that follows a saved log: reminders, the coach read, and a
+/// post-training replan. When pain or a "very weak" feel asked for a deload
+/// and the coach did not deliver a new plan (offline, busy, or skipped), the
+/// next planned strength session is cut locally so the promise holds.
+@MainActor
+func afterTrainingLogged(
+    endpoint: String,
+    profile: UserProfile,
+    modelID: String,
+    sourceLogId: UUID?,
+    didTriggerDeload: Bool,
+    reason: String,
+    in modelContext: ModelContext
+) async {
+    await refreshWorkoutReminders(in: modelContext)
+    await CoachReadRefresher.refresh(endpoint: endpoint, profile: profile, modelID: modelID, sourceLogId: sourceLogId, in: modelContext)
+    var appliedNewPlan = false
+    if let request = try? makeCoachRequestFromStore(profile: profile, modelID: modelID, in: modelContext) {
+        let outcome = await AutoPlanCoordinator.trigger(
+            endpoint: endpoint,
+            source: .postTraining,
+            reason: reason,
+            request: request,
+            profile: profile,
+            in: modelContext
+        )
+        appliedNewPlan = outcome.appliedNewPlan
+    }
+    if didTriggerDeload, !appliedNewPlan {
+        _ = try? applyLocalDeload(in: modelContext)
+        await refreshWorkoutReminders(in: modelContext)
+    }
+}
+
+/// Logs a run by hand (no Garmin, watch not worn) or adds RPE and feel to a
+/// run Garmin already completed.
+struct LogRunView: View {
+    enum Mode {
+        case log(WorkoutSession)
+        case rate(RunLog, WorkoutSession?)
+    }
+
+    private enum RunField: Hashable {
+        case distance
+        case minutes
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    // Configuration, not state: fixed per build flavor (see LocalCoachClient).
+    private let endpoint = LocalCoachClient.defaultEndpointString
+    @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
+
+    var mode: Mode
+    var profile: UserProfile
+
+    @FocusState private var focusedField: RunField?
+    @State private var distanceText: String
+    @State private var minutesText = ""
+    @State private var rpe: Int
+    @State private var howFelt = 3
+    @State private var notes = ""
+    @State private var isSaving = false
+    @State private var saveError: String?
+
+    init(mode: Mode, profile: UserProfile) {
+        self.mode = mode
+        self.profile = profile
+        switch mode {
+        case .log(let session):
+            let planned = session.plannedDistanceKm
+            _distanceText = State(initialValue: planned > 0 ? planned.formatted(.number.precision(.fractionLength(0...1)).grouping(.never)) : "")
+            _rpe = State(initialValue: initialLoggedRPE(for: session))
+        case .rate(let log, let session):
+            _distanceText = State(initialValue: "")
+            _rpe = State(initialValue: log.rpe > 0 ? log.rpe : session.map(initialLoggedRPE(for:)) ?? 4)
+            _howFelt = State(initialValue: log.rpe > 0 ? log.feelScore : 3)
+        }
+    }
+
+    private var isLogMode: Bool {
+        if case .log = mode { return true }
+        return false
+    }
+
+    private var session: WorkoutSession? {
+        switch mode {
+        case .log(let session): session
+        case .rate(_, let session): session
+        }
+    }
+
+    private var parsedDistanceKm: Double? {
+        let trimmed = distanceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return 0 }
+        guard let value = Double(trimmed.replacingOccurrences(of: ",", with: ".")), value >= 0, value <= 400 else { return nil }
+        return value
+    }
+
+    private var parsedMinutes: Int? {
+        let trimmed = minutesText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return 0 }
+        guard let value = Int(trimmed), value >= 0, value <= 3_000 else { return nil }
+        return value
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScreenBackground {
+                if let session {
+                    LogSessionHeader(
+                        title: session.title,
+                        meta: session.scheduledDate.formatted(.dateTime.weekday(.wide).day().month(.wide)),
+                        plannedRPE: plannedRPE(for: session)
+                    )
+                }
+
+                if isLogMode {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Run")
+                            .font(.trail(17, .semibold, relativeTo: .headline))
+                            .foregroundStyle(AppTheme.text)
+                        VStack(spacing: 0) {
+                            runField(title: "Distance", text: $distanceText, suffix: "km", keyboard: .decimalPad, field: .distance)
+                            Hairline()
+                            runField(title: "Moving time", text: $minutesText, suffix: "min", keyboard: .numberPad, field: .minutes)
+                        }
+                        .padding(.horizontal, 14)
+                        .card(padding: 0)
+                    }
+                }
+
+                EffortSection(rpe: $rpe, plannedRPE: session.map(plannedRPE(for:)) ?? 0)
+
+                FeelSection(howFelt: $howFelt)
+
+                if isLogMode {
+                    NotesSection(notes: $notes)
+                }
+
+                if let saveError {
+                    SaveErrorText(text: saveError)
+                }
+
+                Button(isLogMode ? "Save run" : "Save rating", action: save)
+                    .buttonStyle(PrimaryActionButtonStyle())
+                    .disabled(isSaving || parsedDistanceKm == nil || parsedMinutes == nil)
+                    .accessibilityIdentifier("save-run-log-button")
+            }
+            .navigationTitle(isLogMode ? "Log run" : "Rate run")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(AppTheme.muted)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        focusedField = nil
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .presentationBackground(AppTheme.background)
+    }
+
+    private func runField(
+        title: String,
+        text: Binding<String>,
+        suffix: String,
+        keyboard: UIKeyboardType,
+        field: RunField
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.trail(16, .medium, relativeTo: .body))
+                .foregroundStyle(AppTheme.text)
+            Spacer(minLength: 8)
+            TextField("–", text: text)
+                .keyboardType(keyboard)
+                .multilineTextAlignment(.trailing)
+                .font(.trail(22, .bold, relativeTo: .title2).monospacedDigit())
+                .foregroundStyle(AppTheme.text)
+                .frame(width: 90)
+                .focused($focusedField, equals: field)
+                .accessibilityLabel(title)
+            Text(suffix)
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
+                .frame(width: 28, alignment: .leading)
+        }
+        .frame(minHeight: 60)
+    }
+
+    private func save() {
+        focusedField = nil
+        guard !isSaving, let distanceKm = parsedDistanceKm, let minutes = parsedMinutes else { return }
+        isSaving = true
+        saveError = nil
+        let didTriggerDeload: Bool
+        do {
+            switch mode {
+            case .log(let session):
+                let status = try recordManualRun(
+                    RunLogEntry(distanceKm: distanceKm, movingSeconds: minutes * 60, rpe: rpe, howFelt: howFelt, notes: notes),
+                    for: session,
+                    in: modelContext
+                )
+                didTriggerDeload = status == .deload
+            case .rate(let log, let session):
+                try rateRun(log, rpe: rpe, howFelt: howFelt, session: session, in: modelContext)
+                didTriggerDeload = ReadinessScale.fatigueLevel(fromHowFelt: howFelt) >= 9
+            }
+        } catch {
+            isSaving = false
+            saveError = "Could not save this run: \(error.localizedDescription)"
+            return
+        }
+
+        Task {
+            await afterTrainingLogged(
+                endpoint: endpoint,
+                profile: profile,
+                modelID: selectedModelID,
+                sourceLogId: nil,
+                didTriggerDeload: didTriggerDeload,
+                reason: isLogMode ? "A run was logged." : "Run feedback was added.",
+                in: modelContext
+            )
+        }
+        dismiss()
+    }
+}
+
+// MARK: - Header and errors
 
 private struct LogSessionHeader: View {
     var title: String
@@ -308,6 +469,22 @@ private struct LogSessionHeader: View {
                 .accessibilityElement(children: .combine)
             }
         }
+    }
+}
+
+/// A failed save keeps the sheet open and says why, in the marker red.
+private struct SaveErrorText: View {
+    var text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+        }
+        .font(.trail(14, .semibold, relativeTo: .subheadline))
+        .foregroundStyle(AppTheme.markerRedText)
     }
 }
 
@@ -490,7 +667,8 @@ private struct LogStepperRow: View {
 
 // MARK: - Scales
 
-/// A row of tappable values; the selected one is filled granite.
+/// A row of tappable values; the selected one is filled granite. Each value
+/// is its own button, so VoiceOver can pick any value directly.
 private struct ScaleSelector<Cell: View>: View {
     var accessibilityName: String
     var values: [Int]

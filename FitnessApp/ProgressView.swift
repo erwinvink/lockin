@@ -44,7 +44,9 @@ struct ProgressView: View {
                 if let raceGoal = raceGoals.first {
                     RaceCountdownHero(raceGoal: raceGoal)
                 }
-                if let snapshot = snapshots.first {
+                // Only today's or yesterday's wellness reads as current
+                // readiness; older snapshots would mislead.
+                if let snapshot = freshReadinessSnapshot(from: snapshots) {
                     ReadinessStrip(snapshot: snapshot, history: Array(snapshots.prefix(14)))
                 }
                 if raceGoals.first != nil || !runLogs.isEmpty {
@@ -267,7 +269,7 @@ private struct RunningSection: View {
 
     // Garmin-completed runs count toward volume immediately; feedback can land later.
     private var confirmedLogs: [RunLog] {
-        confirmedGarminRunLogs(from: runLogs)
+        confirmedRunLogs(from: runLogs)
     }
 
     // Calendar weeks (Garmin convention), intentionally not the coach's rolling plan window.

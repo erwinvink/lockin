@@ -12,6 +12,8 @@ struct SettingsView: View {
     private let coachEndpoint = LocalCoachClient.defaultEndpointString
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
     @AppStorage("garminConnectionActive") private var garminConnectionActive = false
+    @AppStorage("autoPlanLastContextSyncAt") private var autoPlanLastContextSyncAt: Double = 0
+    @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @State private var isShowingReminderPermissionAlert = false
     @State private var isShowingResetConfirmation = false
     @State private var resetError: String?
@@ -41,7 +43,7 @@ struct SettingsView: View {
                     onLongRunDayChange: saveLongRunDay,
                     onGoalChange: saveRaceGoalEdits
                 )
-                GarminCard(endpoint: coachEndpoint, userId: profile.id.uuidString)
+                GarminCard(endpoint: coachEndpoint, userId: profile.id.uuidString, profile: profile)
                 ReminderSettingsCard(
                     profile: profile,
                     onReminderToggle: saveReminderPreference,
@@ -84,12 +86,38 @@ struct SettingsView: View {
                 Text("Turn on notifications for Lockin in iOS Settings to use reminders.")
             }
             .onAppear(perform: refreshEnabledReminders)
+            .onDisappear(perform: replanIfScheduleChanged)
         }
     }
 
     private func saveTrainingDays(_ days: Set<TrainingWeekday>) {
         profile.trainingDays = days
         try? modelContext.save()
+        PlanRefreshRequest.mark()
+    }
+
+    /// Schedule edits ask for one forced replan when the athlete leaves
+    /// Profile, so sessions on de-selected days don't linger until tonight.
+    private func replanIfScheduleChanged() {
+        guard PlanRefreshRequest.consume() else { return }
+        Task {
+            guard let request = try? makeCoachRequestFromStore(profile: profile, modelID: selectedModelID, in: modelContext) else {
+                PlanRefreshRequest.mark()
+                return
+            }
+            let outcome = await AutoPlanCoordinator.trigger(
+                endpoint: coachEndpoint,
+                source: .manual,
+                reason: "Training days changed.",
+                force: true,
+                request: request,
+                profile: profile,
+                in: modelContext
+            )
+            if PlanRefreshRequest.shouldRetry(after: outcome) {
+                PlanRefreshRequest.mark()
+            }
+        }
     }
 
     private func createRaceGoal() {
@@ -102,6 +130,7 @@ struct SettingsView: View {
             profile.longRunDay = latestDay(in: profile.runningDays)
         }
         try? modelContext.save()
+        PlanRefreshRequest.mark()
     }
 
     private func removeRaceGoal() {
@@ -109,6 +138,7 @@ struct SettingsView: View {
             modelContext.delete(goal)
         }
         try? modelContext.save()
+        PlanRefreshRequest.mark()
     }
 
     private func saveRunningDays(_ days: Set<TrainingWeekday>) {
@@ -118,15 +148,18 @@ struct SettingsView: View {
             profile.longRunDay = latestDay(in: days)
         }
         try? modelContext.save()
+        PlanRefreshRequest.mark()
     }
 
     private func saveLongRunDay(_ day: TrainingWeekday) {
         profile.longRunDay = day
         try? modelContext.save()
+        PlanRefreshRequest.mark()
     }
 
     private func saveRaceGoalEdits() {
         try? modelContext.save()
+        PlanRefreshRequest.mark()
     }
 
     private func latestDay(in days: Set<TrainingWeekday>) -> TrainingWeekday? {
@@ -193,6 +226,10 @@ struct SettingsView: View {
             // pushed watch workouts still need cleanup on the Garmin side.
             garminLastSyncAt = 0
             garminConnectionActive = false
+            // The next profile gets its first plan right away, not after the
+            // 30-minute app-active throttle.
+            autoPlanLastContextSyncAt = 0
+            _ = PlanRefreshRequest.consume()
         } catch {
             resetError = error.localizedDescription
         }
@@ -435,8 +472,10 @@ private struct RaceGoalEditor: View {
 private struct GarminCard: View {
     var endpoint: String
     var userId: String
+    var profile: UserProfile
 
     @Environment(\.modelContext) private var modelContext
+    @AppStorage("coachModelID") private var selectedModelID = CoachModelCatalog.defaultModelID
     @AppStorage("garminLastSyncAt") private var garminLastSyncAt: Double = 0
     @AppStorage("garminConnectionActive") private var garminConnectionActive = false
     @State private var status: GarminStatusResponse?
@@ -733,8 +772,13 @@ private struct GarminCard: View {
             do {
                 let ingested = try await performGarminSync(endpoint: endpoint, userId: userId, in: modelContext)
                 garminLastSyncAt = Date().timeIntervalSince1970
+                garminConnectionActive = true
+                await refreshWorkoutReminders(in: modelContext)
                 if ingested.completedRuns > 0 || ingested.partialRuns > 0 || ingested.importedRuns > 0 {
-                    UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+                    // Don't hold the "Sync now" result for the coach call.
+                    Task {
+                        await CoachReadRefresher.refresh(endpoint: endpoint, profile: profile, modelID: selectedModelID, in: modelContext)
+                    }
                 }
                 var parts: [String] = []
                 if ingested.completedRuns > 0 {

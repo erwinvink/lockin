@@ -23,7 +23,7 @@ Env vars (read from `.env` in this directory, real env wins):
 | --- | --- | --- |
 | `GARMIN_EMAIL` | — | Garmin Connect account email |
 | `GARMIN_PASSWORD` | — | Garmin Connect account password |
-| `GARMIN_DEFAULT_USER_ID` | `default` | Legacy/default user id for routes without `userId` |
+| `GARMIN_DEFAULT_USER_ID` | `default` | Legacy/default user id for routes without `userId` (token files in the root of `GARMIN_TOKENS_DIR`) |
 | `GARMIN_TOKENS_DIR` | `./tokens` | Where OAuth tokens are persisted (relative paths resolve against this directory) |
 | `PORT` | `8788` | Listen port (used by `python main.py`) |
 
@@ -55,9 +55,23 @@ uvicorn main:app --port 8788
 
 ## API
 
+Every route takes an optional `userId`: empty means the default user (CLI
+login, root token files); otherwise it must match `[A-Za-z0-9_-]{1,120}`
+(the app sends its profile UUID) or the route answers `400`. Token files for a
+user live in `GARMIN_TOKENS_DIR/users/<userId>`, and the resolved path is
+checked to stay inside `users/` before anything is read, written or removed.
+
 - `POST /connect` body `{"userId","email","password","mfaCode"?}` → status
   with `state: "connected" | "mfa_required" | "not_connected"`. If MFA is
-  required, call it again with the same credentials plus `mfaCode`.
+  required, call it again with the same credentials plus `mfaCode` within 5
+  minutes: the sidecar always does a fresh credential login (no stored
+  tokens, so the password is really checked and a stale token can't block a
+  reconnect) with `return_on_mfa=True`, keeps that login per user (without
+  the password), and finishes it with `resume_login(state, code)`, so the code
+  Garmin emailed for the first call is the one that is checked (a new login
+  would void it). A wrong code keeps the login open for another try. A code
+  with no pending login (expired, sidecar restarted) starts a new login and
+  tries the code at once, which works for authenticator-app codes.
 - `POST /disconnect` body `{"userId"}` → drops the cached client and removes
   that user's token directory.
 - `GET /status?userId=...` → `{"ok": true, "userId": str, "loggedIn": bool,
@@ -68,8 +82,12 @@ uvicorn main:app --port 8788
   hammering Garmin SSO.
 - `GET /wellness?userId=...&days=N` (default 7, max 30, clamped) → list of
   `{"date","sleepScore","sleepSeconds","hrvStatus","hrvMs","bodyBattery",
-  "trainingReadiness","restingHr"}` — one per calendar day, **most recent
-  first**. Missing metrics (older watch, no data) degrade to `0`/`""`.
+  "trainingReadiness","restingHr","unavailableMetrics"?}` — one per calendar
+  day, **most recent first**. Metrics Garmin has no data for (204/404, e.g.
+  an older watch without readiness) degrade to `0`/`""`. When a metric's
+  Garmin call FAILED (5xx, timeout, auth, unexpected error) it also shows
+  `0`/`""`, but its field name is listed in `unavailableMetrics` (only present
+  when non-empty), so consumers must not store it as a real value.
   Returns `[]` when not logged in. **The list may be shorter than `days`**:
   when Garmin throttles (first 429) or fails 2 connection-class calls in a
   row, the response is truncated to the complete rows fetched so far —
@@ -82,9 +100,15 @@ uvicorn main:app --port 8788
 - `POST /workouts/push` body `{"userId","workouts":[{"sessionId","title","date","kind",
   "distanceKm","durationMinutes","target":{"type","low","high"},"notes"}]}` →
   per item `{"sessionId","garminWorkoutId","scheduled","error"}`. Creates a
-  structured workout (hard kinds get warmup/main/cooldown; easy/recovery one
+  structured workout (hard kinds get warmup/main/cooldown carved out of the
+  planned distance or duration, which is the whole session; easy/recovery one
   steady step) and schedules it on `date`. Pace targets are sec/km in, m/s
-  speed zones out. One failure never aborts the batch.
+  speed zones out. One failure never aborts the batch. Pushes are idempotent:
+  each created workout's description ends with `lockin:<sessionId>:<content
+  fingerprint>`; before creating, the sidecar lists the user's workouts and
+  reuses one with the same tag (scheduling it only if it is not on the
+  calendar for `date` yet), and deletes a same-session leftover with outdated
+  content. Pushes for one user run one at a time.
 - `POST /workouts/delete` body `{"userId","workoutIds":[...]}` → per id
   `{"workoutId","deleted","error"}`. Already-deleted ids count as deleted.
 
@@ -119,6 +143,10 @@ Garmin.get_activities_by_date(start, end, activitytype=None, sortorder=None)
 Garmin.upload_workout(workout_json)    # POST workout-service/workout -> {workoutId, ...}
 Garmin.schedule_workout(workout_id, "YYYY-MM-DD")
 Garmin.delete_workout(workout_id)
+Garmin.get_workouts(start, limit)      # workout library page (tag lookup)
+Garmin.get_scheduled_workouts(year, month)  # {calendarItems: [{workoutId, date, ...}]}
+Garmin.login() with return_on_mfa=True # -> ("needs_mfa", state); MFA session stays on the object
+Garmin.resume_login(state, code)       # finishes that login; tokens via Garmin.client.dump(dir)
 # exceptions: GarminConnectAuthenticationError, GarminConnectConnectionError,
 #             GarminConnectTooManyRequestsError, HTTPError
 ```
@@ -134,3 +162,6 @@ faster sec/km bound becomes the *higher* m/s speed bound).
 ```bash
 .venv/bin/python -m pytest
 ```
+
+The tests use a fake Garmin client and a per-test temporary
+`GARMIN_TOKENS_DIR`; they never read or write real tokens.

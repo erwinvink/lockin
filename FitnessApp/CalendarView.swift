@@ -7,8 +7,10 @@ struct CalendarView: View {
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \PerformanceLog.completedAt, order: .reverse) private var logs: [PerformanceLog]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
+    @Query(sort: \UserProfile.createdAt) private var profiles: [UserProfile]
     @State private var historyPage = 0
     @State private var selectedSession: WorkoutSession?
+    @State private var ratingLog: RunLog?
 
     private let historyPageSize = 25
 
@@ -69,7 +71,7 @@ struct CalendarView: View {
     private func weekVolumeText(for week: HistoryWeek) -> String? {
         let calendar = Calendar.current
         guard let interval = calendar.dateInterval(of: .weekOfYear, for: week.weekStart) else { return nil }
-        let confirmed = confirmedGarminRunLogs(from: runLogs)
+        let confirmed = confirmedRunLogs(from: runLogs)
             .filter { interval.start <= $0.completedAt && $0.completedAt < interval.end }
         let km = confirmed.reduce(0) { $0 + $1.distanceKm }
         guard km > 0 else { return nil }
@@ -103,7 +105,12 @@ struct CalendarView: View {
                                     VStack(spacing: 0) {
                                         Hairline()
                                         ForEach(Array(week.sessions.enumerated()), id: \.element.id) { index, session in
-                                            CalendarSessionRow(session: session, log: logForSession(session), runLog: runLogForSession(session))
+                                            CalendarSessionRow(
+                                                session: session,
+                                                log: logForSession(session),
+                                                runLog: runLogForSession(session),
+                                                onRate: rateAction(for: runLogForSession(session))
+                                            )
                                             if index < week.sessions.count - 1 {
                                                 Hairline()
                                             }
@@ -143,6 +150,11 @@ struct CalendarView: View {
             .onChange(of: historySessions.count) { _, _ in
                 historyPage = min(historyPage, historyTotalPages - 1)
             }
+            .sheet(item: $ratingLog) { log in
+                if let profile = profiles.first {
+                    LogRunView(mode: .rate(log, sessions.first { $0.id == log.sessionId }), profile: profile)
+                }
+            }
             .sheet(item: $selectedSession) { session in
                 FutureWorkoutPreviewSheet(
                     session: session,
@@ -171,6 +183,11 @@ struct CalendarView: View {
         logs.first { $0.sessionId == session.id }
     }
 
+    private func rateAction(for runLog: RunLog?) -> (() -> Void)? {
+        guard let runLog, runLog.rpe == 0, profiles.first != nil else { return nil }
+        return { ratingLog = runLog }
+    }
+
     private func runLogForSession(_ session: WorkoutSession) -> RunLog? {
         guard session.isRun else { return nil }
         return runLogs.first { $0.sessionId == session.id }
@@ -181,6 +198,8 @@ private struct CalendarSessionRow: View {
     var session: WorkoutSession
     var log: PerformanceLog?
     var runLog: RunLog?
+    /// Set for a run that has no RPE or feel yet (Garmin completed it).
+    var onRate: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -208,10 +227,17 @@ private struct CalendarSessionRow: View {
                 }
             }
             Spacer(minLength: 8)
+            if let onRate {
+                Button("Rate", action: onRate)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Rate \(session.title)")
+            }
             WorkoutStatusIcon(status: session.status)
         }
         .padding(.vertical, 11)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: onRate == nil ? .combine : .contain)
     }
 
     private var runDistanceSummary: String {

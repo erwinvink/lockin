@@ -85,24 +85,52 @@ const defaultModelPrices: Array<[RegExp, string, ModelPrice]> = [
   [/^gpt-5\.5(?:-|$)/, "gpt-5.5", { inputPerMillion: 2.5, cachedInputPerMillion: 0.25, outputPerMillion: 15.0 }]
 ];
 
+// One Responses call may not run longer than this (OPENAI_TIMEOUT_MS). The
+// auto-plan "stuck in generating" cutoff in coach/auto-plan.ts assumes it.
+export const DEFAULT_OPENAI_TIMEOUT_MS = 5 * 60_000;
+
+export type OpenAIFetchOptions = {
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+};
+
+export function openAITimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.OPENAI_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_OPENAI_TIMEOUT_MS;
+}
+
 export async function fetchOpenAIResponse(
   apiKey: string,
   body: Record<string, unknown>,
-  telemetry: OpenAIRequestTelemetry
+  telemetry: OpenAIRequestTelemetry,
+  options: OpenAIFetchOptions = {}
 ): Promise<OpenAIResponseFetchResult> {
   const id = randomUUID();
   const startedAt = Date.now();
   const request = summarizeOpenAIRequestBody(body);
+  const timeoutMs = options.timeoutMs ?? openAITimeoutMs();
+  const fetchImpl = options.fetchImpl ?? fetch;
   await writeTelemetryEvent(baseEvent("openai_response_start", id, telemetry, { request }));
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  // Race the whole exchange (headers and body) against the budget, so a
+  // stalled connection can't hold a coach request or an auto-plan forever.
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort(new Error("OpenAI request timed out"));
+      resolve("timeout");
+    }, timeoutMs);
+  });
+  const exchange = async (): Promise<OpenAIResponseFetchResult> => {
+    const response = await fetchImpl("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,
         "content-type": "application/json"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: controller.signal
     });
 
     if (!response.ok) {
@@ -136,6 +164,26 @@ export async function fetchOpenAIResponse(
     );
 
     return { ok: true, status: response.status, json };
+  };
+
+  try {
+    const exchanging = exchange();
+    exchanging.catch(() => undefined); // a late rejection after a timeout is expected
+    const outcome = await Promise.race([exchanging, timedOut]);
+    if (outcome === "timeout") {
+      const message = `OpenAI request timed out after ${Math.round(timeoutMs / 1000)}s.`;
+      await writeTelemetryEvent(
+        baseEvent("openai_response_finish", id, telemetry, {
+          request,
+          durationMs: Date.now() - startedAt,
+          httpStatus: 504,
+          ok: false,
+          error: message
+        })
+      );
+      return { ok: false, status: 504, body: JSON.stringify({ error: message }) };
+    }
+    return outcome;
   } catch (error) {
     await writeTelemetryEvent(
       baseEvent("openai_response_finish", id, telemetry, {
@@ -146,6 +194,8 @@ export async function fetchOpenAIResponse(
       })
     );
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -216,6 +216,7 @@ export function validateWeeklyPlan(
     sessionEffortLabels,
     usefulGoalWork,
     options.allowProgressionHoldForRunning === true,
+    maximumSessionCount,
     messages
   );
 
@@ -309,6 +310,7 @@ function validateWeekEffortPolicy(
   sessionEffortLabels: EffortLabel[],
   usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
   allowProgressionHoldForRunning: boolean,
+  maximumSessionCount: number,
   messages: string[]
 ) {
   const normalProgressionStates = new Set(["building", "plateau", "insufficient_history"]);
@@ -335,6 +337,10 @@ function validateWeekEffortPolicy(
   }
 
   if (allowProgressionHoldForRunning) return;
+  // No session can be scheduled this week (e.g. the only training day is
+  // today), so there is nowhere to put the earned progression: it carries
+  // over to the next week instead of failing the plan.
+  if (maximumSessionCount === 0) return;
 
   for (const { metric, label, latestTarget } of flatGoalMetricsRequiringProgression(context)) {
     const prescribed = usefulGoalWork[metric];

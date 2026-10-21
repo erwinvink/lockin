@@ -25,6 +25,8 @@ export type PlannedEffort = {
 export type CoachRequest = {
   userId?: string;
   model: string;
+  /** The athlete's IANA time zone (e.g. "Europe/Amsterdam"); optional for old clients. */
+  timeZone?: string;
   baseline: { pullUps: number; pushUps: number; plankSeconds: number };
   goals: { pullUps: number; pushUps: number; plankSeconds: number };
   profileNotes: string;
@@ -154,7 +156,10 @@ export type CoachContext = {
     missed: number;
     missedLast14Days?: number;
     deload: number;
+    /** Sessions from before today still marked planned (overdue). */
     pending?: number;
+    /** Today's sessions not done yet: open all day, outside the score. */
+    pendingToday?: number;
     adherenceScorePct?: number | null;
   };
   plannedWork: {
@@ -181,7 +186,7 @@ export type CoachContext = {
     riskFlags: string[];
   };
   running?: RunningContext;
-  garmin?: { wellness: GarminWellnessDay[] };
+  garmin?: { wellness: CoachWellnessDay[] };
 };
 
 export type PlannedGoalTrend = {
@@ -354,6 +359,7 @@ export type RunningRequest = {
   recentRuns: RunSummary[];
 };
 
+/** One wellness day as the Garmin sidecar sends it (and /garmin/snapshot passes on). */
 export type GarminWellnessDay = {
   date: string;
   sleepScore: number;
@@ -363,6 +369,20 @@ export type GarminWellnessDay = {
   bodyBattery: number;
   trainingReadiness: number;
   restingHr: number;
+  /** Fields whose Garmin call failed; their 0/"" values are placeholders, not data. */
+  unavailableMetrics?: string[];
+};
+
+/** A wellness day inside the coach context: missing or failed metrics are null. */
+export type CoachWellnessDay = {
+  date: string;
+  sleepScore: number | null;
+  sleepSeconds: number | null;
+  hrvStatus: string | null;
+  hrvMs: number | null;
+  bodyBattery: number | null;
+  trainingReadiness: number | null;
+  restingHr: number | null;
 };
 
 export type RunningContext = RunningRequest & { weeksToRace: number };

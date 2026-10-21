@@ -10,7 +10,7 @@ import {
 } from "./coach/planner/coach-temperament";
 import { coachReferencePoints, computeTrainingSignals } from "./coach/planner/compute-training-signals";
 import { validateWeeklyPlan } from "./coach/planner/validate-week-plan";
-import { validateRunningWeek } from "./coach/planner/validate-running-week";
+import { runningDayAvailability, validateRunningWeek } from "./coach/planner/validate-running-week";
 import {
   fixedRunningLoadSupportsStrengthMaintenance,
   validateCombinedWeek
@@ -24,17 +24,19 @@ import {
   markAutoPlanFailed,
   markAutoPlanGenerated,
   prepareAutoPlanTrigger,
-  refreshRequestForNightly,
+  runDueAutoPlans,
   toAutoPlanStatus,
   type AutoPlanGeneratedPlan,
   type AutoPlanSource,
   type AutoPlanTrigger
 } from "./coach/auto-plan";
 import { buildCoachChatResponse, normalizeCoachChatMessages, type CoachChatMessage } from "./coach/chat";
-import { connectGarmin, deleteWorkouts, disconnectGarmin, garminSnapshot, garminStatus, pushWorkouts } from "./garmin/garmin-client";
-import { GarminSyncInputError, getGarminSyncStatus, retryGarminSync, submitGarminSyncPlan } from "./garmin/garmin-sync";
+import { appTokenFromEnv, isAuthorizedAppRequest } from "./app-auth";
+import { createGarminEnricher } from "./garmin/garmin-enrichment";
+import { createGarminRouteHandler } from "./garmin/garmin-routes";
+import { GarminSyncInputError } from "./garmin/garmin-sync";
 import { GarminSyncStore } from "./garmin/garmin-sync-store";
-import { defaultCoachModel, normalizeRequestedModel, pickTextModelIDs, withDefaultCoachModel } from "./model-selection";
+import { defaultCoachModel, filterAllowedModels, pickTextModelIDs, resolveCoachModel, withDefaultCoachModel } from "./model-selection";
 import { fetchOpenAIResponse, recordCoachValidationFailure, type OpenAIRequestTelemetry } from "./openai-telemetry";
 import { createLockinApiHandler } from "./storage/lockin-api";
 import { LockinStore } from "./storage/lockin-store";
@@ -47,6 +49,12 @@ const garminSyncStore = new GarminSyncStore();
 const autoPlanStore = new AutoPlanStore();
 const lockinStore = new LockinStore();
 const handleLockinApi = createLockinApiHandler(lockinStore);
+const handleGarminRoutes = createGarminRouteHandler({ syncStore: garminSyncStore });
+const enrichWithGarmin = createGarminEnricher();
+const appToken = appTokenFromEnv(process.env);
+if (!appToken) {
+  console.warn("LOCKIN_APP_TOKEN is not set: every proxy route is open to anyone who can reach this server.");
+}
 
 createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const startedAt = Date.now();
@@ -54,7 +62,16 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     console.log(`${req.method} ${req.url} -> ${res.statusCode} (${Date.now() - startedAt}ms)`);
   });
   try {
+    if (!isAuthorizedAppRequest(req, appToken)) {
+      writeJSON(res, 401, { error: "missing or invalid app token" });
+      return;
+    }
+
     if (await handleLockinApi(req, res)) {
+      return;
+    }
+
+    if (await handleGarminRoutes(req, res)) {
       return;
     }
 
@@ -99,11 +116,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const payload = JSON.parse(await readBody(req)) as CoachRequest;
-      const model = normalizeRequestedModel(payload.model);
-      if (!model) {
-        writeJSON(res, 400, { error: "model is required" });
-        return;
-      }
+      const model = resolveCoachModel(payload.model);
 
       const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
       const trainingSignals = computeTrainingSignals(context);
@@ -149,11 +162,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       }
 
       const payload = JSON.parse(await readBody(req)) as CoachRequest;
-      const model = normalizeRequestedModel(payload.model);
-      if (!model) {
-        writeJSON(res, 400, { error: "model is required" });
-        return;
-      }
+      const model = resolveCoachModel(payload.model);
 
       if (!payload.running) {
         writeJSON(res, 400, { error: "running goal is required for /generate-week" });
@@ -303,71 +312,6 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       return;
     }
 
-    if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/status") {
-      writeJSON(res, 200, await garminStatus(fetch, { userId: queryValue(req.url, "userId") }));
-      return;
-    }
-
-    if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/snapshot") {
-      writeJSON(res, 200, await garminSnapshot(parseSinceDays(req.url), fetch, { userId: queryValue(req.url, "userId") }));
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/garmin/connect") {
-      const payload = JSON.parse(await readBody(req)) as { userId?: unknown; email?: unknown; password?: unknown; mfaCode?: unknown };
-      writeJSON(res, 200, await connectGarmin({
-        userId: typeof payload.userId === "string" ? payload.userId : "",
-        email: typeof payload.email === "string" ? payload.email : "",
-        password: typeof payload.password === "string" ? payload.password : "",
-        mfaCode: typeof payload.mfaCode === "string" ? payload.mfaCode : undefined
-      }));
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/garmin/disconnect") {
-      const payload = JSON.parse(await readBody(req)) as { userId?: unknown };
-      writeJSON(res, 200, await disconnectGarmin(typeof payload.userId === "string" ? payload.userId : ""));
-      return;
-    }
-
-    if (req.method === "GET" && req.url?.split("?")[0] === "/garmin/sync-status") {
-      writeJSON(res, 200, await getGarminSyncStatus(garminSyncStore, queryValue(req.url, "userId")));
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/garmin/sync-plan") {
-      writeJSON(res, 200, await submitGarminSyncPlan(garminSyncStore, JSON.parse(await readBody(req))));
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/garmin/retry-sync") {
-      const payload = JSON.parse(await readBody(req)) as { userId?: unknown };
-      writeJSON(res, 200, await retryGarminSync(garminSyncStore, typeof payload.userId === "string" ? payload.userId : ""));
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/garmin/push-workouts") {
-      const payload = JSON.parse(await readBody(req)) as { workouts?: unknown; userId?: unknown };
-      if (!Array.isArray(payload?.workouts)) {
-        writeJSON(res, 400, { error: "workouts array is required" });
-        return;
-      }
-
-      writeJSON(res, 200, await pushWorkouts(payload.workouts, fetch, { userId: typeof payload.userId === "string" ? payload.userId : undefined }));
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/garmin/delete-workouts") {
-      const payload = JSON.parse(await readBody(req)) as { workoutIds?: unknown; userId?: unknown };
-      if (!Array.isArray(payload?.workoutIds)) {
-        writeJSON(res, 400, { error: "workoutIds array is required" });
-        return;
-      }
-
-      writeJSON(res, 200, await deleteWorkouts(payload.workoutIds, fetch, { userId: typeof payload.userId === "string" ? payload.userId : undefined }));
-      return;
-    }
-
     if (req.method !== "POST" || req.url !== "/generate-week-plan") {
       res.writeHead(404).end("Not found");
       return;
@@ -379,11 +323,7 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     const payload = JSON.parse(await readBody(req)) as CoachRequest;
-    const model = normalizeRequestedModel(payload.model);
-    if (!model) {
-      writeJSON(res, 400, { error: "model is required" });
-      return;
-    }
+    const model = resolveCoachModel(payload.model);
 
     const skill = await loadSkillBundle();
     const context = buildCoachContext(payload);
@@ -614,10 +554,7 @@ async function generateAutoPlan(
     throw new Error("OPENAI_API_KEY is not set");
   }
 
-  const model = normalizeRequestedModel(payload.model);
-  if (!model) {
-    throw new Error("model is required");
-  }
+  const model = resolveCoachModel(payload.model);
 
   const skill = await loadSkillBundle();
   const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
@@ -816,29 +753,13 @@ function startAutoPlanScheduler(): void {
   }
   const intervalMs = Math.max(60_000, Number(process.env.AUTO_PLANNER_INTERVAL_MS ?? 15 * 60_000));
   const timer = setInterval(() => {
-    void runDueNightlyAutoPlans();
+    // runDueAutoPlans logs its own failures; the catch is a last line of
+    // defence so a rejected tick can never take the whole proxy down.
+    runDueAutoPlans({ store: autoPlanStore, runTrigger: runAutoPlanTrigger }).catch((error: unknown) => {
+      console.error("Auto plan scheduler tick failed:", error);
+    });
   }, intervalMs);
   timer.unref();
-}
-
-async function runDueNightlyAutoPlans(): Promise<void> {
-  const now = autoPlanStore.now();
-  const dueUsers = await autoPlanStore.usersDueForNightly(now);
-  for (const user of dueUsers) {
-    if (!user.latestRequest || user.status === "generating") {
-      continue;
-    }
-    try {
-      await runAutoPlanTrigger({
-        source: "nightly",
-        request: refreshRequestForNightly(user.latestRequest, now, user.timeZone),
-        reason: "Nightly planning window.",
-        timeZone: user.timeZone
-      });
-    } catch (error) {
-      console.error(`Auto plan failed for ${user.userId}:`, error);
-    }
-  }
 }
 
 async function loadSkillBundle(): Promise<SkillBundle> {
@@ -871,30 +792,6 @@ async function loadRunningSkillBundle(): Promise<RunningSkillBundle> {
     ultraPeriodization,
     runningWeekSchema: JSON.parse(runningWeekSchemaRaw) as Record<string, unknown>
   };
-}
-
-// Attach Garmin wellness to the coach context. Any sidecar failure means the
-// coach simply plans without Garmin data — never block plan generation.
-async function enrichWithGarmin(context: CoachContext, userId?: string): Promise<CoachContext> {
-  try {
-    // Enrichment only consumes status + wellness, and it sits on the coach
-    // request path, so skip activities and keep the timeout budget tight.
-    const snapshot = await garminSnapshot(7, fetch, { includeActivities: false, timeoutMs: 10_000, userId });
-    if (!snapshot.status.loggedIn || snapshot.wellness.length === 0) {
-      return context;
-    }
-
-    // The sidecar promises most-recent-first, but pick by max date anyway.
-    const latest = [...snapshot.wellness].sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
-
-    context.garmin = { wellness: snapshot.wellness };
-    if (latest && latest.trainingReadiness > 0 && latest.trainingReadiness < 30) {
-      context.readiness.riskFlags.push("garmin: training readiness low");
-    }
-  } catch {
-    // Degraded mode: leave the context untouched.
-  }
-  return context;
 }
 
 async function generateWeeklyPlan(
@@ -989,12 +886,19 @@ async function generateRunningWeek(
 }
 
 function buildRunningPromptPayload(context: CoachContext, repair?: RunningRepairInput): Record<string, unknown> {
+  const availability = runningDayAvailability(context);
   const basePayload = {
     coachContext: context,
     outputRules: {
       todayIsLocked: true,
       availableRunningDays: context.running?.runningDays ?? [],
-      availableDayOffsets: context.running?.runningDayOffsets ?? [],
+      unconstrainedRunningDays: availability.unconstrained,
+      availableDayOffsets: availability.offsets,
+      scheduling: availability.unconstrained
+        ? "No running days are selected, so any dayOffset 1 through 6 is available. Plan a normal week and keep one complete rest day."
+        : availability.offsets.length === 0
+          ? "None of the selected running days is left this week. Return zero runs and explain that the next full week starts after the coming rest days."
+          : "Use only availableDayOffsets for runs.",
       longRunDay: context.running?.longRunDay ?? null,
       longRunDayOffset: context.running?.longRunDayOffset ?? null
     }
@@ -1173,12 +1077,6 @@ function writeJSON(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 }
 
-function parseSinceDays(rawURL: string): number {
-  const raw = new URL(rawURL, "http://localhost").searchParams.get("sinceDays");
-  const parsed = Number(raw);
-  return raw !== null && raw.trim() !== "" && Number.isFinite(parsed) ? parsed : 7;
-}
-
 function queryValue(rawURL: string, name: string): string {
   return new URL(rawURL, "http://localhost").searchParams.get(name)?.trim() ?? "";
 }
@@ -1284,7 +1182,7 @@ async function fetchAvailableModels(apiKey: string): Promise<string[]> {
 
   const json = (await response.json()) as { data?: unknown };
   const data = Array.isArray(json.data) ? json.data : [];
-  return withDefaultCoachModel(pickTextModelIDs(data));
+  return filterAllowedModels(withDefaultCoachModel(pickTextModelIDs(data)));
 }
 
 function extractOutputText(response: unknown): string {

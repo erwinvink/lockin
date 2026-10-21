@@ -96,15 +96,18 @@ struct TrainingEngine {
         preferences: TrainingPreferences,
         recentLogs: [SessionLogInput] = []
     ) -> WeeklyPlan {
-        let sessionCount = min(max(preferences.weeklySessions, 2), 6)
+        // Selected days decide the count, so no session lands on a rest day.
+        let selectedDayOffsets = preferences.trainingDays.isEmpty
+            ? []
+            : TrainingWeekday.dayOffsets(for: preferences.trainingDays, weeklySessions: preferences.weeklySessions, weekStart: start)
+        let sessionCount = selectedDayOffsets.isEmpty
+            ? min(max(preferences.weeklySessions, 2), 6)
+            : selectedDayOffsets.count
         let deload = recentLogs.contains { $0.painLevel >= 4 || $0.fatigueLevel >= 9 }
         let trainingAnchor = recentTrainingAnchor(from: baseline, recentLogs: recentLogs)
         let readiness = readinessMultiplier(from: trainingAnchor, goals: goals, targetDate: preferences.targetDate, weekIndex: weekIndex)
         let multiplier = deload ? max(0.55, readiness * 0.65) : readiness
         let focuses = focusSequence(count: sessionCount)
-        let selectedDayOffsets = preferences.trainingDays.isEmpty
-            ? []
-            : TrainingWeekday.dayOffsets(for: preferences.trainingDays, weeklySessions: sessionCount, weekStart: start)
 
         let sessions = (0..<sessionCount).map { index in
             let offset = selectedDayOffsets.indices.contains(index) ? selectedDayOffsets[index] : index * max(1, 7 / sessionCount)

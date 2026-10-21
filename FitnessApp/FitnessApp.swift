@@ -29,6 +29,7 @@ struct FitnessApp: App {
 
     init() {
         TrailFont.registerIfNeeded()
+        CoachModelCatalog.migrateStoredSelection()
         do {
             let isUITesting = ProcessInfo.processInfo.arguments.contains("UITesting")
             let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil

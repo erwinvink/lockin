@@ -1,3 +1,4 @@
+import { nextLocalMidnight, startOfLocalDay, validTimeZone } from "../local-time";
 import { addMonths, startOfMonthUTC, summarizeMonth, summarizeTrend } from "./summarize-training-history";
 import type {
   CoachContext,
@@ -33,7 +34,8 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
     validCompletedMonthLogCount,
     validCurrentMonthLogCount
   );
-  const adherence = summarizeAdherence(request, now);
+  const today = todayWindow(request, now);
+  const adherence = summarizeAdherence(request, now, today);
   const state = classifyState(riskFlags, twoFullMonthTrend.label, validCompletedMonthLogCount, validCurrentMonthLogCount, adherence);
 
   return {
@@ -62,7 +64,7 @@ export function buildCoachContext(request: CoachRequest, now = new Date()): Coac
       }
     },
     adherence,
-    plannedWork: summarizePlannedWork(request.plannedSessions, sortedLogs, request.weekStart),
+    plannedWork: summarizePlannedWork(request.plannedSessions, sortedLogs, request.weekStart, today),
     readiness: {
       state,
       riskFlags
@@ -123,13 +125,43 @@ function collectRiskFlags(
   return flags;
 }
 
-function summarizeAdherence(request: CoachRequest, now: Date): CoachContext["adherence"] {
+type TodayWindow = { start: number; end: number };
+
+// "Today" is [weekStart, next local midnight). weekStart is the app's local
+// midnight for today. With the athlete's IANA zone the end is the real next
+// midnight (23 or 25 hours away on DST days); without it, 24 hours later.
+function todayWindow(request: CoachRequest, now: Date): TodayWindow {
+  const timeZone = validTimeZone(request.timeZone);
+  const weekStart = Date.parse(request.weekStart);
+  const start = Number.isFinite(weekStart)
+    ? weekStart
+    : timeZone
+      ? startOfLocalDay(now, timeZone).getTime()
+      : now.getTime();
+  // Measure from midday so a weekStart a little off local midnight (a zone
+  // mismatch) still lands on the right calendar day.
+  const end = timeZone
+    ? nextLocalMidnight(new Date(start + 12 * 60 * 60 * 1000), timeZone).getTime()
+    : start + 24 * 60 * 60 * 1000;
+  return { start, end };
+}
+
+function summarizeAdherence(request: CoachRequest, now: Date, today: TodayWindow): CoachContext["adherence"] {
   const planned = request.plannedSessions.length;
   const nowTime = now.getTime();
+  // Sessions are stored at local midnight, so "due" means scheduled before
+  // today. Today's open sessions stay outside the score all day; once one
+  // is finished (completed, partial, deload) it counts right away.
   const dueSessions = request.plannedSessions.filter((session) => {
     const scheduled = new Date(session.scheduledDate).getTime();
-    return Number.isFinite(scheduled) && scheduled <= nowTime;
+    if (!Number.isFinite(scheduled)) return false;
+    if (scheduled < today.start) return true;
+    return scheduled < today.end && session.status !== "planned" && session.status !== "missed";
   });
+  const pendingToday = request.plannedSessions.filter((session) => {
+    const scheduled = new Date(session.scheduledDate).getTime();
+    return session.status === "planned" && scheduled >= today.start && scheduled < today.end;
+  }).length;
   const future = Math.max(0, planned - dueSessions.length);
   const completed = dueSessions.filter((session) => session.status === "completed").length;
   const partial = dueSessions.filter((session) => session.status === "partial").length;
@@ -155,6 +187,7 @@ function summarizeAdherence(request: CoachRequest, now: Date): CoachContext["adh
     missedLast14Days,
     deload,
     pending,
+    pendingToday,
     adherenceScorePct
   };
 }
@@ -162,10 +195,11 @@ function summarizeAdherence(request: CoachRequest, now: Date): CoachContext["adh
 function summarizePlannedWork(
   plannedSessions: CoachRequest["plannedSessions"],
   logs: TrainingLog[],
-  weekStart: string
+  weekStart: string,
+  today: TodayWindow
 ): CoachContext["plannedWork"] {
   const startTime = new Date(weekStart).getTime();
-  const endOfToday = startTime + 24 * 60 * 60 * 1000;
+  const endOfToday = today.end;
   const todaySessions = plannedSessions
     .filter((session) => {
       const scheduled = new Date(session.scheduledDate).getTime();

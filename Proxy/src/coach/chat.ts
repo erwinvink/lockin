@@ -11,6 +11,9 @@ export type CoachChatMessage = {
 
 export const COACH_CHAT_MAX_MESSAGES = 20;
 export const COACH_CHAT_MAX_TEXT_LENGTH = 1200;
+// The pain answer quotes the profile note (up to 800 characters in the
+// context); quote only its start so the answer stays under the text limit.
+const QUOTED_NOTE_MAX_LENGTH = 280;
 
 export type CoachChatIntent =
   | "working"
@@ -61,9 +64,14 @@ type CoachChatFacts = {
 
 export function normalizeCoachChatMessages(messages: CoachChatMessage[]): CoachChatMessage[] {
   const normalized = messages.map((message) => {
-    const text = message.text.trim();
+    let text = message.text.trim();
     if (text.length > COACH_CHAT_MAX_TEXT_LENGTH) {
-      throw new Error(`chat message text must be ${COACH_CHAT_MAX_TEXT_LENGTH} characters or less`);
+      if (message.role === "user") {
+        throw new Error(`chat message text must be ${COACH_CHAT_MAX_TEXT_LENGTH} characters or less`);
+      }
+      // A coach answer comes back as history; an over-long one must not
+      // break every later turn, so shorten it instead of rejecting it.
+      text = truncateText(text, COACH_CHAT_MAX_TEXT_LENGTH);
     }
     return {
       role: message.role,
@@ -87,7 +95,7 @@ export function buildCoachChatResponse(input: BuildCoachChatInput): CoachChatRes
   const memorySummary = summarizeEarlierQuestions(messages);
   const shouldUseMemoryPrefix = intent !== "general" && intent !== "motivation" && intent !== "unsupported";
   const memoryPrefix = shouldUseMemoryPrefix && memorySummary ? `${memorySummary}. Carrying that forward: ` : "";
-  const answer = answerForIntent(intent, question, facts, input.evaluation, memoryPrefix);
+  const answer = truncateText(answerForIntent(intent, question, facts, input.evaluation, memoryPrefix), COACH_CHAT_MAX_TEXT_LENGTH);
 
   return {
     answer,
@@ -106,7 +114,7 @@ export function classifyCoachChatQuestion(question: string): CoachChatIntent {
   if (isUnsupportedQuestion(text)) {
     return "unsupported";
   }
-  if (matchesAny(text, ["pain", "ache", "hurt", "sore", "injury", "knee", "shoulder", "ankle", "hip", "calf", "shin"])) {
+  if (matchesAny(text, ["pain", "ache", "hurt", "sore", "injur", "knee", "shoulder", "ankle", "hip", "calf", "calves", "shin"])) {
     return "pain";
   }
   if (matchesAny(text, ["fatigue", "tired", "sleep", "recovery", "readiness", "hrv", "body battery"])) {
@@ -199,7 +207,7 @@ function painAnswer(
 ): string {
   const bodyPart = bodyPartFromQuestion(question);
   const area = bodyPart ? `your ${bodyPart}` : "that area";
-  const note = facts.profileNotes ? ` Your profile note says: ${facts.profileNotes}` : "";
+  const note = facts.profileNotes ? ` Your profile note says: ${truncateText(facts.profileNotes, QUOTED_NOTE_MAX_LENGTH)}` : "";
 
   return [
     `${memoryPrefix}For ${area}, treat this as a training signal, not a diagnosis.`,
@@ -396,7 +404,8 @@ function labelForIntent(intent: CoachChatIntent): string {
 }
 
 function isUnsupportedQuestion(text: string): boolean {
-  if (matchesAny(text, ["weather", "temperature", "rain", "wind", "forecast"])) {
+  // Whole words only: "rain" must not match "train", "training" or "strain".
+  if (matchesAnyWord(text, ["weather", "temperature", "rain", "rainy", "raining", "rains", "wind", "windy", "winds", "forecast"])) {
     return true;
   }
 
@@ -410,13 +419,31 @@ function isUnsupportedQuestion(text: string): boolean {
 function bodyPartFromQuestion(question: string): string | null {
   const text = question.toLowerCase();
   for (const part of ["shoulder", "knee", "ankle", "hip", "calf", "shin", "back", "elbow", "foot"]) {
-    if (text.includes(part)) return part;
+    if (matchesAny(text, [part])) return part;
   }
   return null;
 }
 
+// Needles match at the start of a word, so word endings still count ("pain"
+// matches "painful", "hurt" matches "hurts") but a needle never matches
+// inside another word ("Spain", "know", "relationship").
 function matchesAny(text: string, needles: string[]): boolean {
-  return needles.some((needle) => text.includes(needle));
+  return needles.some((needle) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(needle)}`, "u").test(text));
+}
+
+function matchesAnyWord(text: string, words: string[]): boolean {
+  return words.some((word) => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(word)}(?![\\p{L}\\p{N}])`, "u").test(text));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function truncateText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const cut = text.slice(0, maxLength - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > maxLength - 60 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
 function formatSeconds(seconds: number): string {

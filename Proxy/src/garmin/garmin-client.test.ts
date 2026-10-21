@@ -218,6 +218,20 @@ test("garminSnapshot combines status, wellness, and activities", async (t) => {
   );
 });
 
+test("garminSnapshot passes unavailableMetrics through to the app (S2)", async (t) => {
+  useServiceURL(t, undefined);
+  const wellness = [{ ...wellnessDay("2026-06-10"), sleepScore: 0, sleepSeconds: 0, unavailableMetrics: ["sleepScore", "sleepSeconds"] }];
+  const fetchImpl = stubFetch((url) => {
+    if (url.endsWith("/status")) return jsonResponse(onlineStatus);
+    if (url.includes("/wellness")) return jsonResponse(wellness);
+    return jsonResponse([]);
+  });
+
+  const snapshot = await garminSnapshot(7, fetchImpl);
+
+  assert.deepEqual(snapshot.wellness, wellness);
+});
+
 test("garminSnapshot fetches wellness and activities in parallel", { timeout: 2000 }, async (t) => {
   useServiceURL(t, undefined);
   const release: Array<() => void> = [];

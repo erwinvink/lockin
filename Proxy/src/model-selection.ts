@@ -1,4 +1,8 @@
-export const defaultCoachModel = "gpt-5-mini";
+export const defaultCoachModel = "gpt-6.1-sol";
+
+// Models the proxy will spend the OpenAI key on: the default plus the app's
+// model catalog. COACH_ALLOWED_MODELS (comma-separated) replaces this list.
+const builtInAllowedModels = [defaultCoachModel, "gpt-5.5", "gpt-5-mini"];
 
 type OpenAIModelListItem = {
   id?: unknown;
@@ -27,6 +31,28 @@ export function normalizeRequestedModel(value: unknown): string | null {
 
   const model = value.trim();
   return model.length > 0 ? model : null;
+}
+
+export function allowedCoachModels(env: NodeJS.ProcessEnv = process.env): string[] {
+  const configured = (env.COACH_ALLOWED_MODELS ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter((model) => model.length > 0);
+  const list = configured.length > 0 ? configured : builtInAllowedModels;
+  // The default is always usable: it is what everything else falls back to.
+  return Array.from(new Set([defaultCoachModel, ...list]));
+}
+
+/** The requested model when it is allowed, otherwise the default (never an error). */
+export function resolveCoachModel(value: unknown, env: NodeJS.ProcessEnv = process.env): string {
+  const requested = normalizeRequestedModel(value);
+  return requested && allowedCoachModels(env).includes(requested) ? requested : defaultCoachModel;
+}
+
+/** The models to offer the app: the default first, then allowed ones OpenAI lists. */
+export function filterAllowedModels(models: string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  const allowed = new Set(allowedCoachModels(env));
+  return Array.from(new Set([defaultCoachModel, ...models.filter((model) => allowed.has(model))]));
 }
 
 export function pickTextModelIDs(models: unknown[]): string[] {

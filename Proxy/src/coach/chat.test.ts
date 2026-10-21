@@ -4,6 +4,7 @@ import {
   COACH_CHAT_MAX_MESSAGES,
   COACH_CHAT_MAX_TEXT_LENGTH,
   buildCoachChatResponse,
+  classifyCoachChatQuestion,
   normalizeCoachChatMessages,
   type CoachChatMessage
 } from "./chat";
@@ -72,6 +73,66 @@ test("rejects empty or oversized coach chat transcripts before answering", () =>
     () => normalizeCoachChatMessages([{ role: "user", text: "x".repeat(COACH_CHAT_MAX_TEXT_LENGTH + 1) }]),
     /characters or less/i
   );
+});
+
+test("matches chat intents on whole words, not inside other words (S9)", () => {
+  assert.notEqual(classifyCoachChatQuestion("How is my training going?"), "unsupported");
+  assert.equal(classifyCoachChatQuestion("Should I skip training today?"), "today");
+  assert.equal(classifyCoachChatQuestion("Is my knee strain a problem?"), "pain");
+  assert.notEqual(classifyCoachChatQuestion("What can I train around safely?"), "unsupported");
+  assert.notEqual(classifyCoachChatQuestion("I just got back from Spain"), "pain");
+  assert.notEqual(classifyCoachChatQuestion("I know the plan"), "today");
+  assert.notEqual(classifyCoachChatQuestion("How is my relationship with lifting?"), "pain");
+});
+
+test("still recognises weather questions and word variants (S9)", () => {
+  assert.equal(classifyCoachChatQuestion("Will it rain on Saturday?"), "unsupported");
+  assert.equal(classifyCoachChatQuestion("Is it raining at the trailhead?"), "unsupported");
+  assert.equal(classifyCoachChatQuestion("How windy will it be?"), "unsupported");
+  assert.equal(classifyCoachChatQuestion("My calf is painful after the long run"), "pain");
+  assert.equal(classifyCoachChatQuestion("My shoulder hurts"), "pain");
+  assert.equal(classifyCoachChatQuestion("I feel so tired"), "fatigue");
+});
+
+test("truncates an over-long coach message in history instead of breaking the chat (S10)", () => {
+  const normalized = normalizeCoachChatMessages([
+    { role: "user", text: "What about my knee pain?" },
+    { role: "coach", text: "y".repeat(COACH_CHAT_MAX_TEXT_LENGTH + 100) },
+    { role: "user", text: "And what should I do today?" }
+  ]);
+
+  assert.equal(normalized.length, 3);
+  assert.ok(normalized[1].text.length <= COACH_CHAT_MAX_TEXT_LENGTH);
+});
+
+test("keeps a pain answer that quotes a long profile note under the limit (S10)", () => {
+  // Profile notes are capped at 800 characters in the coach context.
+  const longNote = `Old knee injury from 2019, ${"physio says load it gradually and avoid deep flexion under fatigue; ".repeat(11)}`.slice(0, 800);
+  const base = context();
+  const response = buildCoachChatResponse({
+    messages: [
+      { role: "user", text: "Am I working well?" },
+      { role: "coach", text: "Yes." },
+      { role: "user", text: "Am I on schedule for the race?" },
+      { role: "coach", text: "Mostly." },
+      { role: "user", text: "What is my biggest improvement point?" },
+      { role: "coach", text: "Long runs." },
+      { role: "user", text: "What about my knee pain?" }
+    ],
+    context: { ...base, profile: { ...base.profile, profileNotes: longNote } },
+    signals: signals(),
+    evaluation: evaluation(),
+    generatedAt: NOW
+  });
+
+  assert.equal(response.answerKind, "pain");
+  assert.ok(response.answer.length <= COACH_CHAT_MAX_TEXT_LENGTH, `answer is ${response.answer.length} characters`);
+  assert.match(response.answer, /Old knee injury from 2019/);
+  assert.doesNotThrow(() => normalizeCoachChatMessages([
+    { role: "user", text: "What about my knee pain?" },
+    { role: "coach", text: response.answer },
+    { role: "user", text: "Should I skip today's session?" }
+  ]));
 });
 
 test("answers unsupported weather or test prompts without repeating training state", () => {
