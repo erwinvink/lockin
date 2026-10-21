@@ -234,6 +234,51 @@ test("a sparse run history (one short run) still produces a passable starter wee
   assert.match(weeklyVolume.basis, /only 1 run\(s\) in the last 6 weeks/);
 });
 
+test("a due recovery week reaches both planners and a loading-style answer is clamped into one", async () => {
+  // Block start three weeks ago with steady 45 km weeks: block week 4 is a planned recovery week.
+  const request = { ...hybridRequest(), planBlockStartedAt: new Date(Date.parse(WEEK_START) - 21 * DAY_MS).toISOString() };
+  const context = buildCoachContext(request, NOW);
+  const runningCalls: RunningPlannerGuidance[] = [];
+  const strengthCalls: StrengthPlannerGuidance[] = [];
+  const recorded: string[] = [];
+
+  assert.equal(context.periodization?.recoveryWeekDue, true, context.periodization?.recoveryWeekReason);
+
+  const result = await runCombinedWeekPipeline({
+    context,
+    now: NOW,
+    generateRunning: async (guidance) => {
+      runningCalls.push(guidance);
+      return ok(runningWeek([
+        run("Easy aerobic run", 1, "easy", 10),
+        run("Tempo blocks", 3, "tempo", 12),
+        run("Easy aerobic run", 4, "easy", 8),
+        run("Long trail run", 5, "long", 22),
+        run("Recovery jog", 6, "recovery", 9)
+      ]));
+    },
+    generateStrength: async (guidance) => {
+      strengthCalls.push(guidance);
+      return ok(strengthWeek([strengthSession("Full-body strength", 1, "hard"), strengthSession("Heavy pull day", 4, "hard")]));
+    },
+    recordValidationFailure: async (phase) => {
+      recorded.push(phase);
+    }
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  if (!result.ok) return;
+  assert.deepEqual(recorded, [], "clamped, no repair needed");
+  const recoveryGuidance = runningCalls[0].guardrails.recoveryWeek as { weeklyKmCap: number; longRunCapKm: number };
+  assert.equal(recoveryGuidance.weeklyKmCap, 33.8);
+  assert.equal(recoveryGuidance.longRunCapKm, 14);
+  assert.ok(result.runningWeek.sessions.reduce((sum, session) => sum + session.distanceKm, 0) <= 33.8);
+  assert.ok(result.runningWeek.sessions.every((session) => session.distanceKm <= 14));
+  assert.ok((strengthCalls[0].guardrails.phase as { recoveryWeek: unknown }).recoveryWeek);
+  assert.match(result.strengthWeek.summary, /^Offload: /);
+  assert.equal(result.strengthWeek.sessions.filter((session) => session.plannedEffort.label === "hard").length, 1);
+});
+
 function ok<T>(value: T) {
   return { ok: true as const, value };
 }

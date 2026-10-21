@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { clampWeeklyPlan, progressionStep, strengthProgressionPlan, workingCap } from "./strength-guardrails";
+import { STRENGTH_PHASE_LIMITS } from "./strength-phase";
 import { validateWeeklyPlan } from "./validate-week-plan";
 import type { CoachContext, EffortLabel, EffortStimulus, PlannedEffort, RecentGoalPerformance, WeeklyPlan } from "./types";
 
@@ -242,6 +243,108 @@ test("an unearned week after a 1-set prescription holds at 2 sets or more", () =
   assert.deepEqual(validateWeeklyPlan(hybridPlan({ pullReps: 8, pullSets: 3 }), context), { accepted: true, messages: [] });
 });
 
+// Planned recovery week: hard strength volume cut 40-60%, one hard session,
+// no tests, at most 3 sets per goal exercise, no progression requirement.
+function recoveryWeekContext(): CoachContext {
+  const context = hybridContext({ previous: { pullUps: { target: 8, sets: 4 }, pushUps: { target: 24, sets: 3 } } });
+  context.periodization = {
+    cycle: "3:1",
+    blockWeek: 4,
+    loadingWeeksSinceRecovery: 3,
+    lastUnloadingWeek: null,
+    recoveryWeekDue: true,
+    recoveryWeekReason: "3 loading weeks since the block start: block week 4 is a planned recovery week (3:1).",
+    recoveryWeek: {
+      startsAt: WEEK_START,
+      endsAt: "2026-05-18T00:00:00Z",
+      referenceWeeklyKm: 45,
+      weeklyKmCap: 33.8,
+      targetWeeklyKm: { low: 27, high: 33.8 },
+      longRunCapKm: 14,
+      maxQualityRuns: 1,
+      referenceHardStrengthSets: 14,
+      hardStrengthSetCap: 8,
+      maxHardStrengthSessions: 1,
+      maxGoalSetsPerExercise: 3
+    },
+    recentWeeks: []
+  };
+  return context;
+}
+
+function loadingStylePlan(): WeeklyPlan {
+  const plan = hybridPlan({ pullReps: 9, pullSets: 4, pushReps: 24, pushSets: 4 });
+  plan.sessions.push({
+    ...session("Pull-up assessment", 6, "max_output", "test"),
+    exercises: [exercise("pullUp", 1, 12, 0, effort("max_output", 10, "test", 0))]
+  });
+  plan.sessions[1] = { ...plan.sessions[1], plannedEffort: effort("hard", 7, "volume", 3) };
+  plan.sessions[1].exercises[0] = exercise("pullUp", 4, 7, 0, effort("hard", 7, "volume", 3));
+  return plan;
+}
+
+test("a planned recovery week rejects a loading-style plan with the limit and value in each message", () => {
+  const context = recoveryWeekContext();
+  const messages = validateWeeklyPlan(loadingStylePlan(), context).messages;
+
+  for (const expected of [
+    "This is a planned recovery week: the summary must start with Offload:.",
+    "Session 3 (Pull-up assessment) pullUp is a test, but planned recovery week: no tests.",
+    "Session 1 (Full-body strength) pullUp has 4 sets; planned recovery week: at most 3 sets per goal exercise.",
+    "the weekly cap is 1 in a planned recovery week",
+    "The recovery week has 13 hard strength sets (hard, very_hard, max_output); the cap is 8, 60% of the 14 hard sets in the last loading week.",
+    "pull-up work must not progress this week"
+  ]) {
+    assert.ok(messages.some((m) => m.includes(expected)), `expected: ${expected}\n${messages.join("\n")}`);
+  }
+  assert.equal(strengthProgressionPlan(context).pullUps.status, "offload");
+});
+
+test("the clamp turns a loading-style plan into a valid recovery week and says so", () => {
+  const context = recoveryWeekContext();
+  const { plan: clamped, adjustments } = clampWeeklyPlan(loadingStylePlan(), context);
+
+  assert.match(clamped.summary, /^Offload: /);
+  assert.ok(clamped.safetyFlags.includes("Planned recovery week: lighter on purpose after three loading weeks."));
+  assert.equal(clamped.sessions[2].exercises[0].plannedEffort.label, "medium", "the test became working sets");
+  assert.equal(clamped.sessions[2].exercises[0].sets, 2);
+  assert.ok(clamped.sessions[2].exercises[0].reps <= 8, "inside the no-progression band");
+  assert.equal(clamped.sessions.filter((s) => [s.plannedEffort.label, ...s.exercises.map((e) => e.plannedEffort.label)].some((l) => l === "hard")).length, 1);
+  assert.ok(clamped.sessions.every((s) => s.exercises.every((e) => !["pullUp", "pushUp", "plank"].includes(e.exercise) || e.sets <= 3)));
+  assert.ok(adjustments.some((a) => a.includes("trimmed to")) || adjustments.some((a) => a.includes("lowered to medium")));
+  assert.match(clamped.sessions[0].progressionRationale, /Adjusted to the plan limits: /);
+  assert.deepEqual(validateWeeklyPlan(clamped, context), { accepted: true, messages: [] });
+});
+
+test("an all-light or held recovery week is accepted without progression", () => {
+  const context = recoveryWeekContext();
+  const plan = hybridPlan({ pullReps: 6, pullSets: 2, pushReps: 18, pushSets: 2 });
+  plan.summary = "Offload: planned recovery week, fewer sets.";
+  plan.sessions[0] = { ...plan.sessions[0], plannedEffort: effort("medium", 6, "volume", 4) };
+  plan.sessions[0].exercises = plan.sessions[0].exercises.map((e) => ({ ...e, plannedEffort: effort("medium", 6, "volume", 4) }));
+
+  assert.deepEqual(validateWeeklyPlan(plan, context), { accepted: true, messages: [] });
+});
+
+test("in the last 10 days strength stays light and nothing is hard within 4 days of the race", () => {
+  const context = hybridContext({ previous: { pullUps: { target: 8, sets: 4 } }, earned: { pushUps: { logged: 27, target: 24, sets: 3 } } });
+  context.running = { ...context.running!, raceGoal: { ...context.running!.raceGoal, raceDate: "2026-05-17T00:00:00Z" }, weeksToRace: 1 };
+  const plan = hybridPlan({});
+  plan.sessions[1] = { ...plan.sessions[1], dayOffset: 3, plannedEffort: effort("hard", 7, "strength", 3) };
+  plan.sessions[1].exercises[0] = exercise("pullUp", 3, 6, 0, effort("hard", 7, "strength", 3));
+  plan.sessions[0].exercises[0] = exercise("pullUp", 3, 8, 0, effort("very_hard", 9, "strength", 1));
+
+  const messages = validateWeeklyPlan(plan, context).messages;
+  assert.ok(messages.some((m) => m.includes("Session 1 (Full-body strength) pullUp is very_hard; 4 day(s) before Ridge Ultra 60K")), messages.join("\n"));
+  assert.ok(messages.some((m) => m.includes("Session 2 (Pull and core) session is hard; 3 day(s) before Ridge Ultra 60K: nothing hard within 4 days of the race")));
+  assert.ok(!messages.some((m) => m.includes("earned push-up progression")), "no progression requirement this close to the race");
+
+  const { plan: clamped } = clampWeeklyPlan(plan, context);
+  assert.equal(clamped.sessions[1].plannedEffort.label, "medium");
+  assert.ok(clamped.safetyFlags.some((flag) => flag.startsWith("Race taper:")));
+  assert.deepEqual(validateWeeklyPlan(clamped, context), { accepted: true, messages: [] });
+});
+
 type PreviousSpec = { target: number; sets: number; date?: string };
 type EarnedSpec = { logged: number; target: number; sets: number; consecutive?: number };
 
@@ -394,3 +497,18 @@ function emptyMonth(month: string, isPartial: boolean): CoachContext["history"][
     maxFatigue: 0
   };
 }
+
+test("the strength skill states the recovery-week and taper limits the proxy enforces", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const text = await readFile(join(process.cwd(), "src", "coach", "skills", "fitness-coach-planner", "SKILL.md"), "utf8");
+  for (const expected of [
+    `hard sets at most \`hardSetCap\` (${Math.round(STRENGTH_PHASE_LIMITS.recovery.hardSetRatio * 100)}% of the last loading week)`,
+    `at most ${STRENGTH_PHASE_LIMITS.recovery.maxHardSessions} hard session`,
+    `at most ${STRENGTH_PHASE_LIMITS.recovery.maxGoalSets} sets per goal exercise`,
+    `in the last ${STRENGTH_PHASE_LIMITS.race.lightWithinDays} days before the race strength stays light`,
+    `within ${STRENGTH_PHASE_LIMITS.race.noHardWithinDays} days of the race`
+  ]) {
+    assert.ok(text.includes(expected), `SKILL.md should say: ${expected}`);
+  }
+});

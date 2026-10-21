@@ -67,7 +67,7 @@ States:
 Choose the phase from current evidence, not from a rigid four-week calendar:
 
 - `Build`: clean readiness and earned progression.
-- `Offload`: pain, severe fatigue, repeated excessive effort, or declining performance calls for 40-60% less hard volume.
+- `Offload`: pain, severe fatigue, repeated excessive effort, or declining performance calls for 40-60% less hard volume. A planned recovery week (every fourth plan-block week, `coachContext.periodization.recoveryWeekDue`) is also an `Offload` week: at most 60% of the last loading week's hard sets, one hard session, no tests, at most 3 sets per goal exercise, no progression.
 - `Restore`: the first controlled step back after an offload.
 - `Maintenance`: running load is the priority and blocks a safe strength increase.
 - `Assessment`: readiness is clean, at least 28 days have passed since the latest planned test, and a test is useful. Tests normally recur every 4-6 weeks, never simply because a calendar page turned.
@@ -140,6 +140,7 @@ Never suppress progression or add catch-up work for an old or isolated miss. Low
 
 - Fixed running sessions lead the combined plan.
 - Never put hard strength on a long, tempo, interval, hill, or race-run day, and never very_hard or max_output strength (tests included) on the day before a long run or the race.
+- In the last 10 days before the race strength stays light: no tests, no very_hard or max_output, at most one hard session, at most 3 sets per goal exercise, no progression required. Nothing hard within 4 days of the race.
 - Leave at least one of future offsets 1 through 6 unused by both running and strength.
 - A normal running build week does not block strength progression. Use `Maintenance` only when `strengthGuardrails.maintenance.allowed` is true, name its reason in the summary and progression rationale, and keep at least the earned standard.
 

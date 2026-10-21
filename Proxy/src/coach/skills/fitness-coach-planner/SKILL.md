@@ -34,6 +34,7 @@ The proxy also sends `trainingSignals` (running load, race countdown, HRV gate) 
 - `maxHardSessionsThisWeek`: 2 alongside a running week, 3 without
 - `progression.<metric>`: `status` (earned, maintenance, hold, free), `allowedTopTarget`, `maxSetsOnTopTarget`, and `setRoute`
 - `maintenance`: whether this week's running load allows holding earned progression, and why
+- `phase`: a planned recovery week or the race taper, with its limits (see Hard Rules)
 
 Do not infer these summaries from raw logs inside the model response.
 
@@ -75,7 +76,9 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 - No max output unless `stimulus` is `test`.
 - No pull-up-bar exercise without a pull-up bar.
 - A calendar-month volume flag by itself never justifies an all-light, flat, or offload week.
-- Use `Offload` only for pain, severe fatigue, repeated excessive effort, or declining performance, with 40-60% less hard volume. Use `Restore` for the first safe step after offload.
+- Use `Offload` only for pain, severe fatigue, repeated excessive effort, declining performance, or a planned recovery week (`coachContext.periodization.recoveryWeekDue`), with 40-60% less hard volume. Use `Restore` for the first safe step after offload.
+- Planned recovery week (`strengthGuardrails.phase.recoveryWeek`, enforced): summary starts with `Offload:`; hard sets at most `hardSetCap` (60% of the last loading week); at most 1 hard session; no tests; no very_hard or max_output; at most 3 sets per goal exercise; targets may hold or drop but not rise. Running backs off the same week. Keep the session habit with medium or light work.
+- Race taper (`strengthGuardrails.phase.raceTaper`, enforced): in the last 10 days before the race strength stays light (no tests, no very_hard or max_output, at most 1 hard session, at most 3 sets per goal exercise, no progression required), and nothing hard (hard, very_hard, max_output) within 4 days of the race.
 - Use `Maintenance` only when `strengthGuardrails.maintenance.allowed` is true (a running week more than 10% above the 4-week average, 3+ hard runs, peak or taper, or the two weeks after the race). Maintenance holds earned progression; it never regresses below it. Running is the priority when recovery conflicts.
 - No hard strength on a long, tempo, interval, hill, or race-run day, and no very_hard or max_output strength (tests included) on the day before a long run or the race.
 - Leave at least one offset from 1 through 6 unused by both running and strength.

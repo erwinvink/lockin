@@ -1,5 +1,17 @@
 import { flatGoalMetricsRequiringProgression } from "./coach-temperament";
-import type { CoachContext, EffortLabel, EffortStimulus, WeeklyPlan } from "./types";
+import {
+  hardSetCount,
+  isHardLabel,
+  isNearLimitLabel,
+  loweredEffort,
+  phaseMaxHardSessions,
+  strengthPhase,
+  strengthPhaseActive,
+  strengthPhaseForPrompt,
+  strengthSessionRule,
+  type StrengthPhase
+} from "./strength-phase";
+import type { CoachContext, EffortLabel, EffortStimulus, PlannedEffort, WeeklyPlan } from "./types";
 
 /**
  * Computed strength limits shared by the planner prompt, the clamp step and
@@ -50,8 +62,10 @@ export type MetricProgression = {
    * maintenance: progression was earned but heavy running allows a hold; no regression.
    * hold: not earned; the target stays in the hold band, sets may rise by one.
    * free: no recent prescription or an offload state; only caps apply.
+   * offload: planned recovery week or the last 10 days before the race: no
+   * progression required, the target may hold or drop but not rise.
    */
-  status: "earned" | "maintenance" | "hold" | "free";
+  status: "earned" | "maintenance" | "hold" | "free" | "offload";
   previousTarget: number | null;
   previousSets: number | null;
   /** Allowed range for the week's top working target (useful goal work). */
@@ -130,7 +144,9 @@ export function hardestLabel(session: WeeklyPlan["sessions"][number]): EffortLab
 }
 
 export function maxHardStrengthSessions(context: CoachContext): number {
-  return context.running ? STRENGTH_LIMITS.maxHardSessions.withRunning : STRENGTH_LIMITS.maxHardSessions.strengthOnly;
+  const normal = context.running ? STRENGTH_LIMITS.maxHardSessions.withRunning : STRENGTH_LIMITS.maxHardSessions.strengthOnly;
+  const phase = phaseMaxHardSessions(strengthPhase(context));
+  return phase === null ? normal : Math.min(normal, phase);
 }
 
 export function strengthProgressionPlan(
@@ -166,6 +182,25 @@ export function strengthProgressionPlan(
         maxSets: STRENGTH_LIMITS.goalSets.max,
         setRoute: null,
         note: `Computed readiness is ${context.readiness.state}: no progression; reduce as needed within the cap.`
+      };
+      continue;
+    }
+
+    const phase = strengthPhase(context);
+    if (strengthPhaseActive(phase)) {
+      const previous = previousWorkingPrescription(context, metric);
+      const upper = previous ? capOr(previous.target) : cap;
+      const maxGoalSets = Math.min(phase.recoveryWeek?.maxGoalSets ?? 6, phase.raceTaper ? 3 : 6);
+      const why = phase.recoveryWeek ? "Planned recovery week" : `The last 10 days before ${phase.raceTaper!.raceName}`;
+      result[metric] = {
+        ...base,
+        status: "offload",
+        previousTarget: previous?.target ?? null,
+        previousSets: previous ? Math.max(previous.sets, STRENGTH_LIMITS.goalSets.min) : null,
+        target: upper === null ? null : { min: 1, max: upper },
+        maxSets: maxGoalSets,
+        setRoute: null,
+        note: `${why}: no progression is required; keep the top working target at or below ${upper ?? "the cap"} ${unit} with at most ${maxGoalSets} sets. Fewer sets or a lighter effort is the point.`
       };
       continue;
     }
@@ -274,6 +309,7 @@ export function strengthGuardrailsForPrompt(
         }
       ])
     ),
+    phase: strengthPhaseForPrompt(strengthPhase(context)),
     workingCapRule:
       "Working reps or hold seconds per set must not exceed maxPerSet, except stimulus test. Over-cap values are lowered to the cap. basedOnBest is the current level: the baseline set at the plan block start plus logs since then. olderBestBeforeThisBlock is context only; never plan from it.",
     goalSetsPerExercise: STRENGTH_LIMITS.goalSets,
@@ -319,6 +355,141 @@ function previousWorkingPrescription(context: CoachContext, metric: GoalMetric):
   return { target, sets };
 }
 
+type ClampSession = WeeklyPlan["sessions"][number];
+
+/**
+ * Recovery-week and race-taper fixes, all downward: tests become medium
+ * working sets inside the cap, very_hard and max_output become hard, hard
+ * work within 4 days of the race becomes medium, hard sessions beyond the
+ * phase limit become medium, goal sets go to at most 3, and hard sets above
+ * the recovery cap are trimmed (then lowered to medium). Returns whether
+ * anything changed.
+ */
+function clampStrengthPhase(
+  sessions: ClampSession[],
+  phase: StrengthPhase,
+  progression: Record<GoalMetric, MetricProgression>,
+  adjustments: string[],
+  sessionNotes: string[][]
+): boolean {
+  let changed = false;
+
+  sessions.forEach((session, index) => {
+    const rule = strengthSessionRule(session.dayOffset, phase);
+    if (!rule.light || !Array.isArray(session.exercises)) return;
+    const why = rule.reason ?? "this lighter week";
+    for (const exercise of session.exercises) {
+      const effort = exercise.plannedEffort;
+      if (!effort) continue;
+      const metric = metricForExercise(exercise.exercise);
+      if (effort.stimulus === "test" || effort.label === "max_output") {
+        const field = metric === "plankSeconds" ? "seconds" : "reps";
+        const cap = metric ? progression[metric].target?.max ?? progression[metric].cap : null;
+        if (metric && cap !== null && goalValue(metric, exercise) > cap) exercise[field] = cap;
+        exercise.plannedEffort = loweredEffort(effort, "medium", why);
+        exercise.intensity = "Medium";
+        if (metric && exercise.sets < STRENGTH_LIMITS.goalSets.min) exercise.sets = STRENGTH_LIMITS.goalSets.min;
+        adjustments.push(`Session ${index + 1} (${session.title}) ${exercise.exercise}: the test became medium working sets (${why}).`);
+        sessionNotes[index].push(`${exercise.exercise} test -> medium working sets (no tests ${phase.recoveryWeek ? "in a recovery week" : "this close to the race"})`);
+        changed = true;
+      } else if ((rule.noHard && isHardLabel(effort.label)) || isNearLimitLabel(effort.label)) {
+        const target = rule.noHard ? "medium" : "hard";
+        exercise.plannedEffort = loweredEffort(effort, target, why);
+        exercise.intensity = target === "medium" ? "Medium" : "Hard";
+        adjustments.push(`Session ${index + 1} (${session.title}) ${exercise.exercise}: ${effort.label} lowered to ${target} (${why}).`);
+        sessionNotes[index].push(`${exercise.exercise} effort ${effort.label} -> ${target}`);
+        changed = true;
+      }
+      if (metric && rule.maxGoalSets !== null && exercise.sets > rule.maxGoalSets && isUsefulGoalEffort(exercise.plannedEffort)) {
+        adjustments.push(`Session ${index + 1} (${session.title}) ${exercise.exercise}: ${exercise.sets} sets lowered to ${rule.maxGoalSets} (${why}).`);
+        sessionNotes[index].push(`${exercise.exercise} ${exercise.sets} -> ${rule.maxGoalSets} sets`);
+        exercise.sets = rule.maxGoalSets;
+        changed = true;
+      }
+    }
+    syncSessionEffort(session, rule.noHard ? "medium" : "hard", why);
+  });
+
+  // At most N hard sessions: keep the earliest, lower the rest to medium.
+  const maxHard = phaseMaxHardSessions(phase);
+  if (maxHard !== null) {
+    let kept = 0;
+    sessions.forEach((session, index) => {
+      if (hardestLabel(session) === null) return;
+      kept += 1;
+      if (kept <= maxHard) return;
+      lowerSessionToMedium(session, "only one hard strength session this week");
+      adjustments.push(`Session ${index + 1} (${session.title}): lowered to medium (at most ${maxHard} hard strength session in this lighter week).`);
+      sessionNotes[index].push("effort lowered to medium (one hard session this week)");
+      changed = true;
+    });
+  }
+
+  const cap = phase.recoveryWeek?.hardSetCap ?? null;
+  if (cap !== null) {
+    const plan = { sessions } as WeeklyPlan;
+    let excess = hardSetCount(plan) - cap;
+    if (excess > 0) {
+      const before = hardSetCount(plan);
+      // Trim sets on hard exercises, latest sessions first, keeping 2 sets
+      // of goal work and 1 of support work.
+      for (let index = sessions.length - 1; index >= 0 && excess > 0; index -= 1) {
+        for (const exercise of [...(sessions[index].exercises ?? [])].reverse()) {
+          if (excess <= 0) break;
+          if (!isHardLabel(exercise.plannedEffort?.label)) continue;
+          const minimum = metricForExercise(exercise.exercise) ? STRENGTH_LIMITS.goalSets.min : 1;
+          const cut = Math.min(excess, exercise.sets - minimum);
+          if (cut > 0) {
+            exercise.sets -= cut;
+            excess -= cut;
+            sessionNotes[index].push(`${exercise.exercise} -${cut} hard set(s)`);
+          }
+        }
+      }
+      // Still over: lower hard exercises to medium, latest first.
+      for (let index = sessions.length - 1; index >= 0 && excess > 0; index -= 1) {
+        for (const exercise of [...(sessions[index].exercises ?? [])].reverse()) {
+          if (excess <= 0) break;
+          if (!isHardLabel(exercise.plannedEffort?.label) || !exercise.plannedEffort) continue;
+          exercise.plannedEffort = loweredEffort(exercise.plannedEffort, "medium", "the recovery week's hard-set cap");
+          exercise.intensity = "Medium";
+          excess -= exercise.sets;
+          sessionNotes[index].push(`${exercise.exercise} effort -> medium`);
+        }
+        syncSessionEffort(sessions[index], "hard", "the recovery week's hard-set cap");
+      }
+      adjustments.push(`Hard strength sets ${before} were above the recovery week's cap of ${cap}; trimmed to ${hardSetCount(plan)}.`);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** The session label follows its hardest exercise down (never up). */
+function syncSessionEffort(session: ClampSession, ceiling: "medium" | "hard", why: string) {
+  const effort = session.plannedEffort;
+  if (!effort || !Array.isArray(session.exercises)) return;
+  const order: EffortLabel[] = ["light", "medium", "hard", "very_hard", "max_output"];
+  const hardestExercise = session.exercises.reduce<EffortLabel>(
+    (hardest, exercise) => (order.indexOf(exercise.plannedEffort?.label) > order.indexOf(hardest) ? exercise.plannedEffort.label : hardest),
+    "light"
+  );
+  const allowed = order[Math.min(order.indexOf(ceiling), Math.max(order.indexOf(hardestExercise), order.indexOf("medium")))];
+  if (order.indexOf(effort.label) > order.indexOf(allowed)) {
+    session.plannedEffort = loweredEffort(effort, allowed === "hard" ? "hard" : "medium", why);
+  }
+}
+
+function lowerSessionToMedium(session: ClampSession, why: string) {
+  if (session.plannedEffort && isHardLabel(session.plannedEffort.label)) session.plannedEffort = loweredEffort(session.plannedEffort, "medium", why);
+  for (const exercise of session.exercises ?? []) {
+    if (exercise.plannedEffort && isHardLabel(exercise.plannedEffort.label)) {
+      exercise.plannedEffort = loweredEffort(exercise.plannedEffort, "medium", why);
+      exercise.intensity = "Medium";
+    }
+  }
+}
+
 /**
  * Deterministic, downward-only fixes: over-cap reps or seconds go to the cap
  * (tests excluded), useful goal work gets 2-6 sets, and the top working
@@ -337,13 +508,34 @@ export function clampWeeklyPlan(
   const normal = NORMAL_PROGRESSION_STATES.has(context.readiness.state);
   const sessions = plan.sessions.map((session) => ({
     ...session,
-    exercises: Array.isArray(session.exercises) ? session.exercises.map((exercise) => ({ ...exercise })) : session.exercises
+    plannedEffort: session.plannedEffort ? { ...session.plannedEffort } : session.plannedEffort,
+    exercises: Array.isArray(session.exercises)
+      ? session.exercises.map((exercise) => ({ ...exercise, plannedEffort: exercise.plannedEffort ? { ...exercise.plannedEffort } : exercise.plannedEffort }))
+      : session.exercises
   }));
+  // Athlete-facing notes per session, so the session text never quotes the old numbers.
+  const sessionNotes: string[][] = sessions.map(() => []);
+  let summary = plan.summary;
+  let safetyFlags = plan.safetyFlags;
+  const phase = strengthPhase(context);
+  if (normal && strengthPhaseActive(phase)) {
+    const fixed = clampStrengthPhase(sessions, phase, progression, adjustments, sessionNotes);
+    if (phase.recoveryWeek && typeof summary === "string" && !summary.trim().startsWith("Offload:")) {
+      const rest = summary.trim().replace(/^(?:Build|Restore|Maintenance|Assessment):\s*/, "");
+      summary = `Offload: ${rest}`;
+      adjustments.push("Summary phase set to Offload: for the planned recovery week.");
+    }
+    const flag = phase.recoveryWeek
+      ? "Planned recovery week: lighter on purpose after three loading weeks."
+      : `Race taper: strength stays light in the last 10 days before ${phase.raceTaper!.raceName}.`;
+    if (Array.isArray(safetyFlags) && !safetyFlags.includes(flag) && (fixed || safetyFlags.length === 0)) {
+      safetyFlags = [...safetyFlags, flag];
+    }
+  }
 
   sessions.forEach((session, sessionIndex) => {
     if (!Array.isArray(session.exercises)) return;
-    // Athlete-facing notes, so the session text never quotes the old numbers.
-    const notes: string[] = [];
+    const notes: string[] = sessionNotes[sessionIndex];
     for (const exercise of session.exercises) {
       const metric = metricForExercise(exercise.exercise);
       if (!metric) continue;
@@ -372,6 +564,14 @@ export function clampWeeklyPlan(
       }
 
       if (!normal || entry.status === "free" || !entry.target) continue;
+      if (entry.status === "offload") {
+        if (goalValue(metric, exercise) > entry.target.max) {
+          adjustments.push(`${where}: ${goalValue(metric, exercise)} lowered to ${entry.target.max} ${unit} (no progression in this lighter week).`);
+          notes.push(`${name} ${goalValue(metric, exercise)} -> ${entry.target.max} ${unit} per set (no progression this week)`);
+          exercise[field] = entry.target.max;
+        }
+        continue;
+      }
       if (goalValue(metric, exercise) > entry.target.max) {
         const reason = entry.status === "hold" ? "progression not earned" : "largest allowed progression step";
         adjustments.push(`${where}: ${goalValue(metric, exercise)} lowered to ${entry.target.max} ${unit} (${reason}).`);
@@ -396,5 +596,5 @@ export function clampWeeklyPlan(
     annotateSession(session, notes);
   });
 
-  return { plan: { ...plan, sessions }, adjustments };
+  return { plan: { ...plan, summary, safetyFlags, sessions }, adjustments };
 }
