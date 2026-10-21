@@ -3,11 +3,13 @@ import SwiftUI
 
 struct TodayView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openTab) private var openTab
     @Query(sort: \WorkoutSession.scheduledDate) private var sessions: [WorkoutSession]
     @Query(sort: \WorkoutBlock.orderIndex) private var blocks: [WorkoutBlock]
     @Query(sort: \SetPrescription.orderIndex) private var prescriptions: [SetPrescription]
     @Query(sort: \RunLog.completedAt, order: .reverse) private var runLogs: [RunLog]
     @Query(sort: \GarminDailySnapshot.date, order: .reverse) private var snapshots: [GarminDailySnapshot]
+    @Query(sort: \RaceGoal.createdAt) private var raceGoals: [RaceGoal]
     @Query private var ranks: [RankState]
 
     var profile: UserProfile
@@ -47,6 +49,21 @@ struct TodayView: View {
         return age <= 1 ? snapshot : nil
     }
 
+    /// A session scheduled today that is already logged (or deloaded), so a
+    /// quiet Today reads "done", not "rest".
+    private var finishedToday: Bool {
+        sessions.contains {
+            Calendar.current.isDateInToday($0.scheduledDate) && [.completed, .partial, .deload].contains($0.status)
+        }
+    }
+
+    /// The race goal, while race day is still ahead.
+    private var upcomingRace: RaceGoal? {
+        guard let race = raceGoals.first else { return nil }
+        let calendar = Calendar.current
+        return calendar.startOfDay(for: race.raceDate) >= calendar.startOfDay(for: Date()) ? race : nil
+    }
+
     // MARK: Week context (display only)
 
     private var weekInterval: DateInterval? {
@@ -60,13 +77,6 @@ struct TodayView: View {
             .sorted { $0.scheduledDate < $1.scheduledDate }
     }
 
-    private var weekProgress: Double {
-        let week = thisWeekSessions
-        guard !week.isEmpty else { return 0 }
-        let processed = week.filter { $0.status != .planned }.count
-        return Double(processed) / Double(week.count)
-    }
-
     private var thisWeekKm: Double {
         guard let weekInterval else { return 0 }
         return confirmedGarminRunLogs(from: runLogs)
@@ -77,68 +87,30 @@ struct TodayView: View {
     var body: some View {
         NavigationStack {
             ScreenBackground {
-                LockinHeader {
-                    if !thisWeekSessions.isEmpty {
-                        WeekRing(progress: weekProgress, label: "\(Int((weekProgress * 100).rounded()))%")
-                    }
-                }
-                .entrance(0)
+                TodayHeader(readiness: todaysSnapshot?.trainingReadiness ?? 0)
+                    .entrance(0)
 
-                if let snapshot = todaysSnapshot {
-                    MorningReadinessStrip(snapshot: snapshot)
-                        .entrance(1)
-                }
+                signs
+                    .entrance(1)
 
-                if !dueSessions.isEmpty {
-                    VStack(alignment: .leading, spacing: AppTheme.sectionSpacing) {
-                        ForEach(Array(dueSessions.enumerated()), id: \.element.id) { index, session in
-                            if session.isRun {
-                                RunPrescriptionCard(
-                                    session: session,
-                                    prominent: index == 0
-                                )
-                            } else {
-                                WorkoutPrescriptionCard(
-                                    session: session,
-                                    prescriptions: prescriptionsForSession(session),
-                                    blocks: blocksForSession(session),
-                                    prominent: index == 0,
-                                    onComplete: { beginLogging(session) }
-                                )
-                                .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
-                            }
-                        }
-                    }
-                    .entrance(2)
-                } else if sessions.isEmpty {
-                    EmptyStateView(
-                        systemImage: "sparkles",
-                        title: "No AI plan yet",
-                        message: "Open Coach to check automatic planning status."
-                    )
-                    .entrance(2)
-                } else if let session = futureSession {
-                    UpcomingSessionCard(session: session, prescriptions: prescriptionsForSession(session))
+                if let snapshot = todaysSnapshot, let note = conditionsNote(snapshot) {
+                    ConditionsNote(lead: "Last night.", detail: note)
+                        .padding(.top, -14)
                         .entrance(2)
-                } else {
-                    EmptyStateView(
-                        systemImage: "checkmark.seal",
-                        title: "Week processed",
-                        message: "All currently planned sessions are either completed, missed, or deloaded. Your Progress screen now reflects the score changes."
-                    )
-                    .entrance(2)
                 }
 
-                MetricStrip(cells: [
-                    MetricCellModel(label: "STREAK", value: "\(streakSnapshot.current)"),
-                    MetricCellModel(label: "BEST", value: "\(streakSnapshot.best)"),
-                    MetricCellModel(label: "WEEK", value: runDistanceText(km: thisWeekKm))
-                ])
-                .entrance(3)
+                dayContent
+                    .entrance(3)
 
                 if !thisWeekSessions.isEmpty {
-                    ThisWeekSection(sessions: thisWeekSessions, onSelect: { previewSession = $0 })
-                        .entrance(4)
+                    WeekTrail(
+                        sessions: thisWeekSessions,
+                        weekStart: weekInterval?.start ?? Date(),
+                        streak: streakSnapshot,
+                        weekKm: thisWeekKm,
+                        onSelect: { previewSession = $0 }
+                    )
+                    .entrance(4)
                 }
             }
             .sheet(item: $loggingSession, onDismiss: resetCheckedWorkoutIfLogWasCancelled) { session in
@@ -154,6 +126,203 @@ struct TodayView: View {
                 .presentationDragIndicator(.visible)
             }
         }
+    }
+
+    // MARK: Signs
+
+    @ViewBuilder
+    private var signs: some View {
+        SignpostStack {
+            if let primary = dueSessions.first {
+                Signpost(
+                    eyebrow: dueEyebrow(primary),
+                    title: primary.title,
+                    trailing: signDurationText(minutes: durationMinutes(primary)),
+                    grade: primary.plannedEffortLabel.map(TrailGrade.init)
+                )
+                secondarySign(after: primary)
+            } else if sessions.isEmpty {
+                Signpost(eyebrow: "Start here", title: "Plan your week", trailing: "")
+            } else if let next = futureSession {
+                Signpost(
+                    eyebrow: "Today",
+                    title: finishedToday ? "Done for today" : "Rest day",
+                    trailing: "",
+                    style: .plain
+                )
+                nextSessionSign(next)
+            } else {
+                Signpost(eyebrow: "This week", title: "Week done", trailing: weekDoneCountText)
+                if let race = upcomingRace {
+                    raceSign(race)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func secondarySign(after primary: WorkoutSession) -> some View {
+        if let race = upcomingRace {
+            raceSign(race)
+        } else if let next = futureSession, next.id != primary.id {
+            nextSessionSign(next)
+        }
+    }
+
+    private func raceSign(_ race: RaceGoal) -> some View {
+        Signpost(
+            eyebrow: "Race day, \(race.raceDate.formatted(.dateTime.day().month(.abbreviated)))",
+            title: race.name.isEmpty ? "Race" : race.name,
+            trailing: raceCountdownText(race.raceDate),
+            grade: .mountain,
+            size: .small
+        )
+        .padding(.trailing, 40)
+    }
+
+    private func nextSessionSign(_ session: WorkoutSession) -> some View {
+        Signpost(
+            eyebrow: relativeDayText(session.scheduledDate),
+            title: session.title,
+            trailing: signDurationText(minutes: durationMinutes(session)),
+            grade: session.plannedEffortLabel.map(TrailGrade.init),
+            size: .small
+        )
+        .padding(.trailing, 40)
+    }
+
+    // MARK: Day content
+
+    @ViewBuilder
+    private var dayContent: some View {
+        if !dueSessions.isEmpty {
+            VStack(alignment: .leading, spacing: 32) {
+                ForEach(Array(dueSessions.enumerated()), id: \.element.id) { index, session in
+                    VStack(alignment: .leading, spacing: 16) {
+                        // A second session on the same day gets its own sign.
+                        if index > 0 {
+                            SignpostStack {
+                                Signpost(
+                                    eyebrow: "Also today",
+                                    title: session.title,
+                                    trailing: signDurationText(minutes: durationMinutes(session)),
+                                    grade: session.plannedEffortLabel.map(TrailGrade.init),
+                                    size: .small
+                                )
+                            }
+                        }
+                        if session.isRun {
+                            RunRouteSection(session: session)
+                        } else {
+                            StrengthRouteSection(
+                                session: session,
+                                prescriptions: prescriptionsForSession(session),
+                                blocks: blocksForSession(session),
+                                onComplete: { beginLogging(session) }
+                            )
+                            .id("\(session.id.uuidString)-\(workoutCardResetID.uuidString)")
+                        }
+                    }
+                }
+            }
+        } else if sessions.isEmpty {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("No plan yet")
+                        .font(.lockinSection)
+                    Text("Your coach builds the week from your numbers, your training days and your race goal. It only plans days that are still ahead.")
+                        .font(.lockinBody)
+                        .foregroundStyle(AppTheme.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button("Open Coach") { openTab(.coach) }
+                    .buttonStyle(PrimaryActionButtonStyle())
+            }
+        } else if futureSession != nil {
+            Text(finishedToday
+                ? "Today's session is logged. The coach updates its read from it."
+                : "Nothing to log today. Sessions open in Log on their day.")
+                .font(.lockinBody)
+                .foregroundStyle(AppTheme.bodyText)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Every session is logged")
+                        .font(.lockinSection)
+                    Text("Progress has your new numbers, and the coach can plan next week.")
+                        .font(.lockinBody)
+                        .foregroundStyle(AppTheme.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 10) {
+                    Button("Plan next week") { openTab(.coach) }
+                        .buttonStyle(PrimaryActionButtonStyle())
+                    Button("See progress") { openTab(.progress) }
+                        .buttonStyle(SecondaryActionButtonStyle())
+                }
+            }
+        }
+    }
+
+    // MARK: Text helpers
+
+    private func durationMinutes(_ session: WorkoutSession) -> Int {
+        session.isRun
+            ? session.estimatedDurationMinutes
+            : estimatedWorkoutDurationMinutes(for: session, prescriptions: prescriptionsForSession(session))
+    }
+
+    private func dueEyebrow(_ session: WorkoutSession) -> String {
+        if session.isRun {
+            return session.plannedDistanceKm > 0 ? "Today, \(runDistanceText(km: session.plannedDistanceKm))" : "Today"
+        }
+        let count = prescriptionsForSession(session).count
+        switch count {
+        case 0: return "Today"
+        case 1: return "Today, 1 movement"
+        default: return "Today, \(count) movements"
+        }
+    }
+
+    private func relativeDayText(_ date: Date) -> String {
+        if Calendar.current.isDateInTomorrow(date) { return "Tomorrow" }
+        return date.formatted(.dateTime.weekday(.wide))
+    }
+
+    private func raceCountdownText(_ raceDate: Date) -> String {
+        let calendar = Calendar.current
+        let days = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: Date()),
+            to: calendar.startOfDay(for: raceDate)
+        ).day ?? 0
+        if days <= 0 { return "Today" }
+        if days < 14 { return days == 1 ? "1 day" : "\(days) days" }
+        return "\(days / 7) wk"
+    }
+
+    private var weekDoneCountText: String {
+        let week = thisWeekSessions
+        guard !week.isEmpty else { return "" }
+        let done = week.filter { [.completed, .partial, .deload].contains($0.status) }.count
+        return "\(done) of \(week.count)"
+    }
+
+    /// "Sleep 82, HRV balanced, body battery 61." The Garmin sidecar
+    /// zero-fills missing metrics, so zero means "no data".
+    private func conditionsNote(_ snapshot: GarminDailySnapshot) -> String? {
+        var parts: [String] = []
+        if snapshot.sleepScore > 0 { parts.append("sleep \(snapshot.sleepScore)") }
+        let hrv = snapshot.hrvStatus
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: " ")
+            .lowercased()
+        if !hrv.isEmpty { parts.append("HRV \(hrv)") }
+        if snapshot.bodyBattery > 0 { parts.append("body battery \(snapshot.bodyBattery)") }
+        guard let first = parts.first else { return nil }
+        parts[0] = first.prefix(1).uppercased() + first.dropFirst()
+        return parts.joined(separator: ", ") + "."
     }
 
     private func blocksForSession(_ session: WorkoutSession) -> [WorkoutBlock] {
@@ -216,72 +385,122 @@ private extension View {
     }
 }
 
-// MARK: - Due session blocks
+// MARK: - Header and conditions
 
-struct WorkoutPrescriptionCard: View {
+private struct TodayHeader: View {
+    var readiness: Int
+
+    var body: some View {
+        HStack(alignment: .center) {
+            Text(Date.now, format: .dateTime.weekday(.wide).day().month(.wide))
+                .font(.trail(15, .medium, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.muted)
+            Spacer()
+            if readiness > 0 {
+                Label {
+                    Text("Readiness \(readiness)")
+                        .font(.trail(15, .semibold, relativeTo: .subheadline).monospacedDigit())
+                } icon: {
+                    Image(systemName: "mountain.2")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(AppTheme.text)
+                .accessibilityLabel("Garmin readiness \(readiness)")
+            }
+        }
+    }
+}
+
+private struct ConditionsNote: View {
+    var lead: String
+    var detail: String
+
+    var body: some View {
+        (Text(lead).font(.trail(15, .semibold, relativeTo: .subheadline))
+            + Text(" " + detail).font(.trail(15, .regular, relativeTo: .subheadline)))
+            .foregroundStyle(AppTheme.text)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(padding: 14)
+    }
+}
+
+// MARK: - Strength route
+
+private struct StrengthRouteSection: View {
     var session: WorkoutSession
     var prescriptions: [SetPrescription]
     var blocks: [WorkoutBlock]
-    var prominent: Bool = false
     var onComplete: () -> Void
     @State private var completedPrescriptionIds: Set<UUID> = []
-
-    private var durationMinutes: Int {
-        estimatedWorkoutDurationMinutes(for: session, prescriptions: prescriptions)
-    }
+    @State private var infoItem: SetPrescription?
 
     private var allComplete: Bool {
         !prescriptions.isEmpty && completedPrescriptionIds.count == prescriptions.count
     }
 
+    private var nextItem: SetPrescription? {
+        prescriptions.first { !completedPrescriptionIds.contains($0.id) }
+    }
+
+    private var ctaTitle: String {
+        guard let nextItem else { return "Log session" }
+        let name = nextItem.exercise.title.lowercased()
+        return completedPrescriptionIds.isEmpty ? "Start with \(name)" : "Continue with \(name)"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SessionHeading(
-                title: session.title,
-                trailingText: session.focus.title,
-                prominent: prominent
-            )
+            SectionHeader("Route") {
+                if !prescriptions.isEmpty {
+                    Text("\(completedPrescriptionIds.count) of \(prescriptions.count) done")
+                        .font(.trail(14, .semibold, relativeTo: .subheadline).monospacedDigit())
+                        .foregroundStyle(AppTheme.muted)
+                        .contentTransition(.numericText())
+                }
+            }
 
-            if durationMinutes > 0 || session.plannedEffortLabel != nil {
-                HStack(spacing: 14) {
-                    DurationPill(minutes: durationMinutes)
-                    if let effortLabel = session.plannedEffortLabel {
-                        EffortPill(
-                            label: effortLabel,
-                            targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+            if prescriptions.isEmpty {
+                Text("No exercise details yet.")
+                    .font(.lockinBody)
+                    .foregroundStyle(AppTheme.muted)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(prescriptions) { item in
+                        RouteRow(
+                            item: item,
+                            isComplete: completedPrescriptionIds.contains(item.id),
+                            onToggle: { toggle(item) },
+                            onInfo: { infoItem = item }
                         )
                     }
-                    Spacer(minLength: 0)
                 }
-            }
+                .trailBehind(leading: 22, inset: 29)
 
-            VStack(spacing: 0) {
-                Hairline()
-                ForEach(Array(prescriptions.enumerated()), id: \.element.id) { index, item in
-                    CompactPrescriptionRow(
-                        item: item,
-                        block: blocks.first(where: { $0.id == item.blockId }),
-                        isComplete: completedPrescriptionIds.contains(item.id),
-                        onToggle: { toggle(item) },
-                        onComplete: { complete(item) }
-                    )
-                    if index < prescriptions.count - 1 {
-                        Hairline()
+                Button(ctaTitle) {
+                    if allComplete {
+                        onComplete()
+                    } else if let nextItem {
+                        infoItem = nextItem
                     }
                 }
-                Hairline()
-            }
-
-            // Logging is an explicit decision, not a side effect of the last
-            // checkbox — the button appears once every row is checked.
-            if allComplete {
-                Button("Finish & log", action: onComplete)
-                    .buttonStyle(PrimaryActionButtonStyle())
-                    .accessibilityIdentifier("finish-and-log-button")
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .buttonStyle(PrimaryActionButtonStyle())
+                // Logging stays an explicit decision: the button only turns
+                // into "Log session" once every row is checked.
+                .accessibilityIdentifier(allComplete ? "finish-and-log-button" : "continue-workout-button")
             }
         }
         .animation(.smooth(duration: 0.3), value: allComplete)
+        .sheet(item: $infoItem) { item in
+            WorkoutInfoContent(
+                prescription: item,
+                block: blocks.first { $0.id == item.blockId },
+                onDone: { completedPrescriptionIds.insert(item.id) }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(AppTheme.background)
+        }
     }
 
     private func toggle(_ item: SetPrescription) {
@@ -291,43 +510,70 @@ struct WorkoutPrescriptionCard: View {
             completedPrescriptionIds.insert(item.id)
         }
     }
-
-    private func complete(_ item: SetPrescription) {
-        completedPrescriptionIds.insert(item.id)
-    }
 }
 
-/// The day's heading: a TODAY eyebrow plus the session title. The first due
-/// session carries display type; any further sessions stay at section size.
-private struct SessionHeading: View {
-    var title: String
-    var trailingText: String?
-    var prominent: Bool
+/// One exercise as a waypoint on the day's route: tap the waypoint (or the
+/// row) to check it off, the info button opens the timer and explanation.
+private struct RouteRow: View {
+    var item: SetPrescription
+    var isComplete: Bool
+    var onToggle: () -> Void
+    var onInfo: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: prominent ? 8 : 4) {
-            if prominent {
-                MicroLabel(text: "TODAY", color: AppTheme.accent)
+        HStack(alignment: .center, spacing: 8) {
+            Button(action: onToggle) {
+                WaypointMarker(state: isComplete ? .done : .planned, size: 30)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(prominent ? .lockinDisplay : .lockinSection)
-                    .foregroundStyle(AppTheme.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 12)
-                if let trailingText {
-                    Text(trailingText)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(AppTheme.muted)
+            .buttonStyle(.plain)
+            .sensoryFeedback(.impact(weight: .light), trigger: isComplete) { _, newValue in newValue }
+            .accessibilityLabel(isComplete ? "\(item.exercise.title) done" : "Mark \(item.exercise.title) done")
+            .accessibilityIdentifier(isComplete ? "exercise-checkbox-checked" : "exercise-checkbox-unchecked")
+
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.exercise.title)
+                        .font(.lockinRowTitle)
+                        .foregroundStyle(isComplete ? AppTheme.muted : AppTheme.text)
+                        .lineLimit(1)
+                    if let effortLabel = item.plannedEffortLabel {
+                        EffortPill(
+                            label: effortLabel,
+                            targetRPE: item.plannedEffortTargetRPE > 0 ? item.plannedEffortTargetRPE : nil
+                        )
+                    }
                 }
+                Spacer(minLength: 8)
+                Text(prescriptionText(item))
+                    .font(.trail(19, .bold, relativeTo: .headline).monospacedDigit())
+                    .foregroundStyle(isComplete ? AppTheme.muted : AppTheme.text)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onToggle)
+
+            Button(action: onInfo) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(AppTheme.muted)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(item.exercise.title) details")
         }
+        .frame(minHeight: 58)
+        .animation(.easeOut(duration: 0.2), value: isComplete)
     }
 }
 
-private struct RunPrescriptionCard: View {
+// MARK: - Run route
+
+private struct RunRouteSection: View {
     var session: WorkoutSession
-    var prominent: Bool = false
 
     private var purposeText: String {
         var purpose = session.summary
@@ -337,45 +583,94 @@ private struct RunPrescriptionCard: View {
         return purpose.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var targetHeading: String {
+        switch session.runTargetType {
+        case .hr?: "Heart rate target"
+        case .pace?: "Pace target"
+        case nil: "Target"
+        }
+    }
+
+    /// The watch-facing numbers, big; the zone goes in the caption.
+    private var targetNumbers: (value: String, unit: String)? {
+        let low = session.runTargetLow
+        let high = session.runTargetHigh
+        guard low > 0, high > 0 else { return nil }
+        switch session.runTargetType {
+        case .hr?:
+            return (low == high ? "\(low)" : "\(low)\u{2013}\(high)", "bpm")
+        case .pace?:
+            return (low == high ? format(seconds: low) : "\(format(seconds: low))\u{2013}\(format(seconds: high))", "/km")
+        case nil:
+            return nil
+        }
+    }
+
+    private var zone: String {
+        session.runZone.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SessionHeading(
-                title: session.title,
-                trailingText: (session.runKind ?? .easy).title == session.title ? nil : (session.runKind ?? .easy).title,
-                prominent: prominent
-            )
-
-            if session.estimatedDurationMinutes > 0 || garminWatchPill(for: session) != nil {
-                HStack(spacing: 14) {
-                    if session.estimatedDurationMinutes > 0 {
-                        DurationPill(minutes: session.estimatedDurationMinutes)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center) {
+                    Text(targetHeading)
+                        .font(.trail(15, .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(AppTheme.muted)
+                    Spacer(minLength: 8)
+                    if let effortLabel = session.plannedEffortLabel {
+                        EffortPill(
+                            label: effortLabel,
+                            targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
+                        )
                     }
-                    if let pill = garminWatchPill(for: session) {
-                        StatusPill(text: pill.text, color: pill.color, systemImage: pill.systemImage)
+                }
+                if let targetNumbers {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(targetNumbers.value)
+                            .font(.lockinNumeral(44))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        Text(targetNumbers.unit)
+                            .font(.trail(18, .semibold, relativeTo: .headline))
+                            .foregroundStyle(AppTheme.muted)
                     }
-                    Spacer(minLength: 0)
+                    .accessibilityElement(children: .combine)
+                    if !zone.isEmpty {
+                        Text(zone)
+                            .font(.trail(15, .semibold, relativeTo: .subheadline))
+                    }
+                } else {
+                    Text(runTargetText(session: session))
+                        .font(.trail(28, .bold, relativeTo: .title1))
+                }
+                if !purposeText.isEmpty {
+                    Text(purposeText)
+                        .font(.trail(15, .regular, relativeTo: .subheadline))
+                        .foregroundStyle(AppTheme.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
                 }
             }
+            .foregroundStyle(AppTheme.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
 
             VStack(spacing: 0) {
-                Hairline()
                 RunDetailRow(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
-                Hairline()
                 if session.plannedElevationM > 0 {
-                    RunDetailRow(title: "Elevation gain", value: "\(session.plannedElevationM) m+")
                     Hairline()
+                    RunDetailRow(title: "Climb", value: "\(session.plannedElevationM) m")
                 }
-                RunDetailRow(title: "Target", value: runTargetText(session: session))
-                Hairline()
+                if session.estimatedDurationMinutes > 0 {
+                    Hairline()
+                    RunDetailRow(title: "Time", value: signDurationText(minutes: session.estimatedDurationMinutes))
+                }
             }
+            .padding(.horizontal, 16)
+            .card(padding: 0)
 
-            if !purposeText.isEmpty {
-                Text(purposeText)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
+            WatchStatusRow(session: session)
         }
     }
 }
@@ -387,263 +682,187 @@ private struct RunDetailRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             Text(title)
-                .font(.subheadline)
+                .font(.trail(16, .regular, relativeTo: .body))
                 .foregroundStyle(AppTheme.muted)
-                .lineLimit(1)
             Spacer(minLength: 8)
             Text(value)
-                .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                .font(.trail(17, .semibold, relativeTo: .headline).monospacedDigit())
                 .foregroundStyle(AppTheme.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
-        .padding(.vertical, 12)
+        .frame(minHeight: 50)
     }
 }
 
-private struct CompactPrescriptionRow: View {
-    var item: SetPrescription
-    var block: WorkoutBlock?
-    var isComplete: Bool
-    var onToggle: () -> Void
-    var onComplete: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            WorkoutInfoPopover(prescription: item, block: block, onDone: onComplete) {
-                HStack(alignment: .center, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.exercise.title)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(isComplete ? AppTheme.muted : AppTheme.text)
-                            .strikethrough(isComplete, color: AppTheme.faint)
-                            .lineLimit(1)
-                        if let effortLabel = item.plannedEffortLabel {
-                            EffortPill(
-                                label: effortLabel,
-                                targetRPE: item.plannedEffortTargetRPE > 0 ? item.plannedEffortTargetRPE : nil
-                            )
-                        }
-                    }
-                    Spacer(minLength: 8)
-                    Text(prescriptionText(item))
-                        .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(isComplete ? AppTheme.muted : AppTheme.text)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(AppTheme.faint)
-                }
-                .padding(.vertical, 11)
-                .contentShape(Rectangle())
-            }
-            .frame(maxWidth: .infinity)
-
-            CheckCircle(
-                isComplete: isComplete,
-                accessibilityName: item.exercise.title,
-                onToggle: onToggle
-            )
-        }
-        .animation(.easeOut(duration: 0.2), value: isComplete)
-    }
-}
-
-// MARK: - States and context
-
-private struct UpcomingSessionCard: View {
+/// Where the planned run stands on the Garmin watch.
+private struct WatchStatusRow: View {
     var session: WorkoutSession
-    var prescriptions: [SetPrescription] = []
 
-    private var durationMinutes: Int {
-        estimatedWorkoutDurationMinutes(for: session, prescriptions: prescriptions)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 8) {
-                MicroLabel(text: "SCHEDULED", color: AppTheme.accent)
-                Text("No session due today")
-                    .font(.lockinSection)
-                    .foregroundStyle(AppTheme.text)
-            }
-
-            VStack(spacing: 10) {
-                InfoLine(title: "Next session", value: session.title)
-                if session.isRun, session.plannedDistanceKm > 0 {
-                    InfoLine(title: "Distance", value: runDistanceText(km: session.plannedDistanceKm))
-                }
-                if let pill = garminWatchPill(for: session) {
-                    HStack {
-                        Text("Watch")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.muted)
-                        Spacer()
-                        StatusPill(text: pill.text, color: pill.color, systemImage: pill.systemImage)
-                    }
-                }
-                if durationMinutes > 0 {
-                    HStack {
-                        Text("Duration")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.muted)
-                        Spacer()
-                        DurationPill(minutes: durationMinutes)
-                    }
-                }
-                if let effortLabel = session.plannedEffortLabel {
-                    HStack {
-                        Text("Planned effort")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.muted)
-                        Spacer()
-                        EffortPill(
-                            label: effortLabel,
-                            targetRPE: session.plannedEffortTargetRPE > 0 ? session.plannedEffortTargetRPE : nil
-                        )
-                    }
-                }
-                InfoLine(title: "Date", value: session.scheduledDate.formatted(date: .abbreviated, time: .omitted))
-            }
-
-            Text("Future sessions stay in Log until their scheduled day.")
-                .font(.system(size: 12))
-                .foregroundStyle(AppTheme.faint)
+    private var status: (title: String, detail: String, chip: String?, isProblem: Bool) {
+        if session.pushedToGarminAt != nil || session.garminSyncStatus == .synced {
+            return ("On your watch", "Garmin imports the run when you finish.", "Synced", false)
         }
-        .ruled(verticalPadding: 18)
-    }
-}
-
-/// This morning's Garmin readiness — the "how hard can I go today" context,
-/// shown only while the snapshot is fresh. The post-session subjective
-/// scores live with their sessions in Log.
-private struct MorningReadinessStrip: View {
-    var snapshot: GarminDailySnapshot
-
-    private var hrvText: String {
-        let trimmed = snapshot.hrvStatus.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "—" }
-        return trimmed.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-
-    // The Garmin sidecar zero-fills missing metrics, so zero means "no data".
-    private func metricText(_ value: Int) -> String {
-        value > 0 ? "\(value)" : "—"
+        switch session.garminSyncStatus {
+        case .some(.pending), .some(.retrying), .some(.blockedOnDelete):
+            return ("Sending to your watch", "This usually takes a minute.", nil, false)
+        case .some(.failed):
+            return ("Watch sync failed", "Open Profile, then Garmin, to try again.", nil, true)
+        case .some(.synced):
+            return ("On your watch", "Garmin imports the run when you finish.", "Synced", false)
+        case .some(.deleted), .none:
+            return ("Not on your watch yet", "It goes to Garmin once the sync runs.", nil, false)
+        }
     }
 
     var body: some View {
-        MetricStrip(cells: [
-            MetricCellModel(
-                label: "READINESS",
-                value: metricText(snapshot.trainingReadiness),
-                valueColor: snapshot.trainingReadiness > 0 ? AppTheme.text : AppTheme.faint
-            ),
-            MetricCellModel(
-                label: "SLEEP",
-                value: metricText(snapshot.sleepScore),
-                valueColor: snapshot.sleepScore > 0 ? AppTheme.text : AppTheme.faint
-            ),
-            MetricCellModel(
-                label: "HRV",
-                value: hrvText,
-                valueColor: hrvText == "—" ? AppTheme.faint : AppTheme.text
-            )
-        ])
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "applewatch")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(status.isProblem ? AppTheme.markerRedText : AppTheme.text)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(status.title)
+                    .font(.trail(16, .semibold, relativeTo: .headline))
+                    .foregroundStyle(status.isProblem ? AppTheme.markerRedText : AppTheme.text)
+                Text(status.detail)
+                    .font(.lockinMeta)
+                    .foregroundStyle(AppTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if let chip = status.chip {
+                Label(chip, systemImage: "checkmark")
+                    .font(.trail(12, .semibold, relativeTo: .caption1))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(AppTheme.text))
+            }
+        }
+        .card(padding: 14)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Morning readiness \(metricText(snapshot.trainingReadiness)), sleep \(metricText(snapshot.sleepScore)), HRV \(hrvText)")
     }
 }
 
-/// Display-only week ledger: every session scheduled this calendar week with
-/// its state at the trailing edge, ruled like the approved reference.
-private struct ThisWeekSection: View {
+// MARK: - This week
+
+/// The week as a short trail: one waypoint per day, today in sign yellow.
+/// Tapping a day with a session opens its preview.
+private struct WeekTrail: View {
     var sessions: [WorkoutSession]
-    var onSelect: (WorkoutSession) -> Void = { _ in }
+    var weekStart: Date
+    var streak: TrainingStreakSnapshot
+    var weekKm: Double
+    var onSelect: (WorkoutSession) -> Void
+
+    private var days: [Date] {
+        let calendar = Calendar.current
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: weekStart) }
+    }
+
+    private var weekNote: String {
+        let done = sessions.filter { [.completed, .partial, .deload].contains($0.status) }.count
+        let open = sessions.filter { $0.status == .planned }.count
+        if open == 0 { return "\(done) done" }
+        return "\(done) done, \(open) to go"
+    }
+
+    private func sessionsOn(_ day: Date) -> [WorkoutSession] {
+        sessions.filter { Calendar.current.isDate($0.scheduledDate, inSameDayAs: day) }
+    }
+
+    private func state(for day: Date) -> WaypointState {
+        let daySessions = sessionsOn(day)
+        guard !daySessions.isEmpty else { return .rest }
+        if daySessions.contains(where: { $0.status == .missed }) { return .missed }
+        if daySessions.allSatisfy({ $0.status != .planned }) { return .done }
+        return Calendar.current.isDateInToday(day) ? .current : .planned
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("This week")
-            VStack(spacing: 0) {
-                Hairline()
-                ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
-                    ThisWeekRow(session: session, onSelect: { onSelect(session) })
-                    if index < sessions.count - 1 {
-                        Hairline()
+            HStack(alignment: .firstTextBaseline) {
+                Text("This week")
+                    .font(.trail(17, .semibold, relativeTo: .headline))
+                Spacer()
+                Text(weekNote)
+                    .font(.lockinMeta.monospacedDigit())
+                    .foregroundStyle(AppTheme.muted)
+            }
+
+            HStack(spacing: 0) {
+                ForEach(days, id: \.self) { day in
+                    dayCell(day)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .background(alignment: .top) {
+                TrailLine(axis: .horizontal)
+                    .stroke(AppTheme.post, style: StrokeStyle(lineWidth: 3, dash: [5, 5]))
+                    .frame(height: 3)
+                    .padding(.top, 36)
+                    .padding(.horizontal, 22)
+                    .accessibilityHidden(true)
+            }
+
+            Hairline()
+
+            HStack {
+                Text(streak.current == 1 ? "1 session in a row" : "\(streak.current) sessions in a row")
+                Spacer()
+                if weekKm > 0 {
+                    Text("\(runDistanceText(km: weekKm)) run")
+                }
+            }
+            .font(.lockinMeta.monospacedDigit())
+            .foregroundStyle(AppTheme.muted)
+        }
+        .foregroundStyle(AppTheme.text)
+        .card(padding: 14)
+    }
+
+    @ViewBuilder
+    private func dayCell(_ day: Date) -> some View {
+        let daySessions = sessionsOn(day)
+        let dayState = state(for: day)
+        let label = VStack(spacing: 8) {
+            Text(day, format: .dateTime.weekday(.abbreviated))
+                .font(.trail(12, .semibold, relativeTo: .caption1))
+                .foregroundStyle(Calendar.current.isDateInToday(day) ? AppTheme.text : AppTheme.muted)
+            // Session waypoints sit on a white disc that cuts the trail;
+            // rest days are small dots the trail runs straight through.
+            WaypointMarker(state: dayState, size: 26)
+                .background {
+                    if dayState != .rest {
+                        Circle().fill(AppTheme.surface).padding(-3)
                     }
                 }
-                Hairline()
-            }
         }
-    }
-}
+        .frame(minWidth: 44, minHeight: 56)
+        .contentShape(Rectangle())
 
-private func garminWatchPill(for session: WorkoutSession) -> (text: String, color: Color, systemImage: String)? {
-    guard session.isRun else { return nil }
-    if session.pushedToGarminAt != nil || session.garminSyncStatus == .synced {
-        return ("On your watch", AppTheme.muted, "applewatch")
-    }
-
-    switch session.garminSyncStatus {
-    case .some(.pending), .some(.retrying), .some(.blockedOnDelete):
-        return ("Syncing to watch", AppTheme.muted, "hourglass")
-    case .some(.failed):
-        return ("Watch sync failed", AppTheme.warning, "exclamationmark.triangle.fill")
-    case .some(.deleted), .none:
-        return ("Awaiting Garmin", AppTheme.muted, "applewatch.radiowaves.left.and.right")
-    case .some(.synced):
-        return ("On your watch", AppTheme.muted, "applewatch")
-    }
-}
-
-private struct ThisWeekRow: View {
-    var session: WorkoutSession
-    var onSelect: () -> Void = {}
-
-    private var isToday: Bool {
-        Calendar.current.isDateInToday(session.scheduledDate)
-    }
-
-    private var stateText: String {
-        switch session.status {
-        case .completed: "Done"
-        case .partial: "Partial"
-        case .deload: "Deload"
-        case .missed: "Missed"
-        case .planned: isToday ? "Today" : "Planned"
+        if let first = daySessions.first {
+            Button { onSelect(first) } label: { label }
+                .buttonStyle(.plain)
+                .accessibilityLabel(dayAccessibilityText(day, sessions: daySessions))
+                .accessibilityHint("Open workout details")
+        } else {
+            label
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(day.formatted(.dateTime.weekday(.wide))), rest")
         }
     }
 
-    private var stateColor: Color {
-        switch session.status {
-        case .completed, .partial, .deload: AppTheme.accent
-        case .missed: AppTheme.warning
-        case .planned: isToday ? AppTheme.accent : AppTheme.muted
+    private func dayAccessibilityText(_ day: Date, sessions: [WorkoutSession]) -> String {
+        let titles = sessions.map(\.title).joined(separator: " and ")
+        let status: String
+        switch state(for: day) {
+        case .done: status = "done"
+        case .missed: status = "missed"
+        case .current: status = "today"
+        default: status = "planned"
         }
-    }
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 12) {
-                WorkoutStatusIcon(status: session.status)
-                Text(session.scheduledDate, format: .dateTime.weekday(.abbreviated))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.muted)
-                    .frame(width: 34, alignment: .leading)
-                Text(session.title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(AppTheme.text)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(stateText)
-                    .font(.system(size: 13, weight: isToday && session.status == .planned ? .semibold : .regular))
-                    .foregroundStyle(stateColor)
-            }
-            .padding(.vertical, 11)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("Open workout details")
+        return "\(day.formatted(.dateTime.weekday(.wide))), \(titles), \(status)"
     }
 }

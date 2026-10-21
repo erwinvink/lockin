@@ -20,7 +20,7 @@ final class DesignScreenshotTour: XCTestCase {
         app.launch()
 
         // Today, pristine.
-        XCTAssertTrue(app.staticTexts["STREAK"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["save-run-feedback-button"].exists)
         snap(app, "01-today-top", in: directory)
         app.swipeUp()
@@ -152,8 +152,9 @@ final class FitnessAppUITests: XCTestCase {
         let app = launchFreshApp()
         onboardDefault(app)
 
-        XCTAssertTrue(app.staticTexts["No AI plan yet"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Open Coach to check automatic planning status."].exists)
+        XCTAssertTrue(app.staticTexts["No plan yet"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Plan your week"].exists)
+        XCTAssertTrue(app.buttons["Open Coach"].exists)
         XCTAssertFalse(app.navigationBars["Today"].exists)
 
         app.tabBars.buttons["Coach"].tap()
@@ -260,10 +261,10 @@ final class FitnessAppUITests: XCTestCase {
         app.launchArguments = ["UITesting", "SeedTwoWeeksActivity"]
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["STREAK"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["BEST"].exists)
+        XCTAssertTrue(app.staticTexts["Route"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["This week"].exists)
         XCTAssertFalse(app.staticTexts["CONSISTENCY"].exists)
-        XCTAssertFalse(app.staticTexts["No session due today"].exists)
+        XCTAssertFalse(app.staticTexts["Rest day"].exists)
         XCTAssertFalse(app.buttons["save-run-feedback-button"].exists)
         XCTAssertTrue(app.staticTexts["Today Simulation"].exists)
         XCTAssertTrue(app.staticTexts["Pull-up"].exists)

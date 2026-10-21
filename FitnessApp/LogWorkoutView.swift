@@ -28,6 +28,7 @@ struct LogWorkoutView: View {
     @State private var pushUpsText = ""
     @State private var plankSecondsText = ""
     @State private var rpe = 7
+    @State private var didApplyPlannedRPE = false
     @State private var painLevel = 0
     @State private var howFelt = 3
     @State private var notes = ""
@@ -84,36 +85,52 @@ struct LogWorkoutView: View {
         return session.plannedEffortLabel?.defaultTargetRPE ?? 0
     }
 
+    private var sessionMetaText: String {
+        let date = session.scheduledDate.formatted(.dateTime.weekday(.wide).day().month(.wide))
+        let minutes = estimatedWorkoutDurationMinutes(for: session, prescriptions: sessionPrescriptions)
+        return minutes > 0 ? "\(date), \(signDurationText(minutes: minutes)) planned" : date
+    }
+
     var body: some View {
         NavigationStack {
             ScreenBackground {
-                LoggedWorkCard(
+                LogSessionHeader(
+                    title: session.title,
+                    meta: sessionMetaText,
+                    plannedRPE: plannedRPEForLog
+                )
+
+                LoggedWorkSection(
                     shouldLogPullUps: shouldLogPullUps,
                     shouldLogPushUps: shouldLogPushUps,
                     shouldLogPlank: shouldLogPlank,
+                    latestPullUps: latestPullUps,
+                    latestPushUps: latestPushUps,
+                    latestPlankSeconds: latestPlankSeconds,
                     pullUpsText: $pullUpsText,
                     pushUpsText: $pushUpsText,
                     plankSecondsText: $plankSecondsText,
                     focusedField: $focusedLogField
                 )
 
-                ReadinessInputCard(
-                    rpe: $rpe,
-                    painLevel: $painLevel,
-                    howFelt: $howFelt
-                )
+                EffortSection(rpe: $rpe, plannedRPE: plannedRPEForLog)
 
-                NotesCard(notes: $notes)
+                PainSection(painLevel: $painLevel)
+
+                FeelSection(howFelt: $howFelt)
+
+                NotesSection(notes: $notes)
 
                 Button("Save log", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(!requiredLogFieldsAreValid)
             }
-            .navigationTitle("Log")
+            .navigationTitle("Log session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .foregroundStyle(AppTheme.muted)
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -123,6 +140,18 @@ struct LogWorkoutView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
+            .onAppear(perform: applyPlannedRPE)
+        }
+        .presentationBackground(AppTheme.background)
+    }
+
+    /// Effort starts at what the plan asked for, so logging "as planned" is
+    /// one tap and a harder or easier session is a deliberate change.
+    private func applyPlannedRPE() {
+        guard !didApplyPlannedRPE else { return }
+        didApplyPlannedRPE = true
+        if (1...10).contains(plannedRPEForLog) {
+            rpe = plannedRPEForLog
         }
     }
 
@@ -251,82 +280,169 @@ struct LogWorkoutView: View {
     }
 }
 
-private struct LoggedWorkCard: View {
+// MARK: - Header
+
+private struct LogSessionHeader: View {
+    var title: String
+    var meta: String
+    var plannedRPE: Int
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.trail(24, .bold, relativeTo: .title2))
+                    .foregroundStyle(AppTheme.text)
+                Text(meta)
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+            }
+            Spacer(minLength: 8)
+            if (1...10).contains(plannedRPE) {
+                HStack(spacing: 7) {
+                    TrailMark(grade: TrailGrade(PlannedEffortLabel.fromRPE(plannedRPE)))
+                    Text("Planned RPE \(plannedRPE)")
+                        .font(.lockinMeta.monospacedDigit())
+                        .foregroundStyle(AppTheme.muted)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+}
+
+// MARK: - Logged work
+
+private struct LoggedWorkSection: View {
     var shouldLogPullUps: Bool
     var shouldLogPushUps: Bool
     var shouldLogPlank: Bool
+    var latestPullUps: Int
+    var latestPushUps: Int
+    var latestPlankSeconds: Int
     @Binding var pullUpsText: String
     @Binding var pushUpsText: String
     @Binding var plankSecondsText: String
     @FocusState.Binding var focusedField: LogMetricField?
 
+    private var hasRequiredWork: Bool {
+        shouldLogPullUps || shouldLogPushUps || shouldLogPlank
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Logged work") {
-                if shouldLogPullUps || shouldLogPushUps || shouldLogPlank {
-                    MicroLabel(text: "REQUIRED", color: AppTheme.accent)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Best strict set")
+                    .font(.trail(17, .semibold, relativeTo: .headline))
+                Spacer()
+                if hasRequiredWork {
+                    Text("Required")
+                        .font(.trail(12, .semibold, relativeTo: .caption1))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(AppTheme.sign))
                 }
             }
-            if shouldLogPullUps {
-                LogNumberField(
-                    title: "Best pull-up set",
-                    text: $pullUpsText,
-                    range: 0...300,
-                    focusedField: $focusedField,
-                    focusID: .pullUps
-                )
-            }
-            if shouldLogPushUps {
-                LogNumberField(
-                    title: "Best push-up set",
-                    text: $pushUpsText,
-                    range: 0...500,
-                    focusedField: $focusedField,
-                    focusID: .pushUps
-                )
-            }
-            if shouldLogPlank {
-                LogNumberField(
-                    title: "Longest plank hold",
-                    text: $plankSecondsText,
-                    range: 0...3_600,
-                    suffix: "sec",
-                    focusedField: $focusedField,
-                    focusID: .plankSeconds
-                )
-            }
-            if !shouldLogPullUps && !shouldLogPushUps && !shouldLogPlank {
-                Text("No goal max test is planned in this session. Log readiness and notes only.")
-                    .font(.footnote)
+            .foregroundStyle(AppTheme.text)
+
+            if hasRequiredWork {
+                VStack(spacing: 0) {
+                    if shouldLogPullUps {
+                        LogStepperRow(
+                            title: "Pull-ups",
+                            text: $pullUpsText,
+                            range: 0...300,
+                            step: 1,
+                            startValue: latestPullUps,
+                            hint: "Last \(latestPullUps)",
+                            focusedField: $focusedField,
+                            focusID: .pullUps
+                        )
+                    }
+                    if shouldLogPullUps && (shouldLogPushUps || shouldLogPlank) {
+                        Hairline()
+                    }
+                    if shouldLogPushUps {
+                        LogStepperRow(
+                            title: "Push-ups",
+                            text: $pushUpsText,
+                            range: 0...500,
+                            step: 1,
+                            startValue: latestPushUps,
+                            hint: "Last \(latestPushUps)",
+                            focusedField: $focusedField,
+                            focusID: .pushUps
+                        )
+                    }
+                    if shouldLogPushUps && shouldLogPlank {
+                        Hairline()
+                    }
+                    if shouldLogPlank {
+                        LogStepperRow(
+                            title: "Plank",
+                            text: $plankSecondsText,
+                            range: 0...3_600,
+                            step: 5,
+                            startValue: latestPlankSeconds,
+                            hint: "Last \(latestPlankSeconds) sec",
+                            suffix: "sec",
+                            focusedField: $focusedField,
+                            focusID: .plankSeconds
+                        )
+                    }
+                }
+                .padding(.horizontal, 14)
+                .card(padding: 0)
+            } else {
+                Text("No max test in this session. Log effort and notes only.")
+                    .font(.lockinBody)
                     .foregroundStyle(AppTheme.muted)
             }
         }
-        .ruled(verticalPadding: 16)
     }
 }
 
-private struct LogNumberField: View {
+/// One logged number: type it, or nudge it with − and +. An empty field
+/// starts from the last logged value on the first nudge.
+private struct LogStepperRow: View {
     var title: String
     @Binding var text: String
     var range: ClosedRange<Int>
+    var step: Int
+    var startValue: Int
+    var hint: String
     var suffix: String = ""
     @FocusState.Binding var focusedField: LogMetricField?
     var focusID: LogMetricField
 
+    private var currentValue: Int? {
+        Int(text)
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(AppTheme.text)
-                .lineLimit(2)
-            Spacer()
-            HStack(spacing: 6) {
-                TextField("", text: $text)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.trailing)
-                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.trail(16, .medium, relativeTo: .body))
                     .foregroundStyle(AppTheme.text)
-                    .frame(width: 70)
+                Text(hint)
+                    .font(.lockinMeta.monospacedDigit())
+                    .foregroundStyle(AppTheme.muted)
+            }
+            Spacer(minLength: 8)
+
+            stepButton(systemImage: "minus", label: "Less \(title.lowercased())") {
+                let base = currentValue ?? startValue
+                text = "\(max(range.lowerBound, currentValue == nil ? base : base - step))"
+            }
+
+            HStack(spacing: 4) {
+                TextField("–", text: $text)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.center)
+                    .font(.trail(22, .bold, relativeTo: .title2).monospacedDigit())
+                    .foregroundStyle(AppTheme.text)
+                    .frame(width: suffix.isEmpty ? 64 : 56)
                     .accessibilityLabel(title)
                     .focused($focusedField, equals: focusID)
                     .onChange(of: text) { _, newValue in
@@ -334,20 +450,33 @@ private struct LogNumberField: View {
                     }
                 if !suffix.isEmpty {
                     Text(suffix)
-                        .font(.footnote)
+                        .font(.lockinMeta)
                         .foregroundStyle(AppTheme.muted)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(AppTheme.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                    .strokeBorder(focusedField == focusID ? AppTheme.accent : AppTheme.divider, lineWidth: 1)
-            )
-            .animation(.easeOut(duration: 0.15), value: focusedField == focusID)
+
+            stepButton(systemImage: "plus", label: "More \(title.lowercased())") {
+                let base = currentValue ?? startValue
+                text = "\(min(range.upperBound, currentValue == nil ? base : base + step))"
+            }
         }
+        .frame(minHeight: 64)
+    }
+
+    private func stepButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(AppTheme.text)
+                .frame(width: 44, height: 44)
+                .background(
+                    RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
+                        .strokeBorder(AppTheme.post.opacity(0.7), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private func sanitized(_ value: String) -> String {
@@ -359,118 +488,169 @@ private struct LogNumberField: View {
     }
 }
 
-private struct ReadinessInputCard: View {
+// MARK: - Scales
+
+/// A row of tappable values; the selected one is filled granite.
+private struct ScaleSelector<Cell: View>: View {
+    var accessibilityName: String
+    var values: [Int]
+    @Binding var selection: Int
+    var spacing: CGFloat = 4
+    var minHeight: CGFloat = 44
+    @ViewBuilder var cell: (Int, Bool) -> Cell
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            ForEach(values, id: \.self) { value in
+                let isSelected = value == selection
+                Button {
+                    selection = value
+                } label: {
+                    cell(value, isSelected)
+                        .foregroundStyle(isSelected ? Color.white : AppTheme.text)
+                        .frame(maxWidth: .infinity, minHeight: minHeight)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(isSelected ? AppTheme.text : AppTheme.surface)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(isSelected ? Color.clear : AppTheme.divider, lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .sensoryFeedback(.selection, trigger: selection)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityName)
+    }
+}
+
+private struct ScaleHeading: View {
+    var title: String
+    var valueText: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.trail(17, .semibold, relativeTo: .headline))
+            Spacer()
+            Text(valueText)
+                .font(.trail(15, .semibold, relativeTo: .subheadline).monospacedDigit())
+        }
+        .foregroundStyle(AppTheme.text)
+    }
+}
+
+private struct EffortSection: View {
     @Binding var rpe: Int
+    var plannedRPE: Int
+
+    private var comparisonText: String? {
+        guard (1...10).contains(plannedRPE) else { return nil }
+        let difference = rpe - plannedRPE
+        if difference == 0 { return "Right on plan (planned \(plannedRPE))" }
+        return difference > 0
+            ? "\(difference) above plan (planned \(plannedRPE))"
+            : "\(-difference) below plan (planned \(plannedRPE))"
+    }
+
+    var body: some View {
+        let descriptor = ReadinessScale.perceivedEffort(rpe)
+        VStack(alignment: .leading, spacing: 8) {
+            ScaleHeading(title: "Perceived effort", valueText: "\(rpe), \(descriptor.label)")
+
+            VStack(spacing: 4) {
+                ScaleSelector(accessibilityName: "Perceived effort", values: Array(1...10), selection: $rpe) { value, _ in
+                    Text("\(value)")
+                        .font(.trail(16, .bold, relativeTo: .headline).monospacedDigit())
+                        .accessibilityLabel("RPE \(value)")
+                }
+                // Each value's trail grade, so the scale reads like the plan.
+                HStack(spacing: 4) {
+                    ForEach(1...10, id: \.self) { value in
+                        TrailMark(grade: TrailGrade(PlannedEffortLabel.fromRPE(value)), width: nil, height: 6)
+                    }
+                }
+                .accessibilityHidden(true)
+            }
+
+            Text([descriptor.detail, comparisonText].compactMap { $0 }.joined(separator: " "))
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct PainSection: View {
     @Binding var painLevel: Int
+
+    var body: some View {
+        let descriptor = ReadinessScale.pain(painLevel)
+        VStack(alignment: .leading, spacing: 8) {
+            ScaleHeading(
+                title: "Pain",
+                valueText: painLevel == 0 ? "No pain" : "\(painLevel), \(descriptor.label)"
+            )
+
+            ScaleSelector(accessibilityName: "Pain", values: Array(0...10), selection: $painLevel, spacing: 3) { value, _ in
+                Text("\(value)")
+                    .font(.trail(15, .bold, relativeTo: .headline).monospacedDigit())
+                    .accessibilityLabel("Pain \(value)")
+            }
+
+            Text(descriptor.detail)
+                .font(.lockinMeta)
+                .foregroundStyle(painLevel >= 4 ? AppTheme.markerRedText : AppTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct FeelSection: View {
     @Binding var howFelt: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("Readiness")
-            ReadinessSlider(
-                title: "Perceived effort",
-                systemImage: "speedometer",
-                value: $rpe,
-                range: 1...10,
-                descriptor: ReadinessScale.perceivedEffort
-            )
-            Hairline()
-            ReadinessSlider(
-                title: "Pain",
-                systemImage: "heart",
-                value: $painLevel,
-                range: 0...10,
-                descriptor: ReadinessScale.pain
-            )
-            Hairline()
-            ReadinessSlider(
-                title: "How did you feel?",
-                systemImage: "face.smiling",
-                value: $howFelt,
-                range: 1...5,
-                descriptor: ReadinessScale.howIFelt
-            )
+        VStack(alignment: .leading, spacing: 8) {
+            ScaleHeading(title: "How did you feel?", valueText: "")
+
+            ScaleSelector(accessibilityName: "How did you feel", values: Array(1...5), selection: $howFelt, minHeight: 52) { value, _ in
+                Text(ReadinessScale.howIFelt(value).label)
+                    .font(.trail(13, .semibold, relativeTo: .footnote))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 2)
+            }
+
+            Text(ReadinessScale.howIFelt(howFelt).detail)
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
         }
-        .ruled(verticalPadding: 16)
     }
 }
 
-struct ReadinessSlider: View {
-    var title: String
-    var systemImage: String
-    @Binding var value: Int
-    var range: ClosedRange<Int>
-    var descriptor: (Int) -> ReadinessDescriptor
-    @State private var draftValue: Double?
-
-    private var displayedValue: Int {
-        let rawValue = Int((draftValue ?? Double(value)).rounded())
-        return min(range.upperBound, max(range.lowerBound, rawValue))
-    }
-
-    private var sliderValue: Binding<Double> {
-        Binding(
-            get: { draftValue ?? Double(value) },
-            set: { newValue in
-                draftValue = min(Double(range.upperBound), max(Double(range.lowerBound), newValue))
-            }
-        )
-    }
+private struct NotesSection: View {
+    @Binding var notes: String
 
     var body: some View {
-        let current = descriptor(displayedValue)
-
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(title, systemImage: systemImage)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(AppTheme.text)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.85)
-
-                    Text(current.detail)
-                        .font(.system(size: 12))
-                        .foregroundStyle(AppTheme.faint)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(displayedValue)")
-                        .font(.lockinNumeral(20))
-                        .contentTransition(.numericText())
-                        .animation(.snappy(duration: 0.2), value: displayedValue)
-                    Text(current.label)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-                .foregroundStyle(current.color)
-            }
-
-            Slider(
-                value: sliderValue,
-                in: Double(range.lowerBound)...Double(range.upperBound),
-                step: 1,
-                onEditingChanged: handleEditingChanged
-            )
-            .tint(current.color)
-            .controlSize(.small)
-            .sensoryFeedback(.selection, trigger: displayedValue)
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func handleEditingChanged(_ isEditing: Bool) {
-        if isEditing {
-            draftValue = draftValue ?? Double(value)
-        } else {
-            value = displayedValue
-            draftValue = nil
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Notes")
+                .font(.trail(17, .semibold, relativeTo: .headline))
+                .foregroundStyle(AppTheme.text)
+            TextField("What changed? Grip, sleep, soreness…", text: $notes, axis: .vertical)
+                .font(.lockinBody)
+                .lineLimit(3...6)
+                .lockinField()
         }
     }
 }
+
+// MARK: - Readiness scales
 
 struct ReadinessDescriptor {
     var label: String
@@ -559,19 +739,5 @@ enum ReadinessScale {
         default:
             return 0
         }
-    }
-}
-
-private struct NotesCard: View {
-    @Binding var notes: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SectionHeader("Notes")
-            TextField("What changed?", text: $notes, axis: .vertical)
-                .font(.subheadline)
-                .lockinField()
-        }
-        .ruled(verticalPadding: 16)
     }
 }
