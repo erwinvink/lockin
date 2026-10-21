@@ -307,9 +307,9 @@ final class FitnessAppUITests: XCTestCase {
         app.tabBars.buttons["Coach"].tap()
         XCTAssertTrue(app.staticTexts["Coach read"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Back on track"].exists)
-        XCTAssertTrue(app.staticTexts["RUNNING"].exists)
-        XCTAssertTrue(app.staticTexts["STRENGTH"].exists)
-        XCTAssertTrue(app.staticTexts["NEXT STEP"].exists)
+        XCTAssertTrue(app.staticTexts["Running"].exists)
+        XCTAssertTrue(app.staticTexts["Strength"].exists)
+        XCTAssertTrue(app.staticTexts["Next step"].exists)
         XCTAssertTrue(app.staticTexts["coach-read-updated-at"].exists)
         XCTAssertFalse(app.buttons["Read new session"].exists)
 

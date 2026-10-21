@@ -305,10 +305,14 @@ struct SecondaryActionButtonStyle: ButtonStyle {
 /// real navigation bars and which don't.
 struct ScreenBackground<Content: View>: View {
     let title: String?
+    /// Off for a scroll view that starts below other chrome (Coach's
+    /// Read/Chat switch), where the fade would wash out the first section.
+    var fadesUnderStatusBar: Bool
     @ViewBuilder var content: Content
 
-    init(title: String? = nil, @ViewBuilder content: () -> Content) {
+    init(title: String? = nil, fadesUnderStatusBar: Bool = true, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.fadesUnderStatusBar = fadesUnderStatusBar
         self.content = content()
     }
 
@@ -345,6 +349,7 @@ struct ScreenBackground<Content: View>: View {
             .frame(height: 64)
             .ignoresSafeArea(edges: .top)
             .allowsHitTesting(false)
+            .opacity(fadesUnderStatusBar ? 1 : 0)
         }
     }
 }

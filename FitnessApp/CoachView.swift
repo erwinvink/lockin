@@ -39,22 +39,16 @@ struct CoachView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Coach view", selection: $selectedSection) {
-                    ForEach(CoachSection.allCases) { section in
-                        Text(section.title).tag(section)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, AppTheme.screenMargin)
-                .padding(.top, 8)
-                .padding(.bottom, 10)
-                .background(AppTheme.background)
-                .accessibilityIdentifier("coach-section-picker")
+                CoachSectionSwitcher(selection: $selectedSection)
+                    .padding(.horizontal, AppTheme.screenMargin)
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
+                    .background(AppTheme.background)
 
                 if selectedSection == .read {
                     // The inline navigation bar already says "Coach" — no second title.
-                    ScreenBackground {
-                        CoachVerdictCard(
+                    ScreenBackground(fadesUnderStatusBar: false) {
+                        CoachReadSectionView(
                             verdict: latestVerdict,
                             latestPlan: latestPlan,
                             profile: profile,
@@ -62,12 +56,14 @@ struct CoachView: View {
                             historyCount: historyLogs.count
                         )
 
-                        PlanAutomationCard(
+                        PlanAutomationSection(
                             latestPlan: latestPlan,
                             isGenerating: isGeneratingPlan,
                             status: generationStatus,
                             onRegeneratePlan: generateAIWeek
                         )
+
+                        AskCoachBar { selectedSection = .chat }
 
                         AdvancedCoachControls(
                             endpoint: endpoint,
@@ -160,142 +156,196 @@ private enum CoachSection: String, CaseIterable, Identifiable {
     }
 }
 
-private struct CoachVerdictCard: View {
+/// Read / Chat as two granite-on-white tabs.
+private struct CoachSectionSwitcher: View {
+    @Binding var selection: CoachSection
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(CoachSection.allCases) { section in
+                let isSelected = section == selection
+                Button {
+                    selection = section
+                } label: {
+                    Text(section.title)
+                        .font(.trail(15, .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(isSelected ? Color.white : AppTheme.text)
+                        .frame(maxWidth: .infinity, minHeight: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(isSelected ? AppTheme.text : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(AppTheme.divider, lineWidth: 1))
+        .animation(.snappy(duration: 0.2), value: selection)
+        .accessibilityIdentifier("coach-section-picker")
+    }
+}
+
+/// A small capsule label. Attention turns it marker red.
+struct CoachChip: View {
+    var text: String
+    var systemImage: String?
+    var isAttention: Bool = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .bold))
+            }
+            Text(text)
+                .font(.trail(12, .semibold, relativeTo: .caption1))
+        }
+        .foregroundStyle(isAttention ? AppTheme.markerRedText : AppTheme.text)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .overlay(Capsule().strokeBorder(isAttention ? AppTheme.markerRed : AppTheme.divider, lineWidth: 1))
+    }
+}
+
+// MARK: - Coach read
+
+private struct CoachReadSectionView: View {
     var verdict: CoachVerdict?
     var latestPlan: CoachPlan?
     var profile: UserProfile
     var raceGoal: RaceGoal?
     var historyCount: Int
 
-    /// "14 WEEKS TO EIGER ULTRA 51K" — the lens every read is written through.
+    /// "14 weeks to Eiger Ultra 51K": the lens every read is written through.
     private var raceLensText: String? {
         guard let raceGoal else { return nil }
         let calendar = Calendar.current
         let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: raceGoal.raceDate).day ?? 0)
         let weeks = (days + 6) / 7
         let trimmedName = raceGoal.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = (trimmedName.isEmpty ? "Race" : trimmedName).uppercased()
-        if weeks == 0 { return "RACE WEEK — \(name)" }
-        return "\(weeks) \(weeks == 1 ? "WEEK" : "WEEKS") TO \(name)"
+        let name = trimmedName.isEmpty ? "Race" : trimmedName
+        if weeks == 0 { return "Race week: \(name)" }
+        return "\(weeks) \(weeks == 1 ? "week" : "weeks") to \(name)"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Coach read")
-                        .font(.lockinSection)
-                        .foregroundStyle(AppTheme.text)
-                    Spacer()
-                    StatusPill(text: pillText, color: pillColor, systemImage: pillIcon)
-                }
-                if let raceLensText {
-                    MicroLabel(text: raceLensText, color: AppTheme.accent)
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader("Coach read") {
+                CoachChip(text: chipText, systemImage: chipIcon, isAttention: verdict?.shouldUpdatePlan == true)
             }
 
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let raceLensText {
+                        Text(raceLensText)
+                            .font(.trail(13, .semibold, relativeTo: .footnote))
+                            .foregroundStyle(AppTheme.text)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(AppTheme.sign))
+                    }
+                    headlineContent
+                }
+                .padding(16)
+
+                if let verdict {
+                    CoachJudgementScorecard(verdict: verdict)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card(padding: 0)
+
             if let verdict {
-                verdictContent(verdict)
-            } else if let latestPlan {
-                planSummaryContent(latestPlan)
+                verdictDetails(verdict)
+            } else if latestPlan != nil {
+                CoachTextSection(
+                    title: "Next step",
+                    bodyText: "Log the sessions from Log. After you finish one, the coach read updates from what actually happened."
+                )
             } else if historyCount == 0 {
-                starterContent
-            } else {
-                waitingContent
+                CoachTextSection(
+                    title: "Starting point",
+                    bodyText: "I will keep the first week conservative and use your baseline, selected training days, equipment, target date, and any pain notes."
+                )
             }
 
             if let verdict {
-                Text("Coach read updated \(verdict.createdAt.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.footnote)
+                Text("Updated \(verdict.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.lockinMeta)
                     .foregroundStyle(AppTheme.muted)
                     .accessibilityIdentifier("coach-read-updated-at")
             }
         }
-        .card()
     }
 
-    private func verdictContent(_ verdict: CoachVerdict) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(verdict.headline)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(AppTheme.text)
-                Text(verdict.summary)
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.muted)
-            }
+    @ViewBuilder
+    private var headlineContent: some View {
+        if let verdict {
+            headline(verdict.headline, body: verdict.summary)
+        } else if let latestPlan {
+            Text(latestPlan.summary)
+                .font(.trail(17, .regular, relativeTo: .body))
+                .foregroundStyle(AppTheme.text)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if historyCount == 0 {
+            headline(
+                "Ready for the first week",
+                body: "I only know your starting numbers and goal for now: \(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, and a \(format(seconds: profile.goalPlankSeconds)) plank."
+            )
+        } else {
+            headline("Coach read needed", body: "The coach read updates automatically after your next completed training.")
+        }
+    }
 
-            CoachJudgementScorecard(verdict: verdict)
+    private func headline(_ title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.trail(28, .bold, relativeTo: .title1))
+                .foregroundStyle(AppTheme.text)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(body)
+                .font(.lockinBody)
+                .foregroundStyle(AppTheme.bodyText)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func verdictDetails(_ verdict: CoachVerdict) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(spacing: 0) {
+                DomainReadRow(title: "Running", systemImage: "figure.run", bodyText: verdict.runningRead)
+                Hairline()
+                DomainReadRow(title: "Strength", systemImage: "dumbbell.fill", bodyText: verdict.strengthRead)
+                Hairline()
+                DomainReadRow(title: "Next step", systemImage: "arrow.turn.up.right", bodyText: verdict.nextStep)
+            }
+            .padding(.horizontal, 14)
+            .card(padding: 0)
 
             if !verdict.coachEvaluationReasons.isEmpty {
-                CoachReadSection(title: "Why", bodyText: verdict.coachEvaluationReasons.prefix(3).joined(separator: "\n"))
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                DomainCoachReadSection(title: "Running", systemImage: "figure.run", bodyText: verdict.runningRead)
-                Hairline()
-                DomainCoachReadSection(title: "Strength", systemImage: "dumbbell.fill", bodyText: verdict.strengthRead)
-                Hairline()
-                DomainCoachReadSection(title: "Next step", systemImage: "arrow.forward.circle.fill", bodyText: verdict.nextStep)
+                CoachTextSection(title: "Why", bodyText: verdict.coachEvaluationReasons.prefix(3).joined(separator: "\n"))
             }
 
             if !verdict.watchItems.isEmpty {
-                CoachReadSection(title: "Watch", bodyText: verdict.watchItems.joined(separator: "\n"), accent: true)
+                WatchBox(items: verdict.watchItems)
             }
         }
     }
 
-    private var starterContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Ready for the first week")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(AppTheme.text)
-                Text("I only know your starting numbers and goal for now: \(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, and a \(format(seconds: profile.goalPlankSeconds)) plank.")
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.muted)
-            }
-            CoachReadSection(
-                title: "Starting point",
-                bodyText: "I will keep the first week conservative and use your baseline, selected training days, equipment, target date, and any pain notes."
-            )
-        }
-    }
-
-    private func planSummaryContent(_ plan: CoachPlan) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(plan.summary)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.text)
-            CoachReadSection(title: "Next step", bodyText: "Log the sessions from Log. After you finish one, the coach read updates from what actually happened.")
-        }
-    }
-
-    private var waitingContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Coach read needed")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(AppTheme.text)
-            Text("The coach read updates automatically after your next completed training.")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.muted)
-        }
-    }
-
-    private var pillText: String {
+    private var chipText: String {
         if verdict?.shouldUpdatePlan == true { return "Plan update" }
-        if verdict != nil { return "Updated" }
+        if verdict != nil { return "Up to date" }
         return historyCount == 0 ? "Starter" : "Waiting"
     }
 
-    private var pillColor: Color {
-        if verdict?.shouldUpdatePlan == true { return AppTheme.warning }
-        return AppTheme.accent
-    }
-
-    private var pillIcon: String {
+    private var chipIcon: String {
         if verdict?.shouldUpdatePlan == true { return "exclamationmark.triangle.fill" }
-        return "checkmark.circle.fill"
+        return verdict != nil ? "checkmark" : "hourglass"
     }
 }
 
@@ -310,25 +360,25 @@ private struct CoachJudgementScorecard: View {
                     title: "State",
                     value: verdict.evaluationStatusLabel,
                     detail: nil,
-                    color: statusColor
+                    isAttention: statusNeedsAttention
                 )
                 verticalRule
                 CoachJudgementCell(
                     title: "Adherence",
                     value: verdict.adherenceLabel,
                     detail: verdict.adherenceDetail,
-                    color: adherenceColor
+                    isAttention: (verdict.adherencePct ?? 100) < 80
                 )
                 verticalRule
                 CoachJudgementCell(
                     title: "Plan",
                     value: verdict.planDecisionLabel,
                     detail: verdict.shouldUpdatePlan ? "Auto update" : "Hold",
-                    color: planColor
+                    isAttention: planNeedsAttention
                 )
             }
             .padding(.vertical, 12)
-            Hairline()
+            .padding(.horizontal, 16)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("coach-evaluation-scorecard")
@@ -336,35 +386,20 @@ private struct CoachJudgementScorecard: View {
 
     private var verticalRule: some View {
         Rectangle()
-            .fill(AppTheme.divider)
-            .frame(width: 1, height: 46)
+            .fill(AppTheme.dividerSoft)
+            .frame(width: 1)
             .padding(.horizontal, 10)
     }
 
-    private var statusColor: Color {
-        switch verdict.evaluationStatus {
-        case "ahead", "on_track", "building":
-            return AppTheme.accent
-        case "watch", "behind", "needs_recovery", "recovery_needed", "overreaching":
-            return AppTheme.warning
-        default:
-            return AppTheme.text
-        }
+    private var statusNeedsAttention: Bool {
+        ["watch", "behind", "needs_recovery", "recovery_needed", "overreaching"].contains(verdict.evaluationStatus)
     }
 
-    private var adherenceColor: Color {
-        guard let pct = verdict.adherencePct else { return AppTheme.muted }
-        return pct >= 80 ? AppTheme.accent : AppTheme.warning
-    }
-
-    private var planColor: Color {
+    private var planNeedsAttention: Bool {
         switch verdict.planDecisionActionRaw {
-        case "keep_plan":
-            return AppTheme.accent
-        case "gate_intensity", "update_plan", "recovery_first":
-            return AppTheme.warning
-        default:
-            return verdict.shouldUpdatePlan ? AppTheme.warning : AppTheme.accent
+        case "keep_plan": false
+        case "gate_intensity", "update_plan", "recovery_first": true
+        default: verdict.shouldUpdatePlan
         }
     }
 }
@@ -373,20 +408,22 @@ private struct CoachJudgementCell: View {
     var title: String
     var value: String
     var detail: String?
-    var color: Color
+    var isAttention: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            MicroLabel(text: title.uppercased(), color: AppTheme.faint)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.trail(12, .regular, relativeTo: .caption1))
+                .foregroundStyle(AppTheme.muted)
             Text(value)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(color)
+                .font(.trail(16, .semibold, relativeTo: .headline))
+                .foregroundStyle(isAttention ? AppTheme.markerRedText : AppTheme.text)
                 .lineLimit(2)
                 .minimumScaleFactor(0.72)
                 .fixedSize(horizontal: false, vertical: true)
-            if let detail {
+            if let detail, !detail.isEmpty {
                 Text(detail)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.trail(12, .regular, relativeTo: .caption1))
                     .foregroundStyle(AppTheme.muted)
                     .lineLimit(2)
                     .minimumScaleFactor(0.75)
@@ -394,6 +431,85 @@ private struct CoachJudgementCell: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One domain of the read (running, strength, next step) as a row with its
+/// icon in a small white disc.
+private struct DomainReadRow: View {
+    var title: String
+    var systemImage: String
+    var bodyText: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(AppTheme.text)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(AppTheme.background))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.trail(15, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.text)
+                Text(bodyText)
+                    .font(.trail(15, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.bodyText)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+private struct CoachTextSection: View {
+    var title: String
+    var bodyText: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.trail(15, .semibold, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.text)
+            Text(bodyText)
+                .font(.trail(15, .regular, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.bodyText)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 2)
+    }
+}
+
+/// Things to keep an eye on, framed in marker red with the mountain-trail
+/// mark: caution, not alarm.
+private struct WatchBox: View {
+    var items: [String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            TrailMark(grade: .mountain, width: 30, height: 21)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Watch")
+                    .font(.trail(13, .semibold, relativeTo: .footnote))
+                    .foregroundStyle(AppTheme.markerRedText)
+                ForEach(items, id: \.self) { item in
+                    Text(item)
+                        .font(.trail(16, .semibold, relativeTo: .body))
+                        .foregroundStyle(AppTheme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(AppTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(AppTheme.markerRed, lineWidth: 2))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -434,90 +550,53 @@ func coachVerdictNeedsRefresh(
     return false
 }
 
-private struct CoachReadSection: View {
-    var title: String
-    var bodyText: String
-    var accent: Bool = false
+// MARK: - Plan
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            MicroLabel(text: title.uppercased(), color: accent ? AppTheme.accent : AppTheme.faint)
-            Text(bodyText)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.text.opacity(0.88))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-private struct DomainCoachReadSection: View {
-    var title: String
-    var systemImage: String
-    var bodyText: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
-                    .frame(width: 16)
-                MicroLabel(text: title.uppercased(), color: AppTheme.faint)
-            }
-            Text(bodyText)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.text.opacity(0.88))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-private struct PlanAutomationCard: View {
+private struct PlanAutomationSection: View {
     var latestPlan: CoachPlan?
     var isGenerating: Bool
     var status: String?
     var onRegeneratePlan: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Plan")
-                    .font(.lockinSection)
-                    .foregroundStyle(AppTheme.text)
-                Spacer()
-                StatusPill(
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader("Plan") {
+                CoachChip(
                     text: isGenerating ? "Updating" : "Automatic",
-                    color: isGenerating ? AppTheme.muted : AppTheme.accent,
-                    systemImage: isGenerating ? "hourglass" : "sparkles"
+                    systemImage: isGenerating ? "hourglass" : "arrow.triangle.2.circlepath"
                 )
             }
 
-            VStack(spacing: 10) {
-                InfoLine(title: "Mode", value: "Night + training")
-                InfoLine(title: "Latest AI plan", value: latestPlanText)
+            VStack(spacing: 0) {
+                InfoLine(title: "Updates", value: "Every night and after training")
+                    .padding(.vertical, 14)
+                Hairline()
+                InfoLine(title: "Latest plan", value: latestPlanText)
+                    .padding(.vertical, 14)
             }
+            .padding(.horizontal, 16)
+            .card(padding: 0)
 
-            Button(action: onRegeneratePlan) {
-                Label(isGenerating ? "Creating schedule" : "Create week schedule", systemImage: "sparkles")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(PrimaryActionButtonStyle())
-            .disabled(isGenerating)
-            .accessibilityIdentifier("plan-week-button")
+            Button(isGenerating ? "Creating schedule" : "Create week schedule", action: onRegeneratePlan)
+                .buttonStyle(PrimaryActionButtonStyle())
+                .disabled(isGenerating)
+                .accessibilityIdentifier("plan-week-button")
 
             if isGenerating {
-                SwiftUI.ProgressView("Updating plan")
-                    .font(.footnote)
-                    .tint(AppTheme.muted)
-                    .foregroundStyle(AppTheme.muted)
+                HStack(spacing: 8) {
+                    SwiftUI.ProgressView()
+                        .tint(AppTheme.muted)
+                    Text("Updating your plan…")
+                }
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
             } else if let status {
                 Text(status)
-                    .font(.footnote)
+                    .font(.lockinMeta)
                     .foregroundStyle(AppTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .ruled(verticalPadding: 16)
     }
 
     private var latestPlanText: String {
@@ -526,6 +605,40 @@ private struct PlanAutomationCard: View {
     }
 }
 
+/// Looks like the chat field; tapping it switches to Chat.
+private struct AskCoachBar: View {
+    var onOpenChat: () -> Void
+
+    var body: some View {
+        Button(action: onOpenChat) {
+            HStack(spacing: 8) {
+                Text("Ask the coach anything")
+                    .font(.lockinBody)
+                    .foregroundStyle(AppTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .frame(height: 46)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(AppTheme.surface))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(AppTheme.post.opacity(0.6), lineWidth: 1)
+                    )
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(AppTheme.text)
+                    .frame(width: 46, height: 46)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(AppTheme.sign))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Ask the coach")
+        .accessibilityHint("Opens coach chat")
+    }
+}
+
+// MARK: - Advanced
+
 private struct CoachInputsCard: View {
     var profile: UserProfile
     var historyCount: Int
@@ -533,9 +646,11 @@ private struct CoachInputsCard: View {
     var raceGoal: RaceGoal?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("What I'll use")
-            VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("What I'll use")
+                .font(.trail(17, .semibold, relativeTo: .headline))
+                .foregroundStyle(AppTheme.text)
+            VStack(spacing: 12) {
                 InfoLine(title: "Starting point", value: "\(profile.baselinePullUps) pull-ups, \(profile.baselinePushUps) push-ups, \(format(seconds: profile.baselinePlankSeconds)) plank")
                 InfoLine(title: "Goal", value: "\(profile.goalPullUps) pull-ups, \(profile.goalPushUps) push-ups, \(format(seconds: profile.goalPlankSeconds)) plank")
                 InfoLine(title: "Week shape", value: "\(profile.trainingDayLabels.joined(separator: ", ")) until \(profile.targetDate.formatted(date: .abbreviated, time: .omitted))")
@@ -544,16 +659,16 @@ private struct CoachInputsCard: View {
                 if let raceGoal {
                     InfoLine(title: "Race goal", value: raceGoalSummary(raceGoal))
                     InfoLine(title: "Weeks to race", value: weeksToRaceText(raceGoal))
-                    InfoLine(title: "Available running days", value: runningDaysText)
+                    InfoLine(title: "Running days", value: runningDaysText)
                 }
                 InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
                 InfoLine(title: "Log context", value: plannedCount == 0 ? "No sessions in Log yet" : "\(plannedCount) recent or upcoming sessions from Log")
             }
+            .card(padding: 16)
             if !profile.painNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                CoachReadSection(title: "Notes", bodyText: profile.painNotes)
+                CoachTextSection(title: "Notes", bodyText: profile.painNotes)
             }
         }
-        .ruled(verticalPadding: 16)
     }
 
     private func raceGoalSummary(_ goal: RaceGoal) -> String {
@@ -561,7 +676,7 @@ private struct CoachInputsCard: View {
         let name = trimmedName.isEmpty ? "Race" : trimmedName
         let distance = goal.distanceKm.formatted(.number.precision(.fractionLength(0...1)))
         let raceDate = goal.raceDate.formatted(date: .abbreviated, time: .omitted)
-        return "\(name) \(distance) km / \(goal.elevationGainM) m+ on \(raceDate)"
+        return "\(name), \(distance) km, \(goal.elevationGainM) m climb, \(raceDate)"
     }
 
     private func weeksToRaceText(_ goal: RaceGoal) -> String {
@@ -569,7 +684,7 @@ private struct CoachInputsCard: View {
         let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: goal.raceDate).day ?? 0)
         let weeks = (days + 6) / 7
         if weeks == 0 { return "Race week" }
-        return weeks == 1 ? "1 week out" : "\(weeks) weeks out"
+        return weeks == 1 ? "1 week" : "\(weeks) weeks"
     }
 
     private var runningDaysText: String {
@@ -591,28 +706,33 @@ private struct AdvancedCoachControls: View {
     var onRegeneratePlan: () -> Void
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded.animation(.smooth(duration: 0.3))) {
-            VStack(alignment: .leading, spacing: 18) {
-                CoachInputsCard(
-                    profile: profile,
-                    historyCount: historyCount,
-                    plannedCount: plannedCount,
-                    raceGoal: raceGoal
-                )
-                CoachModelControls(endpoint: endpoint, selectedModelID: $selectedModelID)
-                PlanFallbackControls(
-                    isGenerating: isGeneratingPlan,
-                    status: generationStatus,
-                    onRegeneratePlan: onRegeneratePlan
-                )
+        VStack(alignment: .leading, spacing: 0) {
+            Hairline()
+            DisclosureGroup(isExpanded: $isExpanded.animation(.smooth(duration: 0.3))) {
+                VStack(alignment: .leading, spacing: 18) {
+                    CoachInputsCard(
+                        profile: profile,
+                        historyCount: historyCount,
+                        plannedCount: plannedCount,
+                        raceGoal: raceGoal
+                    )
+                    CoachModelControls(endpoint: endpoint, selectedModelID: $selectedModelID)
+                    PlanFallbackControls(
+                        isGenerating: isGeneratingPlan,
+                        status: generationStatus,
+                        onRegeneratePlan: onRegeneratePlan
+                    )
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+            } label: {
+                Text("Advanced")
+                    .font(.trail(15, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+                    .frame(minHeight: 44)
             }
-            .padding(.top, 12)
-        } label: {
-            Text("Advanced")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(AppTheme.muted)
+            .tint(AppTheme.muted)
         }
-        .tint(AppTheme.faint)
     }
 }
 
@@ -631,13 +751,16 @@ private struct PlanFallbackControls: View {
             .accessibilityIdentifier("regenerate-plan-button")
 
             if isGenerating {
-                SwiftUI.ProgressView("Regenerating plan")
-                    .font(.footnote)
-                    .tint(AppTheme.muted)
-                    .foregroundStyle(AppTheme.muted)
+                HStack(spacing: 8) {
+                    SwiftUI.ProgressView()
+                        .tint(AppTheme.muted)
+                    Text("Regenerating plan…")
+                }
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
             } else if let status {
                 Text(status)
-                    .font(.footnote)
+                    .font(.lockinMeta)
                     .foregroundStyle(AppTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -664,11 +787,11 @@ private struct CoachModelControls: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Model")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(AppTheme.text)
+                    .font(.trail(15, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
                 Spacer()
                 Picker("Model", selection: normalizedSelection) {
                     ForEach(modelOptions, id: \.self) { modelID in
@@ -676,18 +799,21 @@ private struct CoachModelControls: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .tint(AppTheme.accent)
+                .tint(AppTheme.text)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if isRefreshing {
-                SwiftUI.ProgressView("Loading OpenAI models")
-                    .font(.footnote)
-                    .tint(AppTheme.muted)
-                    .foregroundStyle(AppTheme.muted)
+                HStack(spacing: 8) {
+                    SwiftUI.ProgressView()
+                        .tint(AppTheme.muted)
+                    Text("Loading models…")
+                }
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
             } else if let status {
                 Text(status)
-                    .font(.footnote)
+                    .font(.lockinMeta)
                     .foregroundStyle(AppTheme.muted)
             }
         }

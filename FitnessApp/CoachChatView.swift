@@ -241,21 +241,19 @@ private struct CoachChatHeader: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(AppTheme.surfaceRaised)
-                Image(systemName: "brain.head.profile")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(AppTheme.accent)
-            }
-            .frame(width: 38, height: 38)
+            Image(systemName: "signpost.right.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(AppTheme.text)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(AppTheme.sign))
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("Coach chat")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.trail(17, .semibold, relativeTo: .headline))
                     .foregroundStyle(AppTheme.text)
                 Text(statusText)
-                    .font(.footnote)
+                    .font(.lockinMeta)
                     .foregroundStyle(AppTheme.muted)
                     .lineLimit(1)
                     .accessibilityIdentifier("coach-chat-status")
@@ -263,7 +261,7 @@ private struct CoachChatHeader: View {
 
             Spacer()
 
-            StatusPill(text: "Live data", color: AppTheme.accent, systemImage: "bolt.fill")
+            CoachChip(text: "Live data", systemImage: "bolt.fill")
         }
     }
 
@@ -272,7 +270,7 @@ private struct CoachChatHeader: View {
             return "\(messages.count) messages"
         }
         if let raceGoal {
-            return "\(raceGoal.name) context"
+            return "Training for \(raceGoal.name)"
         }
         return "Ready for questions"
     }
@@ -283,19 +281,23 @@ private struct CoachChatStarter: View {
     var onPick: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("Ask one thing")
                 .font(.lockinSection)
                 .foregroundStyle(AppTheme.text)
+            Text("The coach answers from your logged sessions, runs and Garmin data.")
+                .font(.trail(15, .regular, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 8)
             FlowLayout(spacing: 8) {
                 ForEach(questions, id: \.self) { question in
                     Button(question) { onPick(question) }
-                        .font(.footnote.weight(.medium))
+                        .font(.trail(15, .medium, relativeTo: .subheadline))
                         .foregroundStyle(AppTheme.text)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(AppTheme.surfaceRaised)
-                        .clipShape(Capsule())
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(Capsule().fill(AppTheme.surface))
                         .overlay(Capsule().strokeBorder(AppTheme.divider, lineWidth: 1))
                 }
             }
@@ -311,39 +313,55 @@ private struct CoachChatBubble: View {
         message.role == .user
     }
 
+    /// The corner nearest the speaker stays tight, like a speech tail.
+    private var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 16,
+            bottomLeadingRadius: isUser ? 16 : 4,
+            bottomTrailingRadius: isUser ? 4 : 16,
+            topTrailingRadius: 16,
+            style: .continuous
+        )
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if isUser { Spacer(minLength: 44) }
+            if isUser { Spacer(minLength: 48) }
 
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(message.text)
-                    .font(.subheadline)
-                    .foregroundStyle(isUser ? AppTheme.accentInk : AppTheme.text)
+                    .font(.lockinBody)
+                    .foregroundStyle(isUser ? AppTheme.accentInk : AppTheme.bodyText)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if !isUser, !message.evidence.isEmpty {
                     CoachEvidenceStrip(evidence: message.evidence)
                 }
 
-                if message.status == .failed {
-                    MicroLabel(text: "FAILED", color: AppTheme.warning)
+                // A failed coach reply is the error itself; only the question
+                // is marked as not sent.
+                if isUser, message.status == .failed {
+                    Label("Not sent", systemImage: "exclamationmark.circle.fill")
+                        .font(.trail(13, .semibold, relativeTo: .footnote))
+                        .foregroundStyle(AppTheme.accentInk)
                 }
             }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
-            .background(isUser ? AppTheme.accent : AppTheme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(isUser ? AppTheme.accent.opacity(0.35) : AppTheme.divider, lineWidth: 1)
-            )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(shape.fill(isUser ? AppTheme.text : AppTheme.surface))
+            .overlay(shape.strokeBorder(isUser ? Color.clear : borderColor, lineWidth: message.status == .failed ? 1.5 : 1))
             .frame(maxWidth: 318, alignment: isUser ? .trailing : .leading)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityIdentifier(isUser ? "coach-chat-user-message" : "coach-chat-coach-message")
 
-            if !isUser { Spacer(minLength: 44) }
+            if !isUser { Spacer(minLength: 48) }
         }
+    }
+
+    private var borderColor: Color {
+        message.status == .failed ? AppTheme.markerRed : AppTheme.divider
     }
 
     private var accessibilityLabel: String {
@@ -351,25 +369,32 @@ private struct CoachChatBubble: View {
         if !message.evidence.isEmpty {
             parts.append(contentsOf: message.evidence)
         }
-        if message.status == .failed {
-            parts.append("Failed")
+        if isUser, message.status == .failed {
+            parts.append("Not sent")
         }
         return parts.joined(separator: ". ")
     }
 }
 
+/// What the answer stands on, each line marked like a waymark.
 private struct CoachEvidenceStrip: View {
     var evidence: [String]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
+            Rectangle()
+                .fill(AppTheme.dividerSoft)
+                .frame(height: 1)
+                .padding(.bottom, 2)
+            Text("Based on")
+                .font(.trail(12, .semibold, relativeTo: .caption1))
+                .foregroundStyle(AppTheme.muted)
             ForEach(evidence.prefix(3), id: \.self) { item in
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(AppTheme.accent)
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    TrailMark(grade: .hiking, width: 10, height: 7)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
                     Text(item)
-                        .font(.system(size: 11))
+                        .font(.trail(13, .regular, relativeTo: .footnote))
                         .foregroundStyle(AppTheme.muted)
                         .lineLimit(2)
                 }
@@ -382,21 +407,24 @@ private struct CoachEvidenceStrip: View {
 private struct CoachTypingBubble: View {
     var body: some View {
         HStack {
-            HStack(spacing: 5) {
-                Circle().fill(AppTheme.muted).frame(width: 5, height: 5)
-                Circle().fill(AppTheme.muted).frame(width: 5, height: 5)
-                Circle().fill(AppTheme.muted).frame(width: 5, height: 5)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(AppTheme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(AppTheme.divider, lineWidth: 1)
-            )
-            Spacer(minLength: 44)
+            Image(systemName: "ellipsis")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(AppTheme.muted)
+                .symbolEffect(.variableColor.iterative, options: .repeating)
+                .frame(width: 44, height: 20)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+                .background(
+                    UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: 4, bottomTrailingRadius: 16, topTrailingRadius: 16, style: .continuous)
+                        .fill(AppTheme.surface)
+                )
+                .overlay(
+                    UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: 4, bottomTrailingRadius: 16, topTrailingRadius: 16, style: .continuous)
+                        .strokeBorder(AppTheme.divider, lineWidth: 1)
+                )
+            Spacer(minLength: 48)
         }
+        .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("coach-chat-typing")
         .accessibilityLabel("Coach is typing")
     }
@@ -413,10 +441,11 @@ private struct CoachChatComposer: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask coach", text: $draft, axis: .vertical)
-                .font(.subheadline)
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Ask the coach anything", text: $draft, axis: .vertical)
+                .font(.lockinBody)
                 .foregroundStyle(AppTheme.text)
+                .tint(AppTheme.text)
                 .lineLimit(1...4)
                 .focused($isFocused)
                 .submitLabel(.send)
@@ -426,25 +455,35 @@ private struct CoachChatComposer: View {
                     }
                 }
                 .textFieldStyle(.plain)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 11)
-                .background(AppTheme.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(minHeight: 46)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(AppTheme.surface))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(AppTheme.divider, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(isFocused ? AppTheme.text : AppTheme.post.opacity(0.6), lineWidth: isFocused ? 1.5 : 1)
                 )
                 .accessibilityIdentifier("coach-chat-input")
                 .accessibilityLabel("Ask coach")
 
             Button(action: onSend) {
-                Image(systemName: isSending ? "hourglass" : "paperplane.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(AppTheme.accentInk)
-                    .frame(width: 42, height: 42)
-                    .background(canSend ? AppTheme.accent : AppTheme.faint)
-                    .clipShape(Circle())
+                Group {
+                    if isSending {
+                        SwiftUI.ProgressView()
+                            .tint(AppTheme.text)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 18, weight: .bold))
+                    }
+                }
+                .foregroundStyle(canSend ? AppTheme.text : AppTheme.faint)
+                .frame(width: 46, height: 46)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(canSend || isSending ? AppTheme.sign : AppTheme.surfaceRaised)
+                )
             }
+            .buttonStyle(.plain)
             .disabled(!canSend)
             .accessibilityLabel(isSending ? "Coach is answering" : "Send")
             .accessibilityHint(canSend ? "Sends your question to coach chat." : "Enter a question before sending.")
