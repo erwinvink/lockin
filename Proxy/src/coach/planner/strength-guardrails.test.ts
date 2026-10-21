@@ -213,6 +213,35 @@ test("a baseline set at a recent plan block start counts as a fresh test for the
   assert.deepEqual(validateWeeklyPlan(plan, withBaselineAt("2026-03-01T00:00:00Z")), { accepted: true, messages: [] });
 });
 
+// Review finding: after a 1-set prescription (a legacy plan, or an
+// Assessment matched as the standard), earned progression clamped 25 x 3 to
+// 25 x 1 and then failed "goal work uses 2-6 sets".
+test("progression from a 1-set prescription continues from 2 sets and never clamps below 2", () => {
+  const context = hybridContext({ earned: { pushUps: { logged: 26, target: 24, sets: 1 } } });
+  const progression = strengthProgressionPlan(context);
+
+  assert.equal(progression.pushUps.previousSets, 2);
+  assert.match(progression.pushUps.note, /with at most 2 sets/);
+
+  const { plan: clamped, adjustments } = clampWeeklyPlan(hybridPlan({ pushReps: 25, pushSets: 3 }), context);
+  assert.equal(clamped.sessions[0].exercises[1].sets, 2);
+  assert.ok(adjustments.some((a) => a.includes("sets lowered from 3 to 2")));
+  assert.deepEqual(validateWeeklyPlan(clamped, context), { accepted: true, messages: [] });
+
+  const single = clampWeeklyPlan(hybridPlan({ pushReps: 25, pushSets: 1 }), context).plan;
+  assert.equal(single.sessions[0].exercises[1].sets, 2, "a single working set is raised to the 2-set minimum");
+  assert.deepEqual(validateWeeklyPlan(single, context), { accepted: true, messages: [] });
+});
+
+test("an unearned week after a 1-set prescription holds at 2 sets or more", () => {
+  const context = hybridContext({ previous: { pullUps: { target: 8, sets: 1 } } });
+  const progression = strengthProgressionPlan(context);
+
+  assert.equal(progression.pullUps.previousSets, 2);
+  assert.equal(progression.pullUps.maxSets, 3);
+  assert.deepEqual(validateWeeklyPlan(hybridPlan({ pullReps: 8, pullSets: 3 }), context), { accepted: true, messages: [] });
+});
+
 type PreviousSpec = { target: number; sets: number; date?: string };
 type EarnedSpec = { logged: number; target: number; sets: number; consecutive?: number };
 

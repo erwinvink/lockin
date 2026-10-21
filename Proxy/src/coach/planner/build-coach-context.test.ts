@@ -3,7 +3,8 @@ import test from "node:test";
 import { buildCoachContext } from "./build-coach-context";
 import { evaluateCoachRead } from "./evaluate-coach-read";
 import { strengthProgressionPlan, workingCap } from "./strength-guardrails";
-import type { CoachRequest, RunningRequest, RunSummary, TrainingLog } from "./types";
+import { validateWeeklyPlan } from "./validate-week-plan";
+import type { CoachRequest, RunningRequest, RunSummary, TrainingLog, WeeklyPlan } from "./types";
 
 test("keeps insufficient history when both completed-month and current evidence are sparse", () => {
   const request = baseRequest({
@@ -884,4 +885,71 @@ test("a block that started long ago (the profile's creation) keeps all logs in t
   const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
 
   assert.deepEqual(context.history.bestRecentTests, { pullUps: 12, pushUps: 35, plankSeconds: 90 });
+});
+
+// Review finding: a matched Assessment (1 x max) became the standard the next
+// week continued from, so progression demanded "at most 1 sets".
+test("a goal test is not matched as the working prescription", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    plannedSessions: [
+      plannedGoalSession("work", "2026-07-06T08:00:00Z", "completed", "pushUp", 3, 24),
+      plannedGoalSession("test", "2026-07-10T08:00:00Z", "completed", "pushUp", 1, 40, "test")
+    ],
+    trainingLogs: [
+      trainingLog("2026-07-06T09:00:00Z", { sessionId: "work", pushUps: 24, loggedPullUps: false, loggedPlankSeconds: false, plannedRPE: 7 }),
+      trainingLog("2026-07-10T09:00:00Z", { sessionId: "test", pushUps: 42, loggedPullUps: false, loggedPlankSeconds: false, plannedRPE: 10, rpe: 10 })
+    ]
+  });
+
+  const performance = buildCoachContext(request, new Date("2026-07-13T08:00:00Z")).plannedWork.recentGoalPerformance?.pushUps;
+
+  assert.equal(performance?.prescribedTarget, 24);
+  assert.equal(performance?.prescribedSets, 3);
+  assert.equal(performance?.completedAt, "2026-07-06T09:00:00Z");
+  assert.equal(performance?.latestTestDate, "2026-07-10T08:00:00Z", "the test still sets the test spacing");
+});
+
+// Review finding: pull-ups 8 x 4 last week, then "Start a new plan" with a
+// retest of 5. The old prescription anchored the band (nothing below 7) while
+// the old best kept the caps high, so the new plan could never pass.
+test("after a lower retest at a new block, a plan at the new level validates", () => {
+  const request = baseRequest({
+    weekStart: "2026-07-13T00:00:00Z",
+    planBlockStartedAt: "2026-07-12T00:00:00Z",
+    baseline: { pullUps: 5, pushUps: 20, plankSeconds: 60 },
+    plannedSessions: [
+      plannedGoalSession("old-1", "2026-07-06T08:00:00Z", "completed", "pullUp", 4, 8),
+      plannedGoalSession("old-2", "2026-07-09T08:00:00Z", "completed", "pullUp", 4, 8)
+    ],
+    trainingLogs: [
+      trainingLog("2026-07-06T09:00:00Z", { sessionId: "old-1", pullUps: 9, loggedPushUps: false, loggedPlankSeconds: false }),
+      trainingLog("2026-07-09T09:00:00Z", { sessionId: "old-2", pullUps: 9, loggedPushUps: false, loggedPlankSeconds: false })
+    ]
+  });
+  const context = buildCoachContext(request, new Date("2026-07-13T08:00:00Z"));
+  const effort = (label: "hard" | "medium", rpe: number) => ({ label, targetRPE: rpe, targetRIR: label === "hard" ? 2 : 4, stimulus: "strength" as const, reason: "Fresh start at the retested level." });
+  const plan: WeeklyPlan = {
+    summary: "Build: restart from the retest.",
+    contextState: context.readiness.state,
+    safetyFlags: [],
+    sessions: [{
+      title: "Pull and push strength",
+      dayOffset: 2,
+      focus: "mixed",
+      plannedEffort: effort("hard", 7),
+      purpose: "Rebuild pull-up volume from the retest.",
+      estimatedDurationMinutes: 35,
+      progressionRationale: "Working sets at the new level.",
+      safetyNotes: [],
+      loggingFieldsRequired: ["pullUps", "pushUps"],
+      exercises: [
+        { exercise: "pullUp", sets: 4, reps: 4, seconds: 0, restSeconds: 120, intensity: "Hard", plannedEffort: effort("hard", 7) },
+        { exercise: "pushUp", sets: 3, reps: 12, seconds: 0, restSeconds: 90, intensity: "Medium", plannedEffort: effort("medium", 6) }
+      ]
+    }]
+  };
+
+  assert.equal(context.history.bestRecentTests.pullUps, 5);
+  assert.deepEqual(validateWeeklyPlan(plan, context), { accepted: true, messages: [] });
 });

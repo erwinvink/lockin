@@ -430,8 +430,15 @@ function latestGoalPrescription(
   exercises: PlannedExercisePrescription[],
   metric: "pullUps" | "pushUps" | "plankSeconds"
 ): { target: number; sets: number; label?: EffortLabel } | null {
+  // A test (one max set) is not a working prescription: matching a log to it
+  // would make "1 set" the standard the next week continues from.
   const candidates = exercises
-    .filter((exercise) => isGoalWorkPrescription(exercise) && goalMetricForExercise(exercise.exercise) === metric)
+    .filter((exercise) =>
+      isGoalWorkPrescription(exercise) &&
+      exercise.plannedEffortStimulus !== "test" &&
+      exercise.plannedEffortLabel !== "max_output" &&
+      goalMetricForExercise(exercise.exercise) === metric
+    )
     .map((exercise) => ({
       target: metric === "plankSeconds" ? exercise.targetSeconds : exercise.targetReps,
       sets: exercise.sets,

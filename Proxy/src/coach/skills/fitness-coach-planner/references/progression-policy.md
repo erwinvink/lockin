@@ -114,7 +114,7 @@ Use the current level (`history.bestRecentTests`): the baseline set at the plan 
 - Pull-up working reps per set: at most 85% of the best recent pull-up value (at least 1).
 - Push-up working reps per set: at most 75% of the best recent push-up value.
 - Plank working holds: at most 80% of the best recent plank value (at least 10 seconds).
-- Goal work uses 2-6 sets per exercise.
+- Goal work uses 2-6 sets per exercise. A previous 1-set prescription (an older plan) continues as 2 sets, and an Assessment's single max set is never the working standard the next week continues from.
 - At most 2 hard strength sessions a week alongside a running week (3 without), never on more than two consecutive days.
 - Increase one stress variable at a time: sets, reps, hold length, density, or complexity.
 - For non-recovery goal work, avoid prescribing every working set below a useful floor. As a default, the main goal prescription should reach at least ~45% of the latest valid goal max unless the exercise is intentionally light technique/recovery and the week still includes another useful stimulus.

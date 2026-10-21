@@ -174,7 +174,8 @@ export function strengthProgressionPlan(
     const performance = context.plannedWork.recentGoalPerformance?.[metric];
     if (earnedEntry && performance?.prescribedSets !== null && performance?.prescribedSets !== undefined) {
       const previous = earnedEntry.latestTarget;
-      const previousSets = performance.prescribedSets;
+      // A legacy 1-set prescription continues as 2 sets: goal work never uses fewer.
+      const previousSets = Math.max(performance.prescribedSets, STRENGTH_LIMITS.goalSets.min);
       const step = progressionStep(metric, previous);
       const repMin = previous + step.min;
       const repMax = capOr(previous + step.max);
@@ -238,6 +239,7 @@ export function strengthProgressionPlan(
     }
 
     const step = progressionStep(metric, previous.target);
+    previous.sets = Math.max(previous.sets, STRENGTH_LIMITS.goalSets.min);
     const upper = capOr(Math.max(previous.target, floor ?? 0));
     const lower = missedRecently ? 1 : Math.max(1, Math.min(previous.target - step.max, upper));
     result[metric] = {
@@ -380,10 +382,11 @@ export function clampWeeklyPlan(
       const previousSets = entry.previousSets;
       if (previousTarget === null || previousSets === null) continue;
       const maxSetsAtHeldTarget = Math.min(STRENGTH_LIMITS.goalSets.max, previousSets + 1);
-      if (goalValue(metric, exercise) > previousTarget && exercise.sets > previousSets) {
-        adjustments.push(`${where}: sets lowered from ${exercise.sets} to ${previousSets} so the target and the sets do not rise together.`);
-        notes.push(`${name} ${exercise.sets} -> ${previousSets} sets (reps and sets do not rise together)`);
-        exercise.sets = previousSets;
+      const floorSets = Math.max(previousSets, STRENGTH_LIMITS.goalSets.min);
+      if (goalValue(metric, exercise) > previousTarget && exercise.sets > floorSets) {
+        adjustments.push(`${where}: sets lowered from ${exercise.sets} to ${floorSets} so the target and the sets do not rise together.`);
+        notes.push(`${name} ${exercise.sets} -> ${floorSets} sets (reps and sets do not rise together)`);
+        exercise.sets = floorSets;
       } else if (exercise.sets > maxSetsAtHeldTarget) {
         adjustments.push(`${where}: sets lowered from ${exercise.sets} to ${maxSetsAtHeldTarget} (at most one more set than ${previousSets}).`);
         notes.push(`${name} ${exercise.sets} -> ${maxSetsAtHeldTarget} sets (at most one set more than last week)`);
