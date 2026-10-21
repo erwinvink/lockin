@@ -1030,6 +1030,8 @@ final class CoachValidationTests: XCTestCase {
         let encodedPull = try XCTUnwrap(sessions.first { $0["title"] as? String == "Pull strength" })
         XCTAssertNil(encodedPull["runKind"], "strength sessions carry no run keys")
         XCTAssertNotNil(json["currentPlanGeneratedAt"])
+        XCTAssertEqual(request.supportedExercises, ExerciseKind.allCases.map(\.rawValue), "the proxy plans only exercises this app can show")
+        XCTAssertTrue(request.supportedExercises?.contains("negativePullUp") == true)
     }
 
     func testMakeCoachRequestCarriesElevationLossNilWhenZero() throws {

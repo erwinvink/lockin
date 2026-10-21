@@ -51,6 +51,8 @@ export type CoachRequest = {
   trainingDays?: string[];
   trainingDayOffsets?: number[];
   equipment: string[];
+  /** Exercise names the app can show and log (newer apps); older apps get the legacy nine. */
+  supportedExercises?: string[];
   targetDate: string;
   trainingLogs: TrainingLog[];
   plannedSessions: PlannedSession[];
@@ -176,6 +178,8 @@ export type CoachContext = {
     trainingDayOffsets: number[];
     equipment: string[];
     targetDate: string;
+    /** Exercises the app supports; absent in hand-built contexts (then the full catalog). */
+    supportedExercises?: ExerciseKind[];
   };
   history: {
     last5Logs: TrainingLog[];

@@ -311,7 +311,8 @@ export function strengthGuardrailsForPrompt(
       ])
     ),
     phase: strengthPhaseForPrompt(strengthPhase(context)),
-    exerciseLadder: exerciseLadder(context.history.bestRecentTests, context.profile.equipment),
+    exerciseLadder: exerciseLadder(context.history.bestRecentTests, context.profile.equipment, context.profile.supportedExercises),
+    allowedExercises: context.profile.supportedExercises ?? null,
     exerciseLadderRule:
       "Pick goal and support exercises from the exerciseLadder step for the athlete's current max (selectionRules in exercise-library.json); use exact exercise names from the library. Equipment is enforced: an exercise whose equipment the athlete lacks is sent back for repair. Variants (negatives, band-assisted, rows, weighted, archer, decline, side or long-lever planks) are support work and do not log goal numbers; keep the goal exercise itself in the week whenever the current max allows it.",
     workingCapRule:

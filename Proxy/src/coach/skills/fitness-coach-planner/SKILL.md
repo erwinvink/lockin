@@ -76,7 +76,7 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 - If no future training-day offsets remain, return an empty `sessions` array and explain that the current week is already underway; do not create today work.
 - No hard, very hard, max, or failure-intensity work during `recovery_needed`.
 - No max output unless `stimulus` is `test`.
-- No pull-up-bar exercise without a pull-up bar. Every exercise must be an exact name from `exercise-library.json` and fit the athlete's equipment (enforced).
+- No pull-up-bar exercise without a pull-up bar. Every exercise must be an exact name from `exercise-library.json`, be in `strengthGuardrails.allowedExercises` (older app versions show only the original nine), and fit the athlete's equipment (enforced).
 - A calendar-month volume flag by itself never justifies an all-light, flat, or offload week.
 - Use `Offload` only for pain, severe fatigue, repeated excessive effort, declining performance, or a planned recovery week (`coachContext.periodization.recoveryWeekDue`), with 40-60% less hard volume. Use `Restore` for the first safe step after offload.
 - Planned recovery week (`strengthGuardrails.phase.recoveryWeek`, enforced): summary starts with `Offload:`; hard sets at most `hardSetCap` (60% of the last loading week); at most 1 hard session; no tests; no very_hard or max_output; at most 3 sets per goal exercise; targets may hold or drop but not rise. Running backs off the same week. Keep the session habit with medium or light work.

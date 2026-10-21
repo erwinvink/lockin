@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildCoachContext } from "./coach/planner/build-coach-context";
 import { withStoredCurrentPlan } from "./coach/planner/current-plan";
+import { EXERCISE_KINDS, schemaForExercises } from "./coach/planner/exercise-catalog";
 import {
   disciplineCoachSystemPrompt,
   disciplineCoachTemperament,
@@ -678,7 +679,7 @@ async function generateWeeklyPlan(
         type: "json_schema",
         name: "weekly_training_plan",
         strict: true,
-        schema: skill.weeklyPlanSchema
+        schema: schemaForExercises(skill.weeklyPlanSchema, context.profile.supportedExercises ?? EXERCISE_KINDS)
       }
     }
   }, telemetry);

@@ -1,5 +1,6 @@
 import { nextLocalMidnight, startOfLocalDay, validTimeZone } from "../local-time";
 import { buildCurrentPlanContext } from "./current-plan";
+import { supportedExercisesFor } from "./exercise-catalog";
 import { computePeriodization } from "./periodization";
 import { RECOVERY_NEEDED_FLAGS, recoveryFlagsAt } from "./readiness-flags";
 import { planBlockContext } from "./plan-block";
@@ -97,6 +98,7 @@ function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
       trainingDays: Array.isArray(request.trainingDays) ? request.trainingDays.filter((day) => typeof day === "string") : [],
       trainingDayOffsets: normalizeFutureDayOffsets(request.trainingDayOffsets),
       equipment: [...request.equipment].sort(),
+      supportedExercises: supportedExercisesFor(request.supportedExercises),
       targetDate: request.targetDate
     },
     history: {

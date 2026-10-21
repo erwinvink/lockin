@@ -398,6 +398,9 @@ struct CoachPlanRequest: Codable, Equatable {
     /// IANA zone of the athlete, so the proxy can find "today" and "due"
     /// with local midnights (DST-safe).
     var timeZone: String? = nil
+    /// Every exercise this app version can show and log. The proxy only
+    /// plans these (a request without the list gets the original nine).
+    var supportedExercises: [String]? = nil
 }
 
 struct CoachRunningGoal: Codable, Equatable {
@@ -1949,7 +1952,8 @@ func makeCoachRequest(
         planBlockStartedAt: Calendar.current.startOfDay(for: profile.planBlockStartedAt),
         currentPlanGeneratedAt: currentPlanGeneratedAt,
         running: running,
-        timeZone: timeZone.identifier
+        timeZone: timeZone.identifier,
+        supportedExercises: ExerciseKind.allCases.map(\.rawValue)
     )
 }
 

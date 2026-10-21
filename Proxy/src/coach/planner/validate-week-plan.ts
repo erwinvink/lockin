@@ -235,9 +235,14 @@ export function validateWeeklyPlan(
         continue;
       }
 
+      const supported = context.profile.supportedExercises ?? EXERCISE_KINDS;
       if (typeof exercise.exercise !== "string" || !exerciseKinds.has(exercise.exercise as ExerciseKind)) {
         messages.push(
-          `Session ${sessionIndex + 1} has an unknown exercise ${JSON.stringify(exercise.exercise)}; use an exact name from exercise-library.json (${EXERCISE_KINDS.join(", ")}).`
+          `Session ${sessionIndex + 1} has an unknown exercise ${JSON.stringify(exercise.exercise)}; use an exact name from exercise-library.json (${supported.join(", ")}).`
+        );
+      } else if (!supported.includes(exercise.exercise as ExerciseKind)) {
+        messages.push(
+          `Session ${sessionIndex + 1} uses ${exercise.exercise}, which this app version cannot show; use one of ${supported.join(", ")}.`
         );
       } else {
         const missing = missingEquipment(exercise.exercise as ExerciseKind, context.profile.equipment);
