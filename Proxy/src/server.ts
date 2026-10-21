@@ -30,13 +30,15 @@ import {
   type AutoPlanSource,
   type AutoPlanTrigger
 } from "./coach/auto-plan";
-import { buildCoachChatResponse, normalizeCoachChatMessages, type CoachChatMessage } from "./coach/chat";
+import { answerCoachChat, type CoachChatModelCall } from "./coach/chat-model";
+import { buildCoachContextFromClient, parseCoachChatPayload } from "./coach/chat-request";
 import { appTokenFromEnv, isAuthorizedAppRequest } from "./app-auth";
 import { createGarminEnricher } from "./garmin/garmin-enrichment";
 import { createGarminRouteHandler } from "./garmin/garmin-routes";
 import { GarminSyncInputError } from "./garmin/garmin-sync";
 import { GarminSyncStore } from "./garmin/garmin-sync-store";
 import { defaultCoachModel, filterAllowedModels, pickTextModelIDs, resolveCoachModel, withDefaultCoachModel } from "./model-selection";
+import { errorResponseFor, parseJSONBody, readRequestBody, RequestBodyTooLargeError } from "./http-body";
 import { fetchOpenAIResponse, recordCoachValidationFailure, type OpenAIRequestTelemetry } from "./openai-telemetry";
 import { createLockinApiHandler } from "./storage/lockin-api";
 import { LockinStore } from "./storage/lockin-store";
@@ -140,17 +142,26 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     if (req.method === "POST" && req.url === "/coach-chat") {
-      const chatPayload = parseCoachChatPayload(JSON.parse(await readBody(req)));
+      const chatPayload = parseCoachChatPayload(parseJSONBody(await readBody(req)));
       const payload = chatPayload.request;
+      const model = resolveCoachModel(payload.model);
 
-      const context = await enrichWithGarmin(buildCoachContext(payload), payload.userId);
+      const context = await enrichWithGarmin(buildCoachContextFromClient(payload), payload.userId);
       const trainingSignals = computeTrainingSignals(context);
       const evaluation = evaluateCoachRead(context, trainingSignals);
-      writeJSON(res, 200, buildCoachChatResponse({
+      writeJSON(res, 200, await answerCoachChat({
         messages: chatPayload.messages,
         context,
         signals: trainingSignals,
-        evaluation
+        evaluation,
+        request: payload,
+        model,
+        callModel: apiKey
+          ? coachChatModelCaller(apiKey, coachTelemetry(payload, model, "/coach-chat", "coach_chat", context))
+          : null,
+        onFallback: (reason, details) => {
+          console.warn(`coach_chat.fallback ${JSON.stringify({ reason, model, ...details })}`);
+        }
       }));
       return;
     }
@@ -390,11 +401,15 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
       writeJSON(res, 400, { error: error.message });
       return;
     }
-    if (isClientInputError(error)) {
-      writeJSON(res, 400, { error: error.message });
-      return;
+    const response = errorResponseFor(error, isClientInputError);
+    if (response.status >= 500) {
+      console.error(`${req.method} ${req.url} failed:`, error);
     }
-    writeJSON(res, 500, { error: error instanceof Error ? error.message : "Unknown proxy error" });
+    if (error instanceof RequestBodyTooLargeError) {
+      // The rest of the body is not read; close instead of reusing the connection.
+      res.setHeader("connection", "close");
+    }
+    writeJSON(res, response.status, response.body);
   }
 }).listen(port, () => {
   console.log(`Fitness coach proxy listening on port ${port}`);
@@ -1061,16 +1076,14 @@ function buildCoachPromptPayload(
   };
 }
 
+/** The request body, capped at MAX_REQUEST_BODY_BYTES (413 above it). */
 function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      data += chunk;
-    });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
+  return readRequestBody(req);
+}
+
+/** The coach-chat model call: one Responses request through the telemetry wrapper. */
+function coachChatModelCaller(apiKey: string, telemetry: OpenAIRequestTelemetry): CoachChatModelCall {
+  return (body, { timeoutMs }) => fetchOpenAIResponse(apiKey, body, telemetry, { timeoutMs });
 }
 
 function writeJSON(res: ServerResponse, status: number, body: unknown) {
@@ -1079,39 +1092,6 @@ function writeJSON(res: ServerResponse, status: number, body: unknown) {
 
 function queryValue(rawURL: string, name: string): string {
   return new URL(rawURL, "http://localhost").searchParams.get(name)?.trim() ?? "";
-}
-
-function parseCoachChatPayload(value: unknown): { request: CoachRequest; messages: CoachChatMessage[] } {
-  if (!isRecord(value) || !isRecord(value.request)) {
-    throw new Error("request object is required");
-  }
-  if (!Array.isArray(value.messages)) {
-    throw new Error("messages array is required");
-  }
-
-  const messages: CoachChatMessage[] = value.messages.map((message): CoachChatMessage => {
-    if (!isRecord(message)) {
-      throw new Error("each chat message must be an object");
-    }
-    const role = cleanString(message.role);
-    if (role !== "user" && role !== "coach") {
-      throw new Error("chat message role must be user or coach");
-    }
-    const text = cleanString(message.text);
-    if (!text) {
-      throw new Error("chat message text is required");
-    }
-    return {
-      role,
-      text,
-      createdAt: cleanString(message.createdAt) || undefined
-    };
-  });
-
-  return {
-    request: value.request as CoachRequest,
-    messages: normalizeCoachChatMessages(messages)
-  };
 }
 
 function autoPlanSource(value: unknown): AutoPlanSource {

@@ -131,6 +131,10 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testCombinedWeekResponseDecodesProxyShape`
   - Verifies the `POST /generate-week` combined running + strength response decodes.
 
+- `testCoachChatResponseDecodesFractionalSecondDatesAndTheQuickAnswerFlag`
+  - Verifies a `POST /coach-chat` answer decodes with a `toISOString()` date (`.123Z`, which plain `.iso8601` rejects on iOS 17) and without fractional seconds.
+  - Confirms `usedModel` and the follow-up prompts decode.
+
 - `testGarminStatusResponseDecodesProxyShape`
   - Verifies `GET /garmin/status` decodes into `GarminStatusResponse`.
 
@@ -162,6 +166,18 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testWipeAllDataDeletesEveryModel`
   - Verifies reset deletes profile, sessions, blocks, prescriptions, logs, rank, coach plans, and coach decisions.
+
+- `testCoachChatHistoryPrunesToTheNewestMessages`
+  - Verifies on-device coach chat history is pruned to the newest 200 messages.
+
+- `testClearingTheCoachChatKeepsTrainingData`
+  - Verifies Clear conversation deletes every chat message and nothing else.
+
+- `testCoachChatMessageKeepsFollowUpsAndQuickAnswerFlag`
+  - Verifies a coach answer stores its follow-up questions and whether it was a quick (template) answer.
+
+- `testRetryingAFailedQuestionResendsTheSameBubble`
+  - Verifies a failed question is retried as the same bubble at the end of the chat, its error reply is removed, and failed pairs stay out of the turns sent to the proxy.
 
 - `testPersistAIPlanReplacesOnlyFuturePlannedSessions`
   - Verifies AI week persistence replaces only future planned sessions.
@@ -350,6 +366,12 @@ This file is the durable human-readable test list for the lockin app. It records
   - Launches with the seeded two-week activity fixture.
   - Verifies the seeded Garmin run does not render a feedback button.
   - Verifies Log history, the future workout preview, Progress readiness and running volume (longest run), and the coach read headline plus last-updated timestamp.
+
+- `testCoachChatAnswersSixConnectedQuestionsWithSeededTrainingData`
+  - Skipped unless a local proxy answers `/health` (set `TEST_RUNNER_COACH_PROXY_ENDPOINT` to point at another port).
+  - Asks the six starter questions on seeded data and waits for twelve messages, with follow-up chips under the last answer and nothing marked not sent.
+  - Against a proxy without an OpenAI key, checks the fixed quick-answer copy; model answers vary, so only their shape is checked.
+  - Clears the conversation and verifies the starter state returns.
 
 ## Screen Coverage Checklist
 

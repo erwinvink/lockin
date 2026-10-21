@@ -15,11 +15,11 @@ struct CoachChatView: View {
     @State private var draft = ""
     @State private var isSending = false
     @State private var didRunUITestScript = false
+    @State private var isConfirmingClear = false
     @FocusState private var isComposerFocused: Bool
 
     var profile: UserProfile
 
-    private static let maxSentTurns = 20
     private static let starterQuestions = [
         "Am I working well?",
         "Am I on schedule for the Eiger Ultra?",
@@ -31,7 +31,11 @@ struct CoachChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CoachChatHeader(messages: messages, raceGoal: raceGoals.first)
+            CoachChatHeader(
+                messages: messages,
+                raceGoal: raceGoals.first,
+                onClear: messages.isEmpty || isSending ? nil : { isConfirmingClear = true }
+            )
                 .padding(.horizontal, AppTheme.screenMargin)
                 .padding(.top, 10)
                 .padding(.bottom, 8)
@@ -47,8 +51,18 @@ struct CoachChatView: View {
                         }
 
                         ForEach(messages, id: \.id) { message in
-                            CoachChatBubble(message: message)
-                                .id(message.id)
+                            CoachChatBubble(
+                                message: message,
+                                onRetry: message.role == .user && message.status == .failed && !isSending
+                                    ? { retry(message) }
+                                    : nil
+                            )
+                            .id(message.id)
+                        }
+
+                        if !isSending, let followUps = latestFollowUps {
+                            CoachFollowUpChips(questions: followUps, onPick: ask)
+                                .id("coach-chat-follow-ups")
                         }
 
                         if isSending {
@@ -87,6 +101,11 @@ struct CoachChatView: View {
             .padding(.vertical, 10)
         }
         .background(AppTheme.background.ignoresSafeArea())
+        .confirmationDialog("Clear conversation?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
+            Button("Clear conversation", role: .destructive, action: clearConversation)
+        } message: {
+            Text("Every message in this chat is deleted. Your training data stays.")
+        }
         #if DEBUG
         .task {
             await runUITestScriptIfNeeded()
@@ -94,10 +113,47 @@ struct CoachChatView: View {
         #endif
     }
 
+    /// The latest coach answer's suggested questions, shown under it.
+    private var latestFollowUps: [String]? {
+        guard let last = messages.last,
+              last.role == .coach,
+              last.status == .sent else { return nil }
+        let prompts = last.followUpPrompts
+        return prompts.isEmpty ? nil : prompts
+    }
+
     @MainActor
     private func useStarterQuestion(_ question: String) {
         draft = question
         sendDraft()
+    }
+
+    /// Sends a suggested question as is, leaving any draft alone.
+    @MainActor
+    private func ask(_ question: String) {
+        guard let userMessage = prepareQuestion(question, clearDraft: false) else { return }
+        isComposerFocused = false
+        Task {
+            await requestReply(including: userMessage)
+        }
+    }
+
+    /// Sends a question that failed again, as the same bubble.
+    @MainActor
+    private func retry(_ question: CoachChatMessage) {
+        guard !isSending else { return }
+        CoachChatHistory.prepareRetry(of: question, in: messages, modelContext: modelContext)
+        isSending = true
+        try? modelContext.save()
+        Task {
+            await requestReply(including: question)
+        }
+    }
+
+    @MainActor
+    private func clearConversation() {
+        guard !isSending else { return }
+        try? CoachChatHistory.clear(in: modelContext)
     }
 
     @MainActor
@@ -156,7 +212,7 @@ struct CoachChatView: View {
                 runLogs: runLogs,
                 weekStart: rollingPlanStart()
             )
-            let turns = chatTurns(including: userMessage)
+            let turns = CoachChatHistory.turns(from: storedMessages(), including: userMessage)
             let response = try await LocalCoachClient(endpointString: endpoint).sendCoachChat(
                 CoachChatRequest(request: request, messages: turns)
             )
@@ -170,19 +226,30 @@ struct CoachChatView: View {
                 status: .sent,
                 evidence: response.evidence,
                 memorySummary: response.memorySummary,
-                answerKind: response.answerKind
+                answerKind: response.answerKind,
+                followUpPrompts: response.followUpPrompts,
+                usedModel: response.usedModel
             ))
             try modelContext.save()
         } catch {
             isSending = false
             userMessage.status = .failed
             modelContext.insert(CoachChatMessage(
+                createdAt: max(Date(), userMessage.createdAt.addingTimeInterval(0.001)),
                 role: .coach,
                 text: chatFailureMessage(for: error),
                 status: .failed
             ))
             try? modelContext.save()
         }
+        try? CoachChatHistory.prune(in: modelContext)
+    }
+
+    /// A fresh fetch, not the @Query array: right after a retry deleted a
+    /// failed reply, the query can still hold that deleted message.
+    @MainActor
+    private func storedMessages() -> [CoachChatMessage] {
+        (try? modelContext.fetch(FetchDescriptor<CoachChatMessage>(sortBy: [SortDescriptor(\.createdAt)]))) ?? messages
     }
 
     private func chatFailureMessage(for error: Error) -> String {
@@ -193,40 +260,14 @@ struct CoachChatView: View {
         return "I could not reach coach chat right now.\n\n\(details)"
     }
 
-    private func chatTurns(including userMessage: CoachChatMessage) -> [CoachChatTurnRequest] {
-        var combined = messages
-        if !combined.contains(where: { $0.id == userMessage.id }) {
-            combined.append(userMessage)
-        }
-        let sorted = combined.sorted { $0.createdAt < $1.createdAt }
-        let sentMessages = sorted.enumerated().compactMap { index, message -> CoachChatMessage? in
-            guard message.status == .sent else { return nil }
-            if message.role == .user,
-               sorted.indices.contains(index + 1),
-               sorted[index + 1].role == .coach,
-               sorted[index + 1].status == .failed {
-                return nil
-            }
-            return message
-        }
-
-        return sentMessages
-            .suffix(Self.maxSentTurns)
-            .map {
-                CoachChatTurnRequest(
-                    role: $0.role.rawValue,
-                    text: $0.text,
-                    createdAt: $0.createdAt
-                )
-            }
-    }
-
     @MainActor
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             withAnimation(.smooth(duration: 0.25)) {
                 if isSending {
                     proxy.scrollTo("coach-chat-typing", anchor: .bottom)
+                } else if latestFollowUps != nil {
+                    proxy.scrollTo("coach-chat-follow-ups", anchor: .bottom)
                 } else if let last = messages.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
@@ -238,6 +279,8 @@ struct CoachChatView: View {
 private struct CoachChatHeader: View {
     var messages: [CoachChatMessage]
     var raceGoal: RaceGoal?
+    /// Nil hides the clear button (nothing to clear, or a reply is on its way).
+    var onClear: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -261,11 +304,27 @@ private struct CoachChatHeader: View {
 
             Spacer()
 
+            if let onClear {
+                Button(action: onClear) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(AppTheme.muted)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear conversation")
+                .accessibilityIdentifier("coach-chat-clear-button")
+            }
+
             CoachChip(text: "Live data", systemImage: "bolt.fill")
         }
     }
 
     private var statusText: String {
+        if messages.count == 1 {
+            return "1 message"
+        }
         if !messages.isEmpty {
             return "\(messages.count) messages"
         }
@@ -292,13 +351,7 @@ private struct CoachChatStarter: View {
                 .padding(.bottom, 8)
             FlowLayout(spacing: 8) {
                 ForEach(questions, id: \.self) { question in
-                    Button(question) { onPick(question) }
-                        .font(.trail(15, .medium, relativeTo: .subheadline))
-                        .foregroundStyle(AppTheme.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .background(Capsule().fill(AppTheme.surface))
-                        .overlay(Capsule().strokeBorder(AppTheme.divider, lineWidth: 1))
+                    CoachQuestionChip(question: question, onPick: onPick)
                 }
             }
         }
@@ -306,8 +359,44 @@ private struct CoachChatStarter: View {
     }
 }
 
+/// The latest answer's suggested next questions, under the coach bubble.
+private struct CoachFollowUpChips: View {
+    var questions: [String]
+    var onPick: (String) -> Void
+
+    var body: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(questions, id: \.self) { question in
+                CoachQuestionChip(question: question, onPick: onPick)
+            }
+        }
+        .padding(.trailing, 48)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("coach-chat-follow-ups")
+    }
+}
+
+private struct CoachQuestionChip: View {
+    var question: String
+    var onPick: (String) -> Void
+
+    var body: some View {
+        Button(question) { onPick(question) }
+            .font(.trail(15, .medium, relativeTo: .subheadline))
+            .foregroundStyle(AppTheme.text)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(AppTheme.surface))
+            .overlay(Capsule().strokeBorder(AppTheme.divider, lineWidth: 1))
+    }
+}
+
 private struct CoachChatBubble: View {
     var message: CoachChatMessage
+    /// Set on a failed question: tapping the bubble sends it again.
+    var onRetry: (() -> Void)?
+
+    static let quickAnswerCaption = "Quick answer (coach model unavailable)"
 
     private var isUser: Bool {
         message.role == .user
@@ -339,10 +428,19 @@ private struct CoachChatBubble: View {
                     CoachEvidenceStrip(evidence: message.evidence)
                 }
 
+                if isQuickAnswer {
+                    Label(Self.quickAnswerCaption, systemImage: "bolt.slash")
+                        .font(.trail(12, .semibold, relativeTo: .caption1))
+                        .foregroundStyle(AppTheme.muted)
+                }
+
                 // A failed coach reply is the error itself; only the question
                 // is marked as not sent.
                 if isUser, message.status == .failed {
-                    Label("Not sent", systemImage: "exclamationmark.circle.fill")
+                    Label(
+                        onRetry == nil ? "Not sent" : "Not sent. Tap to retry",
+                        systemImage: onRetry == nil ? "exclamationmark.circle.fill" : "arrow.clockwise.circle.fill"
+                    )
                         .font(.trail(13, .semibold, relativeTo: .footnote))
                         .foregroundStyle(AppTheme.accentInk)
                 }
@@ -352,8 +450,14 @@ private struct CoachChatBubble: View {
             .background(shape.fill(isUser ? AppTheme.text : AppTheme.surface))
             .overlay(shape.strokeBorder(isUser ? Color.clear : borderColor, lineWidth: message.status == .failed ? 1.5 : 1))
             .frame(maxWidth: 318, alignment: isUser ? .trailing : .leading)
+            .contentShape(shape)
+            .onTapGesture {
+                onRetry?()
+            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(accessibilityLabel)
+            .accessibilityAddTraits(onRetry == nil ? [] : .isButton)
+            .accessibilityHint(onRetry == nil ? "" : "Sends this question again.")
             .accessibilityIdentifier(isUser ? "coach-chat-user-message" : "coach-chat-coach-message")
 
             if !isUser { Spacer(minLength: 48) }
@@ -364,13 +468,20 @@ private struct CoachChatBubble: View {
         message.status == .failed ? AppTheme.markerRed : AppTheme.divider
     }
 
+    private var isQuickAnswer: Bool {
+        !isUser && message.status == .sent && !message.usedModel
+    }
+
     private var accessibilityLabel: String {
         var parts = [message.text]
         if !message.evidence.isEmpty {
             parts.append(contentsOf: message.evidence)
         }
+        if isQuickAnswer {
+            parts.append(Self.quickAnswerCaption)
+        }
         if isUser, message.status == .failed {
-            parts.append("Not sent")
+            parts.append(onRetry == nil ? "Not sent" : "Not sent. Tap to retry")
         }
         return parts.joined(separator: ". ")
     }

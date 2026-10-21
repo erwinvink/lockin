@@ -442,14 +442,39 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertTrue(status.waitForExistence(timeout: 5))
         let sixTurnsComplete = NSPredicate(format: "label == %@", "12 messages")
         expectation(for: sixTurnsComplete, evaluatedWith: status)
-        waitForExpectations(timeout: 30)
+        // Six coach-model turns take a few seconds each; quick answers are instant.
+        waitForExpectations(timeout: 240)
 
-        assertChatContains(app, "Keep going")
-        assertChatContains(app, "one more honest")
-        assertChatContains(app, "recent pain up to 4/10")
-        assertChatContains(app, "Earlier you asked about your long-term schedule, your biggest improvement point, and fatigue")
-        assertChatContains(app, "against the 80% standard")
-        assertChatContains(app, "Keep shoulders warm before pull work")
+        XCTAssertFalse(elementContaining(app, "Not sent").exists)
+        XCTAssertTrue(
+            revealInChat(app, app.descendants(matching: .any)["coach-chat-follow-ups"], olderFirst: false),
+            "Expected follow-up questions under the last coach answer"
+        )
+
+        // A proxy without an OpenAI key answers with the built-in quick
+        // answers, whose copy is fixed. Model answers vary, so only their
+        // shape is checked above.
+        if elementContaining(app, "Quick answer (coach model unavailable)").waitForExistence(timeout: 2) {
+            assertChatContains(app, "Keep going")
+            assertChatContains(app, "one more honest")
+            assertChatContains(app, "recent pain up to 4/10")
+            assertChatContains(app, "Earlier you asked about your biggest improvement point, motivation, and fatigue")
+            assertChatContains(app, "against the 80% standard")
+            assertChatContains(app, "Keep shoulders warm before pull work")
+        }
+
+        let clearButton = app.buttons["coach-chat-clear-button"]
+        XCTAssertTrue(clearButton.waitForExistence(timeout: 5))
+        clearButton.tap()
+        // The header button shares the label; the dialog's button is the other one.
+        let confirmClear = app.buttons
+            .matching(NSPredicate(format: "label == %@ AND identifier != %@", "Clear conversation", "coach-chat-clear-button"))
+            .firstMatch
+        XCTAssertTrue(confirmClear.waitForExistence(timeout: 5))
+        confirmClear.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["coach-chat-starter"].waitForExistence(timeout: 5))
+        XCTAssertFalse(status.label.hasSuffix("messages"))
+        XCTAssertFalse(clearButton.exists)
     }
 
     func testProfileDebugSeedButtonLoadsDemoHistory() {
@@ -537,24 +562,30 @@ final class FitnessAppUITests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
-        let element = elementContaining(app, text)
+        if !revealInChat(app, elementContaining(app, text), olderFirst: true) {
+            XCTFail("Expected coach chat to contain: \(text)", file: file, line: line)
+        }
+    }
+
+    /// The chat only renders bubbles near the screen, so an element may need
+    /// scrolling into view: through older messages first, or newer first.
+    private func revealInChat(_ app: XCUIApplication, _ element: XCUIElement, olderFirst: Bool) -> Bool {
         if element.waitForExistence(timeout: 2) {
-            return
+            return true
         }
-
         let scrollView = app.scrollViews["coach-chat-scroll"]
-        for _ in 0..<5 {
-            if scrollView.exists {
-                scrollView.swipeUp()
-            } else {
-                app.swipeUp()
-            }
-            if element.waitForExistence(timeout: 1) {
-                return
+        let surface: XCUIElement = scrollView.exists ? scrollView : app
+        let towardOlder = { surface.swipeDown() }
+        let towardNewer = { surface.swipeUp() }
+        for swipe in olderFirst ? [towardOlder, towardNewer] : [towardNewer, towardOlder] {
+            for _ in 0..<10 {
+                swipe()
+                if element.waitForExistence(timeout: 1) {
+                    return true
+                }
             }
         }
-
-        XCTFail("Expected coach chat to contain: \(text)", file: file, line: line)
+        return false
     }
 
     private func waitForCoachTypingToFinish(_ app: XCUIApplication) {

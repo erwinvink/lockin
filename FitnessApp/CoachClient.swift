@@ -676,6 +676,7 @@ struct CoachChatRequest: Codable, Equatable {
     var messages: [CoachChatTurnRequest]
 }
 
+/// Keep in sync with `CoachChatResponse` in Proxy/src/coach/chat.ts.
 struct CoachChatResponse: Codable, Equatable {
     var answer: String
     var evidence: [String]
@@ -683,6 +684,7 @@ struct CoachChatResponse: Codable, Equatable {
     var memorySummary: String
     var contextState: String
     var answerKind: String
+    /// False when the proxy fell back to its built-in quick answer.
     var usedModel: Bool
     var generatedAt: Date
 }
@@ -2121,7 +2123,9 @@ struct LocalCoachClient {
         guard let chatEndpoint = Self.chatEndpoint(from: endpoint) else { throw CoachClientError.invalidURL }
         var urlRequest = URLRequest(url: chatEndpoint)
         urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = 45
+        // The proxy gives the coach model 45 s before it falls back to a
+        // quick answer; leave room for that answer to arrive.
+        urlRequest.timeoutInterval = 60
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = try JSONEncoder.coachEncoder.encode(request)
 
@@ -2710,7 +2714,28 @@ extension JSONEncoder {
 extension JSONDecoder {
     static var coachDecoder: JSONDecoder {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        // Not `.iso8601`: on iOS 17 it rejects fractional seconds, and the
+        // proxy's dates come from JavaScript's toISOString() ("...:00.123Z").
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            guard let date = parseCoachDate(value) else {
+                throw DecodingError.dataCorruptedError(
+                    in: container,
+                    debugDescription: "Expected an ISO-8601 date, got \(value)"
+                )
+            }
+            return date
+        }
         return decoder
     }
+}
+
+/// An ISO-8601 instant with or without fractional seconds.
+func parseCoachDate(_ value: String) -> Date? {
+    let plain = ISO8601DateFormatter()
+    if let date = plain.date(from: value) { return date }
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: value)
 }

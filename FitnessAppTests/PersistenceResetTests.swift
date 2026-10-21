@@ -114,6 +114,97 @@ final class PersistenceResetTests: XCTestCase {
         XCTAssertEqual(try modelContext.fetch(FetchDescriptor<CoachVerdict>()).count, 0)
     }
 
+    func testCoachChatHistoryPrunesToTheNewestMessages() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        for index in 0..<205 {
+            modelContext.insert(CoachChatMessage(
+                createdAt: start.addingTimeInterval(TimeInterval(index)),
+                role: index.isMultiple(of: 2) ? .user : .coach,
+                text: "Message \(index)"
+            ))
+        }
+        try modelContext.save()
+
+        try CoachChatHistory.prune(in: modelContext)
+
+        let remaining = try modelContext.fetch(FetchDescriptor<CoachChatMessage>(sortBy: [SortDescriptor(\.createdAt)]))
+        XCTAssertEqual(remaining.count, CoachChatHistory.maxStoredMessages)
+        XCTAssertEqual(remaining.first?.text, "Message 5")
+        XCTAssertEqual(remaining.last?.text, "Message 204")
+
+        try CoachChatHistory.prune(in: modelContext)
+        XCTAssertEqual(try modelContext.fetchCount(FetchDescriptor<CoachChatMessage>()), CoachChatHistory.maxStoredMessages)
+    }
+
+    func testClearingTheCoachChatKeepsTrainingData() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        modelContext.insert(CoachChatMessage(role: .user, text: "Am I working well?"))
+        modelContext.insert(CoachChatMessage(role: .coach, text: "Yes.", followUpPrompts: ["What next?"], usedModel: false))
+        modelContext.insert(WorkoutSession(scheduledDate: Date(), title: "Pull", weekIndex: 1, focus: .pull, summary: ""))
+        try modelContext.save()
+
+        try CoachChatHistory.clear(in: modelContext)
+
+        XCTAssertEqual(try modelContext.fetchCount(FetchDescriptor<CoachChatMessage>()), 0)
+        XCTAssertEqual(try modelContext.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+    }
+
+    func testCoachChatMessageKeepsFollowUpsAndQuickAnswerFlag() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let answer = CoachChatMessage(
+            role: .coach,
+            text: "Hold the plan.",
+            evidence: ["Pain 4/10 on 21 Jun"],
+            followUpPrompts: ["How hard should it feel?", "Can I run tomorrow?"],
+            usedModel: false
+        )
+        modelContext.insert(answer)
+        modelContext.insert(CoachChatMessage(role: .user, text: "Older question"))
+        try modelContext.save()
+
+        let stored = try XCTUnwrap(modelContext.fetch(FetchDescriptor<CoachChatMessage>()).first { $0.id == answer.id })
+        XCTAssertEqual(stored.followUpPrompts, ["How hard should it feel?", "Can I run tomorrow?"])
+        XCTAssertFalse(stored.usedModel)
+        XCTAssertTrue(CoachChatMessage(role: .coach, text: "Legacy answer").usedModel)
+        XCTAssertEqual(CoachChatMessage(role: .coach, text: "No suggestions").followUpPrompts, [])
+    }
+
+    func testRetryingAFailedQuestionResendsTheSameBubble() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = CoachChatMessage(createdAt: start, role: .user, text: "Am I working well?")
+        let firstAnswer = CoachChatMessage(createdAt: start.addingTimeInterval(1), role: .coach, text: "Yes, broadly.")
+        let failed = CoachChatMessage(createdAt: start.addingTimeInterval(2), role: .user, text: "What about my knee?", status: .failed)
+        let error = CoachChatMessage(createdAt: start.addingTimeInterval(3), role: .coach, text: "I could not reach coach chat right now.", status: .failed)
+        [first, firstAnswer, failed, error].forEach { modelContext.insert($0) }
+        try modelContext.save()
+
+        // Failed pairs stay out of the turns sent with a new question.
+        let next = CoachChatMessage(createdAt: start.addingTimeInterval(4), role: .user, text: "What should I do today?")
+        XCTAssertEqual(
+            CoachChatHistory.turns(from: [first, firstAnswer, failed, error], including: next).map(\.text),
+            ["Am I working well?", "Yes, broadly.", "What should I do today?"]
+        )
+
+        let messages = try modelContext.fetch(FetchDescriptor<CoachChatMessage>(sortBy: [SortDescriptor(\.createdAt)]))
+        CoachChatHistory.prepareRetry(of: failed, in: messages, modelContext: modelContext, now: start.addingTimeInterval(10))
+        try modelContext.save()
+
+        let afterRetry = try modelContext.fetch(FetchDescriptor<CoachChatMessage>(sortBy: [SortDescriptor(\.createdAt)]))
+        XCTAssertEqual(afterRetry.map(\.text), ["Am I working well?", "Yes, broadly.", "What about my knee?"])
+        XCTAssertEqual(afterRetry.last?.id, failed.id)
+        XCTAssertEqual(afterRetry.last?.status, .sent)
+        XCTAssertEqual(
+            CoachChatHistory.turns(from: afterRetry, including: failed).map(\.text),
+            ["Am I working well?", "Yes, broadly.", "What about my knee?"]
+        )
+    }
+
     func testPersistAIPlanReplacesOnlyFuturePlannedSessions() throws {
         let container = try ModelContainerFactory.make(inMemory: true)
         let modelContext = container.mainContext
