@@ -35,7 +35,10 @@ export function validateRunningWeek(
   const allowed = availability.offsets;
   const hasSelectedDays = !availability.unconstrained;
   const hasAvailableDays = allowed.length > 0;
+  // Any computed reason lowers the run floor; floor-only reasons (a profile
+  // pain note) do not allow an all-easy build week.
   const relaxed = guardrails.relaxations.length > 0;
+  const relaxedQuality = guardrails.relaxations.some((relaxation) => !relaxation.floorOnly);
 
   if (hasAvailableDays && week.sessions.length === 0) {
     messages.push("Running week must contain at least one run when future running days are available.");
@@ -113,7 +116,7 @@ export function validateRunningWeek(
   // Mirror of the strength coach's no-all-light rule: far from the race with
   // no computed reason, a week of only easy/recovery runs is not a build week.
   const weeksToRace = running?.weeksToRace ?? 0;
-  if (week.sessions.length >= 3 && hardRuns.length === 0 && weeksToRace > 3 && !relaxed) {
+  if (week.sessions.length >= 3 && hardRuns.length === 0 && weeksToRace > 3 && !relaxedQuality) {
     messages.push(
       `A normal build week needs at least one quality session (long, tempo, intervals, or hills); this week has ${week.sessions.length} easy or recovery runs and no computed reason (readiness, taper, wellness gate, recent-run warning) for an all-easy week.`
     );

@@ -980,7 +980,10 @@ private func preferredGarminRunLog(_ lhs: RunLog, _ rhs: RunLog) -> RunLog {
 /// covered made one run after three weeks off read as a full weekly base;
 /// the Garmin sync now pulls 90 days, so a first sync sees the whole window.
 /// Once real runs exist, a quiet window reads as 0 instead of keeping a
-/// stale pre-break value.
+/// stale pre-break value. While the recorded history is too thin to stand
+/// for a weekly base (fewer than 3 runs in six weeks and nothing older than
+/// four weeks, e.g. a new watch), the athlete's own numbers are kept: one
+/// short run must not turn a 45 km/week runner into a beginner.
 func updateRaceGoalBaselines(
     goal: RaceGoal,
     logs: [RunLog],
@@ -992,6 +995,9 @@ func updateRaceGoalBaselines(
 
     let fourWeeksAgo = calendar.date(byAdding: .day, value: -28, to: now) ?? now
     let sixWeeksAgo = calendar.date(byAdding: .day, value: -42, to: now) ?? now
+    let runsInSixWeeks = garminLogs.filter { $0.completedAt >= sixWeeksAgo && $0.completedAt <= now }.count
+    let historyReachesBack = garminLogs.contains { $0.completedAt < fourWeeksAgo }
+    guard runsInSixWeeks >= 3 || historyReachesBack else { return }
 
     let recentVolume = garminLogs
         .filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }

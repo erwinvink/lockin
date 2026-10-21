@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { runningGuardrails } from "./running-guardrails";
 import { runningDayAvailability, validateRunningWeek } from "./validate-running-week";
 import type { CoachContext, RunKind, RunningContext, RunningWeek } from "./types";
 
@@ -752,4 +753,67 @@ test("accepts an all-easy week for a computed reason, in taper, or with few runs
     running: { ...baseRunning, weeksToRace: 10, runningDayOffsets: [1, 3], runningDays: ["tuesday", "thursday"], longRunDay: undefined, longRunDayOffset: undefined }
   };
   assert.equal(validateRunningWeek(sparse, sparseContext).accepted, true);
+});
+
+test("one short run in six weeks does not shrink the cap below the 20 km return cap", () => {
+  const sparse = contextWith({
+    baselineWeeklyKm: 1.3,
+    longestRecentRunKm: 5,
+    runningDays: ["tuesday", "thursday", "saturday"],
+    runningDayOffsets: [1, 3, 5],
+    recentRuns: [{ completedAt: "2026-04-21T08:00:00Z", distanceKm: 5, movingSeconds: 1800, elevationGainM: 40, kind: "easy" }]
+  });
+  const guardrails = runningGuardrails(sparse);
+
+  assert.deepEqual(
+    guardrails.weeklyVolume.kind === "capped" ? guardrails.weeklyVolume.capKm : null,
+    20
+  );
+  const week: RunningWeek = { summary: "Starter week.", safetyFlags: [], sessions: [run("Easy", 1, "easy", 3), run("Easy", 3, "easy", 3), run("Long", 5, "long", 5)] };
+  assert.deepEqual(validateRunningWeek(week, sparse, guardrails), { accepted: true, messages: [] });
+
+  const baselineOnly = runningGuardrails(contextWith({ baselineWeeklyKm: 1.3, longestRecentRunKm: 5, recentRuns: [] }));
+  assert.equal(baselineOnly.weeklyVolume.kind === "capped" ? baselineOnly.weeklyVolume.capKm : null, 20);
+});
+
+test("the run floor never asks for more minimum-length runs than the weekly cap holds", () => {
+  // Three 1 km runs in the last four weeks: an established pattern, so the
+  // 15% / 3 km rule applies (1 km in the last 7 days + 3 km = 4 km) and only one 3 km run fits.
+  const tiny = contextWith({
+    baselineWeeklyKm: 0.8,
+    longestRecentRunKm: 1,
+    recentRuns: ["2026-04-20", "2026-04-27", "2026-05-04"].map((day) => ({
+      completedAt: `${day}T08:00:00Z`, distanceKm: 1, movingSeconds: 400, elevationGainM: 0, kind: "easy"
+    }))
+  });
+  const guardrails = runningGuardrails(tiny);
+
+  assert.equal(guardrails.weeklyVolume.kind === "capped" ? guardrails.weeklyVolume.capKm : null, 4);
+  assert.equal(guardrails.frequency?.minRuns, 1);
+  assert.match(guardrails.frequency?.basis ?? "", /at most 1 runs of 3 km fit the 4 km cap/);
+});
+
+test("a profile pain note lowers the run floor only, not the quality-session rule", () => {
+  const established = contextWith({
+    baselineWeeklyKm: 40,
+    longestRecentRunKm: 18,
+    runningDays: ["tuesday", "wednesday", "thursday", "saturday", "sunday"],
+    runningDayOffsets: [1, 2, 3, 5, 6]
+  });
+  const withNote = (profileNotes: string): CoachContext => ({ ...established, profile: { ...established.profile, profileNotes } });
+  const twoRuns: RunningWeek = { summary: "Lighter week.", safetyFlags: [], sessions: [run("Easy", 1, "easy", 8), run("Long", 5, "long", 16)] };
+  const allEasy: RunningWeek = {
+    summary: "Easy week.",
+    safetyFlags: [],
+    sessions: [run("Easy", 1, "easy", 8), run("Easy", 3, "easy", 8), run("Easy", 5, "easy", 10), run("Easy", 6, "easy", 6)]
+  };
+
+  const painNote = withNote("Left Achilles sore after long downhills. Keep each strength session within 45 minutes.");
+  assert.ok(runningGuardrails(painNote).relaxations.some((relaxation) => relaxation.code === "profile_pain_note" && relaxation.floorOnly));
+  assert.ok(!validateRunningWeek(twoRuns, painNote).messages.some((m) => m.includes("too sparse")), "fewer runs are fine");
+  assert.ok(validateRunningWeek(allEasy, painNote).messages.some((m) => m.includes("needs at least one quality session")), "still needs quality");
+
+  const sessionCapOnly = withNote("Keep each strength session within 45 minutes.");
+  assert.ok(!runningGuardrails(sessionCapOnly).relaxations.some((relaxation) => relaxation.code === "profile_pain_note"));
+  assert.ok(validateRunningWeek(twoRuns, sessionCapOnly).messages.some((m) => m.includes("too sparse")));
 });

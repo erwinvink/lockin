@@ -21,8 +21,13 @@ export const RUNNING_LIMITS = {
   weeklyJumpRatio: 0.15,
   /** ...or reference + 3 km, whichever is larger (small bases need room). */
   weeklyMinimumStepKm: 3,
-  /** First week back after 4+ weeks without a run. */
+  /**
+   * First week back after 4+ weeks without a run, and the floor of the cap
+   * while there are fewer than 3 runs in the last 6 weeks (one short run
+   * must not shrink the cap below what no runs at all would allow).
+   */
   returningFromBreakCapKm: 20,
+  sparseHistoryRunCount: 3,
   longRunCapRatio: 1.4,
   paceSecPerKm: { min: 150, max: 720 },
   hrBpm: { min: 80, max: 210 },
@@ -43,9 +48,14 @@ export type RunningRelaxationCode =
   | "post_race_recovery"
   | "wellness_gate"
   | "recent_run_distress"
-  | "missing_run_history";
+  | "missing_run_history"
+  | "profile_pain_note";
 
-export type RunningRelaxation = { code: RunningRelaxationCode; detail: string };
+/**
+ * A computed reason that lowers the run-count floor. `floorOnly` reasons (a
+ * profile pain note) allow fewer runs but never an all-easy build week.
+ */
+export type RunningRelaxation = { code: RunningRelaxationCode; detail: string; floorOnly?: boolean };
 
 export type WeeklyVolumeLimit =
   | { kind: "capped"; referenceKm: number; capKm: number; basis: string }
@@ -91,12 +101,15 @@ export function runningGuardrails(context: CoachContext, options: RunningGuardra
     ? running.recentRuns.filter((run) => withinDaysBefore(run, anchorMs, RUNNING_LIMITS.recentRunWindowDays)).length
     : 0;
 
+  const weeklyVolume = weeklyVolumeLimit(context, signals, recentRunCountLast6Weeks);
   return {
     anchor: now.toISOString(),
     relaxations: computedRelaxations(context, anchorMs, raceDayOffset),
-    weeklyVolume: weeklyVolumeLimit(context, signals),
+    weeklyVolume,
     longRun: longRunLimit(context, signals),
-    frequency: running ? runFrequencyPolicy(context, availability.offsets.length, recentRunCountLast6Weeks) : null,
+    frequency: running
+      ? feasibleFrequency(runFrequencyPolicy(context, availability.offsets.length, recentRunCountLast6Weeks), weeklyVolume)
+      : null,
     availability,
     backToBackLongRunsAllowed: backToBackLongRunsAllowed(context),
     raceDayOffset,
@@ -137,7 +150,7 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
     },
     computedRelaxations: guardrails.relaxations,
     computedRelaxationRule:
-      "Only these computed reasons allow fewer runs than frequency.minRuns or an all-easy week. Safety flags never waive a limit.",
+      "Only these computed reasons allow fewer runs than frequency.minRuns; all of them except floorOnly ones (a profile pain note) also allow an all-easy week. Safety flags never waive a limit.",
     raceDayOffset: guardrails.raceDayOffset,
     recentRunCountLast6Weeks: guardrails.recentRunCountLast6Weeks,
     easyReference: guardrails.easyReference,
@@ -393,6 +406,14 @@ function computedRelaxations(context: CoachContext, anchorMs: number, raceDayOff
     if (running.recentRuns.length === 0 && (running.baselineWeeklyKm || 0) <= 0) {
       relaxations.push({ code: "missing_run_history", detail: "No run history and no baseline weekly volume." });
     }
+
+    if (hasProfilePainNote(context.profile.profileNotes)) {
+      relaxations.push({
+        code: "profile_pain_note",
+        detail: "The athlete's profile notes mention pain or an injury: fewer runs than the floor are fine; the caps and the quality-session rule stay.",
+        floorOnly: true
+      });
+    }
   }
 
   const gate = wellnessGate(context, anchorMs);
@@ -415,18 +436,46 @@ function wellnessGate(context: CoachContext, anchorMs: number): RunningRelaxatio
   return null;
 }
 
-function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | null): WeeklyVolumeLimit {
+/**
+ * The athlete's own pain or injury note. The app appends a session-length
+ * sentence to the profile notes; that alone is not a pain note.
+ */
+export function hasProfilePainNote(profileNotes: string | undefined): boolean {
+  const withoutSessionCap = (profileNotes ?? "").replace(/Keep each strength session within \d+ minutes\.?/gi, "");
+  return withoutSessionCap.trim().length > 0;
+}
+
+/**
+ * Keeps the run-count floor reachable under the weekly cap: minRuns easy
+ * runs of the minimum length must fit, else the floor drops to what fits.
+ */
+function feasibleFrequency(policy: RunFrequencyPolicy, weeklyVolume: WeeklyVolumeLimit): RunFrequencyPolicy {
+  if (weeklyVolume.kind !== "capped") return policy;
+  const fits = Math.floor((weeklyVolume.capKm + 1e-9) / RUNNING_LIMITS.easyRunMinimumKm);
+  if (policy.minRuns <= fits) return policy;
+  const minRuns = Math.max(0, fits);
+  return {
+    ...policy,
+    minRuns,
+    basis: `${policy.basis}; at most ${minRuns} runs of ${RUNNING_LIMITS.easyRunMinimumKm} km fit the ${weeklyVolume.capKm} km cap`
+  };
+}
+
+function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | null, recentRunCount: number): WeeklyVolumeLimit {
   const running = context.running;
   if (!running) return { kind: "waived", reason: "No running context." };
   const baseline = running.baselineWeeklyKm || 0;
+  const returnCap = RUNNING_LIMITS.returningFromBreakCapKm;
+  const sparse = recentRunCount < RUNNING_LIMITS.sparseHistoryRunCount;
 
   if (running.recentRuns.length === 0 || !signals) {
     if (baseline > 0) {
+      const cap = capFrom(baseline);
       return {
         kind: "capped",
         referenceKm: round1(baseline),
-        capKm: capFrom(baseline),
-        basis: `the athlete's baseline of ${round1(baseline)} km/week (no run history was sent)`
+        capKm: Math.max(cap, returnCap),
+        basis: `the athlete's baseline of ${round1(baseline)} km/week (no run history was sent)${cap < returnCap ? `, raised to the ${returnCap} km return cap` : ""}`
       };
     }
     return { kind: "waived", reason: "No run history and no baseline weekly volume: plan a minimal assessment week." };
@@ -443,10 +492,19 @@ function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | nul
       basis: `no runs in the last 4 weeks, so the return week is capped at ${RUNNING_LIMITS.returningFromBreakCapKm} km`
     };
   }
+  const cap = capFrom(reference);
+  if (sparse && cap < returnCap) {
+    return {
+      kind: "capped",
+      referenceKm: round1(reference),
+      capKm: returnCap,
+      basis: `only ${recentRunCount} run(s) in the last 6 weeks, so the ${returnCap} km return cap applies instead of 15% above ${round1(reference)} km`
+    };
+  }
   return {
     kind: "capped",
     referenceKm: round1(reference),
-    capKm: capFrom(reference),
+    capKm: cap,
     basis: `the larger of the last 7 days (${last7} km) and the 4-week average (${fourWeekAvg} km)`
   };
 }
