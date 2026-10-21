@@ -7,10 +7,26 @@ import {
 } from "./coach-temperament";
 import type { CoachContext } from "./types";
 
-test("flags clean flat goal prescriptions as needing progression", () => {
+test("flags immediate and repeated matched goal performance as needing progression", () => {
   const metrics = flatGoalMetricsRequiringProgression(cleanFlatContext());
 
   assert.deepEqual(metrics.map((metric) => metric.metric), ["pullUps", "pushUps"]);
+});
+
+test("old misses do not block earned progression", () => {
+  const context = cleanFlatContext({
+    adherence: { planned: 10, completed: 7, missed: 3, missedLast14Days: 0, deload: 0 }
+  });
+
+  assert.deepEqual(flatGoalMetricsRequiringProgression(context).map((metric) => metric.metric), ["pullUps", "pushUps"]);
+});
+
+test("repeated recent misses block mandatory progression", () => {
+  const context = cleanFlatContext({
+    adherence: { planned: 10, completed: 7, missed: 3, missedLast14Days: 2, deload: 0 }
+  });
+
+  assert.deepEqual(flatGoalMetricsRequiringProgression(context), []);
 });
 
 test("does not demand progression when recovery signals are present", () => {
@@ -56,6 +72,11 @@ function cleanFlatContext(overrides: Partial<CoachContext> = {}): CoachContext {
         pullUps: { latestTarget: 3, latestVolume: 12, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
         pushUps: { latestTarget: 10, latestVolume: 30, flatCount: 3, latestDate: "2026-05-08T00:00:00Z" },
         plankSeconds: { latestTarget: null, latestVolume: null, flatCount: 0, latestDate: null }
+      },
+      recentGoalPerformance: {
+        pullUps: performance({ latestLoggedBest: 5, prescribedTarget: 3, prescribedSets: 4, delta: 2, consecutive: 1 }),
+        pushUps: performance({ latestLoggedBest: 10, prescribedTarget: 10, prescribedSets: 3, delta: 0, consecutive: 2 }),
+        plankSeconds: performance({})
       }
     },
     readiness: { state: "building", riskFlags: [] }
@@ -68,6 +89,25 @@ function cleanFlatContext(overrides: Partial<CoachContext> = {}): CoachContext {
     adherence: overrides.adherence ?? base.adherence,
     plannedWork: overrides.plannedWork ?? base.plannedWork,
     readiness: overrides.readiness ?? base.readiness
+  };
+}
+
+function performance(options: {
+  latestLoggedBest?: number;
+  prescribedTarget?: number;
+  prescribedSets?: number;
+  delta?: number;
+  consecutive?: number;
+}): NonNullable<CoachContext["plannedWork"]["recentGoalPerformance"]>["pullUps"] {
+  return {
+    latestLoggedBest: options.latestLoggedBest ?? null,
+    prescribedTarget: options.prescribedTarget ?? null,
+    prescribedSets: options.prescribedSets ?? null,
+    delta: options.delta ?? null,
+    clean: options.latestLoggedBest === undefined ? null : true,
+    consecutiveCleanCompletionsAtStandard: options.consecutive ?? 0,
+    completedAt: options.latestLoggedBest === undefined ? null : "2026-05-08T00:00:00Z",
+    latestTestDate: null
   };
 }
 

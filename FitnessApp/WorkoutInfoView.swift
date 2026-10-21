@@ -34,22 +34,42 @@ struct WorkoutInfoPopover<Label: View>: View {
             WorkoutInfoContent(prescription: prescription, block: block, onDone: onDone)
                 .presentationCompactAdaptation(.sheet)
                 .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(AppTheme.background)
         }
     }
 }
 
+/// The exercise sheet: the sets and rests as a short trail, one big timer,
+/// and what the movement is.
 struct WorkoutInfoContent: View {
     var prescription: SetPrescription
     var block: WorkoutBlock?
     var onDone: () -> Void = {}
+    @Environment(\.dismiss) private var dismiss
     @State private var previousIdleTimerDisabled: Bool?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text(prescription.exercise.title)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(AppTheme.text)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(prescription.exercise.title)
+                            .font(.trail(28, .bold, relativeTo: .title1))
+                            .foregroundStyle(AppTheme.text)
+                        if let effortLabel = prescription.plannedEffortLabel {
+                            EffortPill(
+                                label: effortLabel,
+                                targetRPE: prescription.plannedEffortTargetRPE > 0 ? prescription.plannedEffortTargetRPE : nil
+                            )
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    Button("Done") { dismiss() }
+                        .font(.trail(17, .semibold, relativeTo: .headline))
+                        .foregroundStyle(AppTheme.text)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
 
                 WorkoutTimerCard(prescription: prescription, onDone: onDone)
 
@@ -60,9 +80,12 @@ struct WorkoutInfoContent: View {
                     bodyText: exerciseMovementDescription(prescription.exercise)
                 )
             }
-            .padding(AppTheme.screenMargin)
-            .frame(maxWidth: 380, alignment: .leading)
+            .padding(.horizontal, AppTheme.screenMargin)
+            .padding(.top, 20)
+            .padding(.bottom, 32)
+            .frame(maxWidth: 440, alignment: .leading)
         }
+        .scrollIndicators(.hidden)
         .background(AppTheme.background)
         .onAppear(perform: disableIdleTimer)
         .onDisappear(perform: restoreIdleTimer)
@@ -84,32 +107,61 @@ struct WorkoutInfoContent: View {
 private struct WorkoutSummaryCard: View {
     var prescription: SetPrescription
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            InfoLine(title: "Target", value: workoutTargetText(prescription))
-            InfoLine(title: "Rest", value: durationText(seconds: prescription.restSeconds))
-            if let effortLabel = prescription.plannedEffortLabel {
-                InfoLine(
-                    title: "Planned effort",
-                    value: plannedEffortText(effortLabel),
-                    valueColor: AppTheme.effortColor(effortLabel)
-                )
-            }
-            if !prescription.plannedEffortReason.isEmpty {
-                Text(prescription.plannedEffortReason)
-                    .font(.system(size: 12))
-                    .foregroundStyle(AppTheme.faint)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .ruled(verticalPadding: 14)
+    private var restText: String {
+        prescription.restSeconds > 0 ? "\(durationText(seconds: prescription.restSeconds)) between sets" : "No rest"
     }
 
-    private func plannedEffortText(_ label: PlannedEffortLabel) -> String {
-        if prescription.plannedEffortTargetRPE > 0 {
-            return "\(label.title), RPE \(prescription.plannedEffortTargetRPE)"
+    private var reasonText: String {
+        prescription.plannedEffortReason.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SummaryRow(title: "Target", value: workoutTargetText(prescription))
+            Hairline()
+            SummaryRow(title: "Rest", value: restText)
+            if let effortLabel = prescription.plannedEffortLabel {
+                Hairline()
+                HStack(alignment: .center, spacing: 16) {
+                    Text("Planned effort")
+                        .font(.trail(15, .regular, relativeTo: .subheadline))
+                        .foregroundStyle(AppTheme.muted)
+                    Spacer(minLength: 8)
+                    EffortPill(
+                        label: effortLabel,
+                        targetRPE: prescription.plannedEffortTargetRPE > 0 ? prescription.plannedEffortTargetRPE : nil
+                    )
+                }
+                .frame(minHeight: 48)
+            }
+            if !reasonText.isEmpty {
+                Hairline()
+                SummaryRow(title: "Why", value: reasonText)
+            }
         }
-        return label.title
+        .padding(.horizontal, 16)
+        .card(padding: 0)
+    }
+}
+
+private struct SummaryRow: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text(title)
+                .font(.trail(15, .regular, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.muted)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.trail(15, .semibold, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.text)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 14)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -119,10 +171,13 @@ private struct WorkoutInfoSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            MicroLabel(text: title.uppercased())
+            Text(title)
+                .font(.trail(17, .semibold, relativeTo: .headline))
+                .foregroundStyle(AppTheme.text)
             Text(bodyText)
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.muted)
+                .font(.lockinBody)
+                .foregroundStyle(AppTheme.bodyText)
+                .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -146,29 +201,24 @@ private struct WorkoutTimerCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             if phases.isEmpty {
-                InfoLine(title: "Target", value: "None")
+                Text("No sets are planned for this exercise.")
+                    .font(.lockinBody)
+                    .foregroundStyle(AppTheme.muted)
             } else {
-                VStack(alignment: .leading, spacing: 14) {
-                    phaseControls
+                TimerPhaseTrail(
+                    phases: phases,
+                    phaseIndex: phaseIndex,
+                    isFinished: isFinished,
+                    onSelect: { selectPhase(at: $0) }
+                )
 
-                    TimerPhaseStrip(
-                        phases: phases,
-                        phaseIndex: phaseIndex,
-                        isFinished: isFinished,
-                        onSelect: { selectPhase(at: $0) }
-                    )
+                phaseDisplay
 
-                    Text(nextPhaseText)
-                        .font(.system(size: 12))
-                        .foregroundStyle(AppTheme.faint)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
+                controls
             }
         }
-        .padding(.vertical, 6)
         .sensoryFeedback(.impact(weight: .light), trigger: phaseIndex)
         .sensoryFeedback(.success, trigger: isFinished) { _, newValue in newValue }
         .onAppear(perform: resetTimer)
@@ -177,61 +227,66 @@ private struct WorkoutTimerCard: View {
         }
     }
 
-    private var phaseControls: some View {
-        VStack(spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                PhaseControlButton(
-                    systemImage: "backward.end.fill",
-                    accessibilityLabel: "Previous phase",
-                    isEnabled: canGoToPreviousPhase,
-                    action: goToPreviousPhase
-                )
+    // MARK: Display
 
-                phaseValueLabel
-                    .accessibilityLabel(accessibilityTimerLabel)
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                PhaseControlButton(
-                    systemImage: isFinalPhase ? "checkmark.circle.fill" : "forward.end.fill",
-                    accessibilityLabel: nextControlAccessibilityLabel,
-                    isEnabled: true,
-                    action: goToNextPhase
-                )
-            }
-
-            if canStartSequence {
-                TimerPlaybackButton(
-                    title: "Start",
-                    systemImage: "play.fill",
-                    action: startSequence
-                )
-            }
-        }
-    }
-
-    private var phaseValueLabel: some View {
-        VStack(spacing: 0) {
+    private var phaseDisplay: some View {
+        VStack(spacing: 2) {
+            Text(phaseLabel)
+                .font(.trail(15, .semibold, relativeTo: .subheadline))
+                .foregroundStyle(AppTheme.muted)
             Text(displayValueText)
-                .font(.system(size: 56, weight: .semibold))
-                .monospacedDigit()
+                .font(.lockinNumeral(96))
                 .foregroundStyle(AppTheme.text)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.5)
                 .contentTransition(.numericText(countsDown: true))
                 .animation(.snappy(duration: 0.25), value: displayValueText)
             Text(displayUnitText)
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(1.4)
-                .textCase(.uppercase)
-                .foregroundStyle(currentPhase?.kind == .rest && !isFinished ? AppTheme.accent : AppTheme.muted)
-                .lineLimit(1)
+                .font(.trail(17, .semibold, relativeTo: .headline))
+                .foregroundStyle(AppTheme.text)
+            Text(nextPhaseText)
+                .font(.lockinMeta)
+                .foregroundStyle(AppTheme.muted)
+                .multilineTextAlignment(.center)
+                .padding(.top, 10)
         }
-        .contentShape(Rectangle())
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .padding(.horizontal, 16)
+        .card(padding: 0)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityTimerLabel)
+    }
+
+    private var controls: some View {
+        HStack(spacing: 10) {
+            Button(action: goToPreviousPhase) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 56, height: 56)
+            }
+            .buttonStyle(OutlinedIconButtonStyle())
+            .disabled(!canGoToPreviousPhase)
+            .accessibilityLabel("Previous phase")
+
+            Button(primaryTitle, action: primaryAction)
+                .buttonStyle(PrimaryActionButtonStyle())
+                .accessibilityLabel(primaryAccessibilityLabel)
+        }
     }
 
     private var currentPhase: WorkoutTimerPhase? {
         guard !phases.isEmpty else { return nil }
         return phases[min(phaseIndex, phases.count - 1)]
+    }
+
+    private var phaseLabel: String {
+        guard let currentPhase else { return "" }
+        if isFinished { return "All sets" }
+        switch currentPhase.kind {
+        case .work: return "Set \(currentPhase.setNumber) of \(prescription.sets)"
+        case .rest: return "Rest"
+        }
     }
 
     private var displayValueText: String {
@@ -245,17 +300,33 @@ private struct WorkoutTimerCard: View {
 
     private var displayUnitText: String {
         guard let currentPhase else { return "" }
-        if isFinished { return "complete" }
-        return currentPhase.displayUnit
+        if isFinished { return "Nice work" }
+        switch (currentPhase.kind, currentPhase.target) {
+        case (.work, .reps): return "strict reps"
+        case (.work, .seconds): return "hold"
+        case (.rest, _):
+            let nextSet = currentPhase.setNumber + 1
+            return nextSet <= prescription.sets ? "until set \(nextSet)" : "then you're done"
+        }
     }
 
     private var nextPhaseText: String {
-        guard !isFinished else { return "Exercise timer complete." }
+        guard !isFinished else { return "Close this sheet to log the rest of the session." }
         let nextIndex = phaseIndex + 1
         guard phases.indices.contains(nextIndex) else {
-            return currentPhase?.kind == .rest ? "Final rest." : "Final set."
+            return currentPhase?.kind == .rest ? "Last rest." : "Last set."
         }
-        return "Up next: \(phases[nextIndex].summaryText.lowercased())."
+        let next = phases[nextIndex]
+        switch (next.kind, next.target) {
+        case let (.work, .reps(reps)):
+            return "Up next: set \(next.setNumber), \(reps) reps."
+        case let (.work, .seconds(seconds)):
+            return "Up next: set \(next.setNumber), \(durationText(seconds: seconds)) hold."
+        case let (.rest, .seconds(seconds)):
+            return "Up next: \(durationText(seconds: seconds)) rest."
+        case (.rest, .reps):
+            return "Up next: rest."
+        }
     }
 
     private var displayedRemainingSeconds: Int {
@@ -277,14 +348,32 @@ private struct WorkoutTimerCard: View {
         phaseIndex == 0 && currentPhase?.isTimed == true && !hasStartedSequence && !isFinished
     }
 
-    private var nextControlAccessibilityLabel: String {
-        if isFinalPhase {
-            return "Finish exercise"
+    // MARK: Primary action
+
+    private var primaryTitle: String {
+        if canStartSequence { return "Start" }
+        if isFinalPhase { return "Finish \(prescription.exercise.title.lowercased())" }
+        guard let currentPhase else { return "Next" }
+        switch (currentPhase.kind, currentPhase.target) {
+        case (.rest, _): return "Skip rest"
+        case (.work, .reps): return "Set done"
+        case (.work, .seconds): return "Next"
         }
-        if currentPhase?.kind == .rest {
-            return "Skip rest"
-        }
+    }
+
+    private var primaryAccessibilityLabel: String {
+        if canStartSequence { return "Start timer" }
+        if isFinalPhase { return "Finish exercise" }
+        if currentPhase?.kind == .rest { return "Skip rest" }
         return "Next phase"
+    }
+
+    private func primaryAction() {
+        if canStartSequence {
+            startSequence()
+        } else {
+            goToNextPhase()
+        }
     }
 
     private var accessibilityTimerLabel: String {
@@ -295,6 +384,8 @@ private struct WorkoutTimerCard: View {
         }
         return "\(currentPhase.title), \(currentPhase.displayValue) \(currentPhase.displayUnit)."
     }
+
+    // MARK: Timer state
 
     private func goToNextPhase() {
         if isFinalPhase {
@@ -369,77 +460,50 @@ private struct WorkoutTimerCard: View {
     }
 }
 
-private struct TimerPlaybackButton: View {
-    var title: String
-    var systemImage: String
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(AppTheme.accentInk)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 9)
-                .background(Capsule().fill(AppTheme.accent))
-        }
-        .buttonStyle(PressableCircleStyle())
-        .frame(maxWidth: .infinity, alignment: .center)
-        .accessibilityLabel(title)
-    }
-}
-
-/// Shared press physics for the timer's compact controls.
-private struct PressableCircleStyle: ButtonStyle {
+/// Square outlined icon button next to the primary action.
+private struct OutlinedIconButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .brightness(configuration.isPressed ? -0.07 : 0)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .foregroundStyle(isEnabled ? AppTheme.text : AppTheme.post)
+            .background(
+                RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
+                    .fill(configuration.isPressed ? AppTheme.surfaceRaised : AppTheme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
+                    .strokeBorder(isEnabled ? AppTheme.text : AppTheme.divider, lineWidth: 2)
+            )
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
             .animation(.snappy(duration: 0.2), value: configuration.isPressed)
     }
 }
 
-private struct PhaseControlButton: View {
-    var systemImage: String
-    var accessibilityLabel: String
-    var isEnabled: Bool = true
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isEnabled ? AppTheme.text : AppTheme.faint.opacity(0.6))
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(AppTheme.surfaceRaised))
-                .overlay(Circle().strokeBorder(AppTheme.divider, lineWidth: 1))
-        }
-        .buttonStyle(PressableCircleStyle())
-        .disabled(!isEnabled)
-        .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-private struct TimerPhaseStrip: View {
+/// Sets as waypoints and rests as small stops on one dashed trail. The
+/// current step is the yellow "you are here" marker; tap any step to jump.
+private struct TimerPhaseTrail: View {
     var phases: [WorkoutTimerPhase]
     var phaseIndex: Int
     var isFinished: Bool
     var onSelect: (Int) -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             ForEach(Array(phases.enumerated()), id: \.element.id) { index, phase in
                 Button {
                     onSelect(index)
                 } label: {
-                    Capsule()
-                        .fill(color(for: phase, at: index))
-                        .frame(height: index == phaseIndex && !isFinished ? 7 : 4)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 16)
-                        .contentShape(Rectangle())
+                    ZStack {
+                        HStack(spacing: 0) {
+                            halfTrail(visible: index > 0)
+                            halfTrail(visible: index < phases.count - 1)
+                        }
+                        marker(for: phase, at: index)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(phase.stripAccessibilityLabel)
@@ -449,14 +513,32 @@ private struct TimerPhaseStrip: View {
         .animation(.snappy(duration: 0.25), value: isFinished)
     }
 
-    private func color(for phase: WorkoutTimerPhase, at index: Int) -> Color {
-        if isFinished || index < phaseIndex {
-            return AppTheme.accent
+    private func halfTrail(visible: Bool) -> some View {
+        TrailLine(axis: .horizontal)
+            .stroke(AppTheme.post, style: StrokeStyle(lineWidth: 3, dash: [5, 5]))
+            .frame(height: 3)
+            .opacity(visible ? 1 : 0)
+    }
+
+    @ViewBuilder
+    private func marker(for phase: WorkoutTimerPhase, at index: Int) -> some View {
+        let isDone = isFinished || index < phaseIndex
+        let isNow = !isFinished && index == phaseIndex
+        switch phase.kind {
+        case .work:
+            WaypointMarker(state: isDone ? .done : (isNow ? .current : .planned), size: 26)
+                .background(Circle().fill(AppTheme.background).padding(-3))
+        case .rest:
+            if isNow {
+                WaypointMarker(state: .current, size: 18)
+                    .background(Circle().fill(AppTheme.background).padding(-3))
+            } else {
+                Circle()
+                    .fill(isDone ? AppTheme.text : AppTheme.post)
+                    .frame(width: 10, height: 10)
+                    .background(Circle().fill(AppTheme.background).padding(-3))
+            }
         }
-        if index == phaseIndex {
-            return phase.kind == .work ? AppTheme.accent : AppTheme.accent.opacity(0.55)
-        }
-        return AppTheme.divider
     }
 }
 

@@ -6,6 +6,9 @@ the camelCase keys the Node proxy expects. Every input may be None, partial,
 or outright garbage; mapping never raises and degrades to 0/"" defaults.
 """
 
+import hashlib
+import json
+import re
 from typing import Any
 
 # Garmin Connect structured-workout constants (see garminconnect.workout).
@@ -192,6 +195,34 @@ def wellness_day(
     }
 
 
+# Which wellness_day fields each Garmin call feeds, in the order the proxy and
+# app list them. restingHr is handled separately: it falls back to the sleep
+# payload, so it is only unavailable when it ended up empty AND one of its two
+# sources failed.
+_METRICS_BY_SOURCE = (
+    ("sleep", ("sleepScore", "sleepSeconds")),
+    ("hrv", ("hrvStatus", "hrvMs")),
+    ("body_battery", ("bodyBattery",)),
+    ("readiness", ("trainingReadiness",)),
+)
+
+
+def unavailable_metrics(row: dict[str, Any], failed_sources: set[str]) -> list[str]:
+    """Field names whose value in `row` is a placeholder because the Garmin
+    call behind it FAILED (as opposed to Garmin having no data for that day).
+
+    `failed_sources` holds any of: sleep, hrv, body_battery, readiness, rhr.
+    The placeholders stay 0/"" in the row so old decoders keep working; this
+    list tells consumers not to treat them as real values."""
+    out: list[str] = []
+    for source, fields in _METRICS_BY_SOURCE:
+        if source in failed_sources:
+            out.extend(fields)
+    if not row.get("restingHr") and ({"rhr", "sleep"} & failed_sources):
+        out.append("restingHr")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Activities
 # ---------------------------------------------------------------------------
@@ -274,7 +305,9 @@ def _step(order: int, step_type: dict, end_condition: dict, end_value: float,
             step["targetType"] = dict(_TARGET_SPEED)
             step["targetValueOne"] = round(1000.0 / slow_sec, 4)
             step["targetValueTwo"] = round(1000.0 / fast_sec, 4)
-        elif target_type == "hr" and low is not None and high is not None:
+        elif target_type == "hr" and low and high and low > 0 and high > 0:
+            # A 0-0 band would tell the watch to alarm on every heartbeat;
+            # anything without two positive bounds goes as no target.
             step["targetType"] = dict(_TARGET_HR)
             step["targetValueOne"] = float(min(low, high))
             step["targetValueTwo"] = float(max(low, high))
@@ -286,7 +319,8 @@ def build_workout(payload: Any) -> dict[str, Any]:
 
     Payload: {"sessionId","title","date","kind","distanceKm","durationMinutes",
     "target":{"type","low","high"},"notes"}. Hard kinds (long/tempo/intervals/
-    hills) get a 10 min easy warmup + main step + 5 min easy cooldown; easy/
+    hills) get a 10 min easy warmup + main step + 5 min easy cooldown (taken
+    out of the planned distance/duration, which is the whole session); easy/
     recovery become a single steady step. The schedule date is NOT part of the
     workout JSON — scheduling is a separate Garmin call.
     """
@@ -297,11 +331,17 @@ def build_workout(payload: Any) -> dict[str, Any]:
     duration_minutes = _num(payload.get("durationMinutes")) or 0.0
     target = payload.get("target") if isinstance(payload.get("target"), dict) else None
 
-    # Main-step end condition: distance when known, otherwise time. The time
-    # fallback subtracts warmup/cooldown for hard kinds (floor 10 min) so the
-    # full workout still lands near durationMinutes.
+    # Main-step end condition: distance when known, otherwise time. Both treat
+    # the planned distance/duration as the WHOLE session: for hard kinds the
+    # warmup/cooldown come out of the main step (distance: their estimated
+    # easy-jog distance, floor half the session; time: floor 10 min) so the
+    # full workout lands near what the coach planned.
+    main_km = distance_km
     if distance_km > 0:
-        main_condition, main_value = _COND_DISTANCE, round(distance_km * 1000.0, 1)
+        if hard:
+            jog_km = (_WARMUP_SECONDS + _COOLDOWN_SECONDS) / _DEFAULT_SEC_PER_KM
+            main_km = max(distance_km - jog_km, distance_km * 0.5, min(distance_km, 1.0))
+        main_condition, main_value = _COND_DISTANCE, round(main_km * 1000.0, 1)
     else:
         total = duration_minutes * 60.0 if duration_minutes > 0 else 1800.0
         if hard:
@@ -328,7 +368,7 @@ def build_workout(payload: Any) -> dict[str, Any]:
             high = _num(target.get("high"))
             if low and high and low > 0 and high > 0:
                 sec_per_km = (low + high) / 2.0
-        estimated = int(round(distance_km * sec_per_km))
+        estimated = int(round(main_km * sec_per_km))
         if hard:
             estimated += int(_WARMUP_SECONDS + _COOLDOWN_SECONDS)
     else:
@@ -351,3 +391,54 @@ def build_workout(payload: Any) -> dict[str, Any]:
     if notes:
         workout["description"] = notes
     return workout
+
+
+# ---------------------------------------------------------------------------
+# Workout tags (idempotent pushes)
+# ---------------------------------------------------------------------------
+
+# Every workout the sidecar creates carries "lockin:<sessionId>:<fingerprint>"
+# in its description. A push that timed out on the proxy side may still have
+# created the workout, so before creating, the sidecar looks for this tag and
+# reuses the workout instead of making a duplicate. The fingerprint covers the
+# content AND the date, so an orphan with outdated content is never reused.
+_TAG_PREFIX = "lockin:"
+_FINGERPRINT_FIELDS = ("title", "date", "kind", "distanceKm", "durationMinutes", "target", "notes")
+
+
+def workout_fingerprint(payload: Any) -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    content = {field: payload.get(field) for field in _FINGERPRINT_FIELDS}
+    raw = json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def workout_tag(session_id: str, fingerprint: str) -> str:
+    return f"{_TAG_PREFIX}{session_id}:{fingerprint}"
+
+
+def tag_workout(workout: dict[str, Any], session_id: str, fingerprint: str) -> dict[str, Any]:
+    """Copy of `workout` with the session tag appended to its description."""
+    tagged = dict(workout)
+    tag = workout_tag(session_id, fingerprint)
+    description = _str(tagged.get("description")).strip()
+    tagged["description"] = f"{description}\n\n{tag}" if description else tag
+    return tagged
+
+
+def tagged_session_fingerprints(workouts: Any, session_id: str) -> list[tuple[str, str]]:
+    """(workoutId, fingerprint) for every listed workout tagged with this
+    session, in list order. Looks at the description and, defensively, the
+    name; anything malformed is skipped."""
+    if not isinstance(workouts, list) or not session_id:
+        return []
+    pattern = re.compile(re.escape(f"{_TAG_PREFIX}{session_id}:") + r"([0-9a-f]{12})(?![0-9a-f])")
+    out: list[tuple[str, str]] = []
+    for workout in workouts:
+        if not isinstance(workout, dict) or workout.get("workoutId") is None:
+            continue
+        text = f"{_str(workout.get('description'))}\n{_str(workout.get('workoutName'))}"
+        match = pattern.search(text)
+        if match:
+            out.append((str(workout["workoutId"]), match.group(1)))
+    return out

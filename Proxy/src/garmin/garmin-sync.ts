@@ -14,7 +14,17 @@ export type GarminSyncPlanRequest = {
   planRevisionId: string;
   staleWorkoutIds?: unknown[];
   workouts?: unknown[];
+  /**
+   * The athlete's local today ("yyyy-MM-dd"). Recorded workouts dated on or
+   * before it are never deleted just because the app left them out of
+   * `workouts` (the app only sends runs from tomorrow on, because today is
+   * locked). Explicit `staleWorkoutIds` are still deleted.
+   */
+  lockedThroughDate?: unknown;
 };
+
+// Old clients don't send lockedThroughDate; protect today in the owner's zone.
+const fallbackLockTimeZone = "Europe/Amsterdam";
 
 export type GarminSyncWorkoutStatus = {
   sessionId: string;
@@ -36,7 +46,7 @@ export type GarminSyncPlanResponse = {
   lastError: string | null;
 };
 
-type GarminSyncDeps = {
+export type GarminSyncDeps = {
   pushWorkouts: (workouts: unknown[], fetchImpl?: typeof fetch, options?: GarminRequestOptions) => Promise<GarminPushResponse>;
   deleteWorkouts: (workoutIds: unknown[], fetchImpl?: typeof fetch, options?: GarminRequestOptions) => Promise<GarminDeleteResponse>;
   now: () => Date;
@@ -62,13 +72,14 @@ export async function submitGarminSyncPlan(
 
   const workouts = asWorkouts(request.workouts ?? []);
   const staleWorkoutIds = asWorkoutIds(request.staleWorkoutIds ?? []);
+  const lockedThroughDate = lockedThroughDateFor(request.lockedThroughDate, resolved.now());
 
   return store.updateUser(userId, async (user) => {
     user.planRevisionId = planRevisionId;
     user.status = "syncing";
     user.lastError = null;
 
-    mergePlanIntoState(user, planRevisionId, workouts, staleWorkoutIds, resolved.now());
+    mergePlanIntoState(user, planRevisionId, workouts, staleWorkoutIds, lockedThroughDate, resolved.now());
     await advanceSyncState(user, resolved);
     summarizeUser(user);
   }).then(toResponse);
@@ -117,20 +128,38 @@ function mergePlanIntoState(
   planRevisionId: string,
   workouts: GarminSyncWorkoutPayload[],
   staleWorkoutIds: string[],
+  lockedThroughDate: string,
   nowDate: Date
 ): void {
   const now = nowDate.toISOString();
+  const explicitStale = new Set(staleWorkoutIds);
   for (const workoutId of staleWorkoutIds) {
     addDelete(user, workoutId, now);
   }
 
   const desiredSessionIds = new Set(workouts.map((workout) => workout.sessionId));
   for (const record of Object.values(user.workouts)) {
-    if (!desiredSessionIds.has(record.sessionId) && record.garminWorkoutId) {
-      addDelete(user, record.garminWorkoutId, now);
-      record.status = "deleted";
-      record.updatedAt = now;
+    if (desiredSessionIds.has(record.sessionId)) {
+      continue;
     }
+    if (record.payload.date < lockedThroughDate) {
+      // A past run is done with: stop tracking, counting and (re)pushing it,
+      // but leave its workout on Garmin as history. An explicit stale id was
+      // already queued for deletion above.
+      delete user.workouts[record.sessionId];
+      continue;
+    }
+    if (!record.garminWorkoutId) {
+      continue;
+    }
+    // Today's run is locked: leaving it out of the request means "not
+    // resent", not "delete from the watch". Only an explicit stale id removes it.
+    if (record.payload.date <= lockedThroughDate && !explicitStale.has(record.garminWorkoutId)) {
+      continue;
+    }
+    addDelete(user, record.garminWorkoutId, now);
+    record.status = "deleted";
+    record.updatedAt = now;
   }
 
   for (const workout of workouts) {
@@ -146,7 +175,13 @@ function mergePlanIntoState(
       addDelete(user, existing.garminWorkoutId, now);
     }
 
-    const adoptedGarminId = cleanId(workout.existingGarminWorkoutId ?? "") || null;
+    // Adopt the app's id only for a session this proxy has no record of, and
+    // never an id that is queued for (or done with) deletion: a changed run
+    // would otherwise be deleted from Garmin and marked synced at once.
+    const candidateGarminId = cleanId(workout.existingGarminWorkoutId ?? "") || null;
+    const adoptedGarminId = !existing && candidateGarminId && !user.deletes[candidateGarminId]
+      ? candidateGarminId
+      : null;
     user.workouts[workout.sessionId] = {
       sessionId: workout.sessionId,
       contentHash,
@@ -409,6 +444,20 @@ function normalizeWorkout(value: unknown): GarminSyncWorkoutPayload | null {
     notes: cleanString(value.notes),
     existingGarminWorkoutId: cleanId(value.existingGarminWorkoutId ?? "") || null
   };
+}
+
+function lockedThroughDateFor(value: unknown, nowDate: Date): string {
+  const requested = cleanString(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(requested)) {
+    return requested;
+  }
+  // en-CA formats as yyyy-MM-dd.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: fallbackLockTimeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(nowDate);
 }
 
 function asWorkoutIds(value: unknown[]): string[] {

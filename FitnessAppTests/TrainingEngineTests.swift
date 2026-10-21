@@ -408,3 +408,42 @@ final class TrainingEngineTests: XCTestCase {
             .max() ?? 0
     }
 }
+
+// MARK: - Bug audit 2026-10 regressions
+
+extension TrainingEngineTests {
+    /// W9: done sessions get no reminder, and a double day gets one reminder.
+    func testWorkoutReminderRequestsSkipDoneSessionsAndMergeSameDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 6)))
+        let reminderTime = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 1, day: 1, hour: 9)))
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: today))
+
+        let done = WorkoutSession(scheduledDate: today, title: "Done pull", weekIndex: 0, focus: .pull, status: .completed, summary: "AI: x")
+        let run = WorkoutSession(scheduledDate: tomorrow, title: "Easy run", weekIndex: 0, focus: .mixed, summary: "AI: x", estimatedDurationMinutes: 45, discipline: .running, runKind: .easy, plannedDistanceKm: 8)
+        let strength = WorkoutSession(scheduledDate: tomorrow, title: "Push", weekIndex: 0, focus: .push, summary: "AI: x", estimatedDurationMinutes: 30)
+
+        let requests = workoutReminderRequests(for: [done, run, strength], at: reminderTime, now: now, calendar: calendar)
+
+        XCTAssertEqual(requests.count, 1)
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.title, "Easy run + Push today")
+        XCTAssertEqual(calendar.component(.day, from: request.fireDate), 11)
+        XCTAssertEqual(calendar.component(.hour, from: request.fireDate), 9)
+    }
+
+    /// L2: the local planner never schedules on a rest day.
+    func testGenerateWeekWithOneSelectedDayPlansOnlyThatDay() throws {
+        let start = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 8)))
+        let plan = TrainingEngine().generateWeek(
+            start: start,
+            weekIndex: 0,
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(weeklySessions: 1, trainingDays: [.wednesday], equipment: [.pullUpBar], targetDate: start)
+        )
+        XCTAssertEqual(plan.sessions.count, 1)
+        XCTAssertEqual(plan.sessions.map { Calendar.current.component(.weekday, from: $0.date) }, [TrainingWeekday.wednesday.calendarWeekday])
+    }
+}

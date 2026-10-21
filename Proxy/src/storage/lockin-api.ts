@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { signAuthToken, verifyAuthToken, type PublicUser } from "./lockin-auth";
+import { ClientInputError, parseJSONObjectBody, readRequestBody, RequestBodyTooLargeError } from "../http-body";
+import { resolveAuthSecret, signAuthToken, verifyAuthToken, type PublicUser } from "./lockin-auth";
 import { LockinAuthError, LockinInputError, LockinStore } from "./lockin-store";
 
 export function createLockinApiHandler(
   store: LockinStore,
-  options: { authSecret?: string } = {}
+  options: { authSecret?: string; env?: NodeJS.ProcessEnv } = {}
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -17,6 +18,12 @@ export function createLockinApiHandler(
       return true;
     }
 
+    const authSecret = resolveAuthSecret(options.authSecret, options.env ?? process.env);
+    if (!authSecret) {
+      writeJSON(res, 503, { error: "Storage is disabled: LOCKIN_AUTH_SECRET must be set in production." });
+      return true;
+    }
+
     try {
       if (req.method === "POST" && url.pathname === "/v1/auth/register") {
         const body = await readJSON(req);
@@ -25,7 +32,7 @@ export function createLockinApiHandler(
           password: stringFrom(body.password),
           displayName: stringFrom(body.displayName)
         });
-        writeJSON(res, 201, authResponse(user, options.authSecret));
+        writeJSON(res, 201, authResponse(user, authSecret));
         return true;
       }
 
@@ -35,11 +42,11 @@ export function createLockinApiHandler(
           username: stringFrom(body.username),
           password: stringFrom(body.password)
         });
-        writeJSON(res, 200, authResponse(user, options.authSecret));
+        writeJSON(res, 200, authResponse(user, authSecret));
         return true;
       }
 
-      const user = authenticateRequest(req, store, options.authSecret);
+      const user = authenticateRequest(req, store, authSecret);
 
       if (req.method === "GET" && url.pathname === "/v1/me") {
         writeJSON(res, 200, { user });
@@ -90,8 +97,14 @@ export function createLockinApiHandler(
       writeJSON(res, 404, { error: "Not found" });
       return true;
     } catch (error) {
-      if (error instanceof LockinInputError) {
+      if (error instanceof LockinInputError || error instanceof ClientInputError) {
         writeJSON(res, 400, { error: error.message });
+        return true;
+      }
+      if (error instanceof RequestBodyTooLargeError) {
+        // The rest of the body is not read; close instead of reusing the connection.
+        res.setHeader("connection", "close");
+        writeJSON(res, 413, { error: error.message });
         return true;
       }
       if (error instanceof LockinAuthError) {
@@ -104,7 +117,7 @@ export function createLockinApiHandler(
   };
 }
 
-function authResponse(user: PublicUser, authSecret?: string): { user: PublicUser; token: string } {
+function authResponse(user: PublicUser, authSecret: string): { user: PublicUser; token: string } {
   return {
     user,
     token: signAuthToken(
@@ -114,7 +127,7 @@ function authResponse(user: PublicUser, authSecret?: string): { user: PublicUser
   };
 }
 
-function authenticateRequest(req: IncomingMessage, store: LockinStore, authSecret?: string): PublicUser {
+function authenticateRequest(req: IncomingMessage, store: LockinStore, authSecret: string): PublicUser {
   const authorization = req.headers.authorization ?? "";
   const token = authorization.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
   const payload = token ? verifyAuthToken(token, authSecret) : null;
@@ -128,34 +141,15 @@ function authenticateRequest(req: IncomingMessage, store: LockinStore, authSecre
   return user;
 }
 
+/** The JSON object body (empty means {}), capped at 2 MB: 413 above it, 400 for invalid JSON. */
 async function readJSON(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const body = await readBody(req);
-  if (!body.trim()) {
-    return {};
-  }
-  const parsed = JSON.parse(body) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new LockinInputError("JSON object body is required");
-  }
-  return parsed as Record<string, unknown>;
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      data += chunk;
-    });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
+  return parseJSONObjectBody(await readRequestBody(req), { allowEmpty: true });
 }
 
 function writeJSON(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "access-control-allow-origin": "*",
-    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-headers": "authorization, content-type, x-lockin-app-token",
     "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
     "content-type": "application/json"
   });

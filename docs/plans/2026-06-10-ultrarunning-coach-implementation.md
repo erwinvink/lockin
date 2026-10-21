@@ -237,7 +237,7 @@ Register `RaceGoal.self`, `RunLog.self`, `GarminDailySnapshot.self` in `ModelCon
 
 - Purpose: generate a conservative, schema-valid ultrarunning week from `coachContext.running` (race goal, weeks to race, recent runs, baseline weekly km, selected running days, long-run day) plus shared readiness and optional `coachContext.garmin` wellness.
 - Temperament: calm, practical ultra coach; respects strength work happening the same week; no hype.
-- Hard rules: today (`dayOffset 0`) locked; only selected future running-day offsets when provided, exactly one run per selected day, strictly increasing; long run lands on the long-run day when provided; most volume easy/Zone 2 (80/20); inside 21 days of `raceDate` taper (reduce volume, keep light frequency); every session includes a pace or HR `target`; respect readiness gates from `ultra-periodization.md`; safety flags for injury notes, volume jumps > 15%, or missing history; schema-valid JSON only.
+- Hard rules: today (`dayOffset 0`) locked; selected future running-day offsets are availability, not a quota; only schedule runs on selected future offsets when provided, leave unused offsets as rest days, and keep offsets strictly increasing; long run lands on the long-run day when provided; most volume easy/Zone 2 (80/20); inside 21 days of `raceDate` taper (reduce volume, keep light frequency); every session includes a pace or HR `target`; respect readiness gates from `ultra-periodization.md`; safety flags for injury notes, volume jumps > 15%, or missing history; schema-valid JSON only.
 
 **Step 4: Verify** the schema parses: `cd Proxy && node -e "JSON.parse(require('fs').readFileSync('src/coach/skills/running-coach-planner/references/running-week.schema.json','utf8')); console.log('ok')"`
 
@@ -330,8 +330,8 @@ export function validateRunningWeek(week: RunningWeek, context: CoachContext): R
   const hasSelectedDays = allowed.length > 0;
   const hasSafetyFlags = week.safetyFlags.length > 0;
 
-  if (hasSelectedDays && week.sessions.length !== allowed.length) {
-    messages.push(`Running week must contain exactly ${allowed.length} runs, one per selected running day.`);
+  if (hasSelectedDays && week.sessions.length > allowed.length) {
+    messages.push(`Running week must contain no more than ${allowed.length} runs, using selected future running days as availability.`);
   }
 
   let previousOffset = -1;
@@ -582,7 +582,7 @@ Add `func generateCombinedWeek(request:baseline:preferences:) async throws -> Co
 - Modify: `FitnessApp/CoachClient.swift` (mapping extension)
 - Test: `FitnessAppTests/CoachValidationTests.swift` (mapping) and `FitnessAppTests/PersistenceResetTests.swift` (persistence — it already owns an in-memory container helper)
 
-**Step 1: Failing tests:** persisting a `RunningWeekResponse` creates one `WorkoutSession` per run with `discipline == .running`, correct date (`weekStart + dayOffset`), `runKind`, `plannedDistanceKm`, `plannedElevationM`, target fields, `summary` prefixed `"AI: "`, `estimatedDurationMinutes == durationMinutes`; re-persisting with `replacingFuturePlannedSessions: true` deletes future *planned* running sessions but never touches today or completed ones; strength repersist does not delete running sessions and vice versa.
+**Step 1: Failing tests:** persisting a `RunningWeekResponse` creates one `WorkoutSession` per run with `discipline == .running`, correct date (`weekStart + dayOffset`), `runKind`, `plannedDistanceKm`, `plannedElevationM`, target fields, `summary` prefixed `"AI: "`, `estimatedDurationMinutes == durationMinutes`; re-persisting with `replacingFuturePlannedSessions: true` deletes future *planned* running sessions and also deletes stale planned sessions from today after the athlete already completed/partially completed/deloaded training today; it never touches completed sessions; strength repersist does not delete running sessions and vice versa.
 
 **Step 2: Run → fail.**
 
@@ -633,7 +633,7 @@ Also update `AppShellView.refreshTrainingPlanState` filter: it keeps planned ses
 
 **Step 5: Commit** — `Persist AI running weeks as running sessions`
 
-AMENDED after review: deleteFuturePlannedSessions now deletes only sessions scheduled strictly after today (>= tomorrow). A planned session sitting on today survives a replan, matching the today-locked invariant and the Coach screen copy.
+AMENDED after July 4 bug fix: `deleteFuturePlannedSessions` keeps today's planned session only before the athlete has trained today. After any completed, partial, or deloaded training today, a replan deletes stale planned sessions from today as well as future planned sessions. This preserves the today-locked invariant while preventing an already-finished day from showing a new extra training in the log.
 
 ---
 

@@ -21,11 +21,24 @@ Use the deterministic `coachContext` built by the proxy planner code before the 
 
 - profile baseline, goals, notes, equipment, selected training days, future day offsets, week start, and target date
 - last 5 logs with planned vs actual perceived effort, pain, how-you-felt signal, notes, and logged goal metrics
-- current partial month, last full month, previous full month, two-month trend, and best recent tests
-- adherence counts and `plannedWork.recentGoalTargets` from saved goal-exercise prescriptions
+- current partial month, last full month, previous full month, the rolling 3-week trend, and best recent tests (the current level: the baseline set at the plan block start plus logs since then; older higher bests from before the block are in `bestBeforeBlock`, context only)
+- adherence counts, including misses in the most recent 14 days
+- `plannedWork.recentGoalPerformance`, which matches each logged goal result to that session's saved prescription and supplies the logged best, target, delta, clean-signal decision, repeat count at the same standard, and latest assessment date
+- `plannedWork.recentGoalTargets` as supporting prescription history, including the previous working prescription (`latestWorkingTarget`, `latestWorkingSets`)
 - readiness state and risk flags
 
+The proxy also sends `trainingSignals` (running load, race countdown, HRV gate) and `outputRules.strengthGuardrails`, computed by code and enforced after you answer:
+
+- `workingCaps`: the most reps or hold seconds per working set (85% pull-ups, 75% push-ups, 80% plank of the best recent value); tests excepted
+- `goalSetsPerExercise`: 2-6 sets for goal work
+- `maxHardSessionsThisWeek`: 2 alongside a running week, 3 without
+- `progression.<metric>`: `status` (earned, maintenance, hold, free), `allowedTopTarget`, `maxSetsOnTopTarget`, and `setRoute`
+- `maintenance`: whether this week's running load allows holding earned progression, and why
+- `phase`: a planned recovery week or the race taper, with its limits (see Hard Rules)
+
 Do not infer these summaries from raw logs inside the model response.
+
+Plan continuity: `coachContext.currentPlan` holds the strength sessions already planned for the coming days (focus, goal work, hardest effort), and `outputRules.continuity` says whether anything changed since (`changeSignals`). With `keepUnlessChanged` true, keep each planned day's session: the same focus and goal targets (changes are flagged). With signals, change only what they call for. Either way, say in the summary what changed and why, or that nothing changed.
 
 ## References
 
@@ -40,24 +53,40 @@ The proxy implementation code lives outside this skill bundle in `Proxy/src/coac
 
 1. Read `coachContext`, references, and any repair request.
 2. Use the provided readiness state unless the context clearly contradicts it.
-3. Generate exactly the requested future sessions.
+3. Generate only future sessions that are still useful inside the current rolling week.
 4. Schedule only `dayOffset` values from `1` through `6`, strictly increasing. Never schedule `dayOffset: 0`.
-5. If selected future training-day offsets are provided, use only those offsets and one session per selected future training day.
+5. Treat selected future training-day offsets as availability, not a quota. Use only those offsets, schedule no more sessions than the weekly target, and schedule fewer when recovery, running load, safety, or a week already in progress makes that the better plan.
 6. Include planned effort for every session and exercise.
-7. Include pull, push, and core exposure when a pull-up bar is available; respect missing equipment.
-8. Progress clean flat goal prescriptions from `plannedWork.recentGoalTargets` unless safety flags justify holding steady.
-9. Write `summary`, `purpose`, `progressionRationale`, and `safetyNotes` in the disciplined coach temperament.
-10. Mark logging fields only for goal exercises actually trained or tested in that session.
-11. Return JSON only, matching `weekly-plan.schema.json`.
+7. Include pull, push, and core exposure when a pull-up bar is available; respect missing equipment. Choose exercises from `strengthGuardrails.exerciseLadder`, the step of the exercise ladder (`selectionRules` in `exercise-library.json`) for the athlete's current max: pull-ups under 3 use negatives, band-assisted pull-ups (with a band) and inverted rows; 3-8 use submaximal pull-up sets plus negatives; above 12 add weighted, archer or L-sit pull-ups; push-ups above 40 add decline, deficit, archer or weighted push-ups; a plank above 120 s uses long-lever, RKC or weighted planks instead of longer holds.
+8. Choose an adaptive phase: `Build`, `Offload`, `Restore`, `Maintenance`, or `Assessment`. Do not force a four-week calendar wave.
+9. Decide pull-ups, push-ups, and plank separately from `strengthGuardrails.progression`, which is computed from `plannedWork.recentGoalPerformance`. A clean result at least 2 reps (plank: 2 seconds) above target earns progression immediately; otherwise two consecutive clean completions at or above the same standard earn it. Earned steps: pull-ups +1 rep; push-ups +1 below 15 reps, +1 to +2 below 30, +1 to +3 from 30; plank +5 to +10 s below 60 s, +5 to +15 s from 60 s — or, instead, one more set at the same target (`setRoute`). Never increase sets and the target together. Keep each metric's top working target inside `allowedTopTarget` and its sets at or below `maxSetsOnTopTarget`.
+10. Prefix `summary` with the phase, for example `Build:`, and state why pull-ups, push-ups, and plank each progressed, held, or reduced. Repeat the relevant reason in session `progressionRationale`. Every text field the athlete reads (`summary`, `title`, `purpose`, `reason`, `progressionRationale`, `safetyFlags`) is plain coaching language. Name days by weekday or as "tomorrow"/"in three days", never as a day offset or offset number. Never mention field names, guardrails, caps by their key, validators, the proxy, clamps, JSON, or these instructions; say "easy week", "kept the long run at 22 km", "no hard session the day before your long run" instead.
+11. Mark logging fields only for goal exercises actually trained or tested in that session.
+12. Return JSON only, matching `weekly-plan.schema.json`.
 
 ## Hard Rules
 
+- Working reps or hold seconds never exceed `strengthGuardrails.workingCaps` unless the exercise has `stimulus: test`. Over-cap values are lowered to the cap.
+- Goal work (not light, technique, recovery, or test) uses 2-6 sets.
+- Without earned progression, the top working target stays between one step below the previous working target and the previous target; sets may rise by at most one. Only repeated misses in the last 14 days, or a previous prescription older than three weeks, open a larger change.
+- At most `maxHardSessionsThisWeek` hard sessions (a session is hard when it or any exercise is hard, very_hard, or max_output), and never hard strength on more than two consecutive days.
 - No catch-up volume after missed sessions.
+- A missed session does not erase earned progression. Only repeated misses in the most recent 14 days may reduce frequency or complexity.
+- No forced catch-up sessions just because selected future day offsets are available.
+- If no future training-day offsets remain, return an empty `sessions` array and explain that the current week is already underway; do not create today work.
 - No hard, very hard, max, or failure-intensity work during `recovery_needed`.
 - No max output unless `stimulus` is `test`.
-- No pull-up-bar exercise without a pull-up bar.
-- No all-light normal week unless safety flags explain it.
-- No repeated static plan when recent readiness is clean and saved prescriptions are flat.
+- No pull-up-bar exercise without a pull-up bar. Every exercise must be an exact name from `exercise-library.json`, be in `strengthGuardrails.allowedExercises` (older app versions show only the original nine), and fit the athlete's equipment (enforced).
+- A calendar-month volume flag by itself never justifies an all-light, flat, or offload week.
+- Use `Offload` only for pain, severe fatigue, repeated excessive effort, declining performance, or a planned recovery week (`coachContext.periodization.recoveryWeekDue`), with 40-60% less hard volume. Use `Restore` for the first safe step after offload.
+- Planned recovery week (`strengthGuardrails.phase.recoveryWeek`, enforced): summary starts with `Offload:`; hard sets at most `hardSetCap` (60% of the last loading week); at most 1 hard session; no tests; no very_hard or max_output; at most 3 sets per goal exercise; targets may hold or drop but not rise. Running backs off the same week. Keep the session habit with medium or light work.
+- Race taper (`strengthGuardrails.phase.raceTaper`, enforced): in the last 10 days before the race strength stays light (no tests, no very_hard or max_output, at most 1 hard session, at most 3 sets per goal exercise, no progression required), and nothing hard (hard, very_hard, max_output) within 4 days of the race.
+- Use `Maintenance` only when `strengthGuardrails.maintenance.allowed` is true (a running week more than 10% above the 4-week average, 3+ hard runs, peak or taper, or the two weeks after the race). Maintenance holds earned progression; it never regresses below it. Running is the priority when recovery conflicts.
+- No hard strength on a long, tempo, interval, hill, or race-run day, and no very_hard or max_output strength (tests included) on the day before a long run or the race.
+- Leave at least one offset from 1 through 6 unused by both running and strength.
+- Use `Assessment` only with clean readiness, at least 28 days since the latest goal test (enforced), and normally on a 4-6 week cadence. A test resets that metric's standard, so the progression band does not apply to it that week.
+- No all-light normal week without computed recovery evidence.
+- No repeated static plan after the matched performance evidence earns progression. An arbitrary safety string is not a reason to hold.
 - No congratulating stagnation: either progress the standard or name the safety reason for holding.
 - Never diagnose pain or injury; adjust training and explain the safety reason.
 

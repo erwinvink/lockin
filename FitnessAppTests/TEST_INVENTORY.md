@@ -131,6 +131,10 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testCombinedWeekResponseDecodesProxyShape`
   - Verifies the `POST /generate-week` combined running + strength response decodes.
 
+- `testCoachChatResponseDecodesFractionalSecondDatesAndTheQuickAnswerFlag`
+  - Verifies a `POST /coach-chat` answer decodes with a `toISOString()` date (`.123Z`, which plain `.iso8601` rejects on iOS 17) and without fractional seconds.
+  - Confirms `usedModel` and the follow-up prompts decode.
+
 - `testGarminStatusResponseDecodesProxyShape`
   - Verifies `GET /garmin/status` decodes into `GarminStatusResponse`.
 
@@ -162,6 +166,18 @@ This file is the durable human-readable test list for the lockin app. It records
 
 - `testWipeAllDataDeletesEveryModel`
   - Verifies reset deletes profile, sessions, blocks, prescriptions, logs, rank, coach plans, and coach decisions.
+
+- `testCoachChatHistoryPrunesToTheNewestMessages`
+  - Verifies on-device coach chat history is pruned to the newest 200 messages.
+
+- `testClearingTheCoachChatKeepsTrainingData`
+  - Verifies Clear conversation deletes every chat message and nothing else.
+
+- `testCoachChatMessageKeepsFollowUpsAndQuickAnswerFlag`
+  - Verifies a coach answer stores its follow-up questions and whether it was a quick (template) answer.
+
+- `testRetryingAFailedQuestionResendsTheSameBubble`
+  - Verifies a failed question is retried as the same bubble at the end of the chat, its error reply is removed, and failed pairs stay out of the turns sent to the proxy.
 
 - `testPersistAIPlanReplacesOnlyFuturePlannedSessions`
   - Verifies AI week persistence replaces only future planned sessions.
@@ -282,6 +298,35 @@ This file is the durable human-readable test list for the lockin app. It records
   - Verifies no planned sessions remain.
   - Verifies missed/completed counts, performance logs, penalty points, streak, and consistency.
 
+### New Plan
+
+- `testStartNewPlanKeepsHistoryAndReplacesTheOpenPlan`
+  - Removes every planned session from today on with its blocks and prescriptions; keeps completed, missed, overdue-planned and today's completed sessions.
+  - Queues only the pushed Garmin workout id for deletion.
+  - Keeps performance logs, run logs, readiness snapshots, rank and coach chat; clears coach plans, decisions and reads.
+  - Writes the new inputs to the profile, sets `planBlockStartedAt` to now, and edits the race goal in place so its run-history baselines stay.
+
+- `testStartNewPlanWithoutARaceRemovesTheRaceGoal`
+  - Turning the race off removes the race goal; nothing is queued for Garmin.
+
+- `testStartNewPlanAddsARaceGoalWhenThereWasNone`
+  - Adds a race goal (trimmed name) and the default running days when the profile had none.
+
+- `testPlanBlockStartReadsAsCreationDateUntilANewPlanStarts`
+  - Profiles from before new plans existed read `planBlockStartedAt` as `createdAt`.
+
+- `testCurrentNumbersPreferRecentBestThenLatestThenProfile`
+  - Current numbers use the best logged set of the last four weeks, else the latest logged set, else the profile baseline.
+
+- `testPlanInputsPrefillFromProfileAndRaceGoal`
+  - The new-plan form starts from the profile, race goal and current numbers.
+
+- `testCoachRequestSendsPlanBlockStartAsLocalMidnight`
+  - `planBlockStartedAt` is encoded as the ISO date of the block start's local midnight; legacy profiles send their creation day.
+
+- `testCoachProfileNotesCarryTheSessionLength`
+  - A session length adds a "Keep each strength session within N minutes." line to the coach notes.
+
 ## Current Automated UI Tests
 
 - `testOnboardingScreenShowsGoalSetup`
@@ -311,10 +356,22 @@ This file is the durable human-readable test list for the lockin app. It records
   - Completes onboarding.
   - Tests Profile/Settings, confirms local fallback controls are absent, verifies reminder toggle/time picker, reset alert, and reset returning to onboarding.
 
+- `testStartNewPlanKeepsHistoryAndClearsTheOpenPlan`
+  - Launches with the seeded two-week activity fixture and opens Profile > Start a new plan.
+  - Verifies the form is pre-filled (race name, kept current numbers 8 / 28 / 1:35), picks a session length and confirms.
+  - Planning takes the offline path (UI tests never call the proxy) and shows "Waiting for the coach".
+  - Verifies Log keeps history with nothing coming up, Coach shows "Coach read needed" instead of the old read, and Progress keeps its data.
+
 - `testTwoWeekSeedPreviewDataSurfaces`
   - Launches with the seeded two-week activity fixture.
   - Verifies the seeded Garmin run does not render a feedback button.
   - Verifies Log history, the future workout preview, Progress readiness and running volume (longest run), and the coach read headline plus last-updated timestamp.
+
+- `testCoachChatAnswersSixConnectedQuestionsWithSeededTrainingData`
+  - Skipped unless a local proxy answers `/health` (set `TEST_RUNNER_COACH_PROXY_ENDPOINT` to point at another port).
+  - Asks the six starter questions on seeded data and waits for twelve messages, with follow-up chips under the last answer and nothing marked not sent.
+  - Against a proxy without an OpenAI key, checks the fixed quick-answer copy; model answers vary, so only their shape is checked.
+  - Clears the conversation and verifies the starter state returns.
 
 ## Screen Coverage Checklist
 

@@ -84,13 +84,15 @@ test("tracks the longest run per trailing week, oldest first", () => {
   assert.equal(signals.running.longestRunLast6WeeksKm, 18);
 });
 
-test("computes the easy share from runs that carry a kind", () => {
+// The split counts time, and long runs are low intensity, so a normal build
+// week (long run, one tempo, two easy runs) reads about 0.8, not 0.5.
+test("computes the low-intensity time share (80/20 by time) from runs that carry a kind", () => {
   const context = baseContext({
     recentRuns: [
-      run("2026-06-09T07:00:00Z", { kind: "long" }),
-      run("2026-06-07T07:00:00Z", { kind: "easy" }),
-      run("2026-06-05T07:00:00Z", { kind: "easy" }),
-      run("2026-06-03T07:00:00Z", { kind: "recovery" }),
+      run("2026-06-09T07:00:00Z", { kind: "long", movingSeconds: 9000 }),
+      run("2026-06-07T07:00:00Z", { kind: "tempo", movingSeconds: 3600 }),
+      run("2026-06-05T07:00:00Z", { kind: "easy", movingSeconds: 3600 }),
+      run("2026-06-03T07:00:00Z", { kind: "easy", movingSeconds: 3600 }),
       // kind-less manual log is excluded from the split
       run("2026-06-01T07:00:00Z", {})
     ]
@@ -99,7 +101,7 @@ test("computes the easy share from runs that carry a kind", () => {
   const signals = computeTrainingSignals(context, NOW);
 
   assert.ok(signals);
-  assert.equal(signals.running.easyShareLast4Weeks, 0.75);
+  assert.equal(signals.running.lowIntensityTimeShareLast4Weeks, 0.82, "16200 of 19800 seconds");
 });
 
 test("maps days-to-race onto taper status", () => {
@@ -203,3 +205,15 @@ function baseContext(options: {
   } as unknown as CoachContext;
   return context;
 }
+
+test("the planner texts describe the intensity split the way the signal reports it", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const root = join(process.cwd(), "src", "coach", "skills", "running-coach-planner");
+  const texts = await Promise.all([readFile(join(root, "SKILL.md"), "utf8"), readFile(join(root, "references", "ultra-periodization.md"), "utf8")]);
+  for (const text of texts) {
+    assert.ok(!text.includes("easyShareLast4Weeks"), "the old count-based share is gone");
+    assert.ok(text.includes("lowIntensityTimeShareLast4Weeks"));
+    assert.match(text, /about 0\.8/);
+  }
+});

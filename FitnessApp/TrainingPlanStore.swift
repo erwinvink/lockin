@@ -77,8 +77,9 @@ func trainingStreakSnapshot(
 /// Planned sessions that should be marked missed. Strength sessions are
 /// overdue as soon as their scheduled day has passed. Running sessions get
 /// one grace day so an evening run can still arrive via the overnight Garmin
-/// sync before the session counts as missed, and a running session with any
-/// RunLog is never overdue because Garmin has already provided activity data.
+/// sync before the session counts as missed. A real Garmin RunLog on the
+/// session's scheduled calendar day keeps it out of the missed sweep because
+/// Garmin has already provided activity data for that workout.
 func overduePlannedSessions(
     from sessions: [WorkoutSession],
     runLogs: [RunLog],
@@ -87,12 +88,18 @@ func overduePlannedSessions(
 ) -> [WorkoutSession] {
     let startOfToday = calendar.startOfDay(for: now)
     let runningGraceCutoff = calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday
-    let loggedSessionIds = Set(runLogs.filter { $0.source == .garmin }.map(\.sessionId))
+    let garminLogsBySessionId = Dictionary(
+        grouping: runLogs.filter { $0.source == .garmin && !isReplaceablePreviewRunLog($0) },
+        by: \.sessionId
+    )
     return sessions
         .filter { session in
             guard session.status == .planned else { return false }
             if session.discipline == .running {
-                guard !loggedSessionIds.contains(session.id) else { return false }
+                let hasSameDayGarminLog = (garminLogsBySessionId[session.id] ?? []).contains {
+                    calendar.isDate($0.completedAt, inSameDayAs: session.scheduledDate)
+                }
+                guard !hasSameDayGarminLog else { return false }
                 return session.scheduledDate < runningGraceCutoff
             }
             return session.scheduledDate < startOfToday
@@ -202,18 +209,50 @@ func completeRunFromGarmin(
     let previousStatus = session.status
     let shouldApplyScore = previousStatus == .planned || previousStatus == .missed || session.scoreImpact == 0
     if !shouldApplyScore {
+        // Already scored (for example from a manual log). Keep a deload the
+        // athlete reported; otherwise Garmin decides completed vs partial.
+        guard previousStatus != .deload else { return session.status }
+        if previousStatus == .partial, completionStatus == .completed {
+            // Garmin shows the "partial" run was a full one: add the missing
+            // credit and the streak day the partial didn't give.
+            let full = TrainingEngine().score(
+                log: SessionLogInput(
+                    completed: true,
+                    pullUps: 0,
+                    pushUps: 0,
+                    plankSeconds: 0,
+                    loggedPullUps: false,
+                    loggedPushUps: false,
+                    loggedPlankSeconds: false,
+                    rpe: log.rpe,
+                    painLevel: 0,
+                    fatigueLevel: ReadinessScale.fatigueLevel(fromHowFelt: log.feelScore)
+                ),
+                plannedSession: nil
+            )
+            let rank = ranks.first ?? RankState()
+            if ranks.isEmpty { modelContext.insert(rank) }
+            applyScoreOutcome(
+                ScoreOutcome(
+                    consistencyDelta: full.consistencyDelta - session.scoreImpact,
+                    penaltyDelta: 0,
+                    streakDelta: full.streakDelta,
+                    didTriggerDeload: false,
+                    reason: full.reason
+                ),
+                to: rank
+            )
+            session.scoreImpact = full.consistencyDelta
+        }
         session.status = completionStatus
-        return completionStatus
+        return session.status
     }
 
     let rank = ranks.first ?? RankState()
     if ranks.isEmpty { modelContext.insert(rank) }
 
     if previousStatus == .missed {
-        // Refund the wrongly-applied miss. missedSessionConsistencyDelta is
-        // negative, so subtracting it restores the lost consistency points.
-        rank.penaltyPoints = max(0, rank.penaltyPoints - TrainingEngine.missedSessionPenaltyPoints)
-        rank.consistencyScore = max(0, rank.consistencyScore - TrainingEngine.missedSessionConsistencyDelta)
+        refundMissedSessionPenalty(on: rank)
     }
 
     session.status = completionStatus
@@ -248,6 +287,347 @@ func completeRunFromGarmin(
     return completionStatus
 }
 
+/// Undoes a miss that turned out to be trained after all (late Garmin sync,
+/// late manual log). missedSessionConsistencyDelta is negative, so
+/// subtracting it restores the lost consistency points. The display streak
+/// is recomputed from session statuses, so it heals on its own.
+func refundMissedSessionPenalty(on rank: RankState) {
+    rank.penaltyPoints = max(0, rank.penaltyPoints - TrainingEngine.missedSessionPenaltyPoints)
+    rank.consistencyScore = max(0, rank.consistencyScore - TrainingEngine.missedSessionConsistencyDelta)
+}
+
+enum SessionLoggingError: LocalizedError, Equatable {
+    case alreadyLogged
+    case notLoggable
+
+    var errorDescription: String? {
+        switch self {
+        case .alreadyLogged: "This session is already logged."
+        case .notLoggable: "This session can't be logged anymore."
+        }
+    }
+}
+
+/// What the athlete entered on the strength log sheet. Metrics that were not
+/// part of the session carry the latest known value with `logged…` false.
+struct StrengthLogEntry: Equatable {
+    var pullUps: Int
+    var pushUps: Int
+    var plankSeconds: Int
+    var loggedPullUps: Bool
+    var loggedPushUps: Bool
+    var loggedPlankSeconds: Bool
+    var rpe: Int
+    var painLevel: Int
+    var howFelt: Int
+    var notes: String
+}
+
+/// The actual RPE slider starts at the planned RPE so an untouched slider
+/// never reads as "harder than planned".
+func initialLoggedRPE(for session: WorkoutSession) -> Int {
+    if (1...10).contains(session.plannedEffortTargetRPE) {
+        return session.plannedEffortTargetRPE
+    }
+    if let label = session.plannedEffortLabel {
+        return label.defaultTargetRPE
+    }
+    if session.isRun {
+        return session.runKind?.isHard == true ? 7 : 4
+    }
+    return 7
+}
+
+/// Saves a strength log: the log row, the session status, and the score.
+/// A session that the missed sweep already closed can still be logged (the
+/// miss is refunded); a session that already has a log cannot be logged
+/// again. Rolls back and rethrows when the save fails, so nothing half-saved
+/// lingers in the context.
+@discardableResult
+func recordStrengthLog(
+    _ entry: StrengthLogEntry,
+    for session: WorkoutSession,
+    in modelContext: ModelContext,
+    now: Date = Date()
+) throws -> (log: PerformanceLog, outcome: ScoreOutcome) {
+    guard session.status == .planned || session.status == .missed else { throw SessionLoggingError.alreadyLogged }
+    let sessionId = session.id
+    let existingLogs = try modelContext.fetch(FetchDescriptor<PerformanceLog>(predicate: #Predicate { $0.sessionId == sessionId }))
+    guard existingLogs.isEmpty else { throw SessionLoggingError.alreadyLogged }
+
+    do {
+        let plannedRPE: Int
+        if (1...10).contains(session.plannedEffortTargetRPE) {
+            plannedRPE = session.plannedEffortTargetRPE
+        } else {
+            plannedRPE = session.plannedEffortLabel?.defaultTargetRPE ?? 0
+        }
+        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: entry.howFelt)
+        let log = PerformanceLog(
+            sessionId: session.id,
+            completedAt: now,
+            pullUps: entry.pullUps,
+            pushUps: entry.pushUps,
+            plankSeconds: entry.plankSeconds,
+            loggedPullUps: entry.loggedPullUps,
+            loggedPushUps: entry.loggedPushUps,
+            loggedPlankSeconds: entry.loggedPlankSeconds,
+            rpe: entry.rpe,
+            plannedRPE: plannedRPE,
+            plannedEffortLabelAtLog: session.plannedEffortLabel,
+            plannedEffortReasonAtLog: session.plannedEffortReason,
+            painLevel: entry.painLevel,
+            fatigueLevel: fatigueLevel,
+            notes: entry.notes
+        )
+        modelContext.insert(log)
+
+        let rank = try modelContext.fetch(FetchDescriptor<RankState>()).first ?? {
+            let rank = RankState()
+            modelContext.insert(rank)
+            return rank
+        }()
+        if session.status == .missed {
+            refundMissedSessionPenalty(on: rank)
+        }
+
+        let outcome = TrainingEngine().score(
+            log: SessionLogInput(
+                completed: true,
+                pullUps: entry.pullUps,
+                pushUps: entry.pushUps,
+                plankSeconds: entry.plankSeconds,
+                loggedPullUps: entry.loggedPullUps,
+                loggedPushUps: entry.loggedPushUps,
+                loggedPlankSeconds: entry.loggedPlankSeconds,
+                rpe: entry.rpe,
+                painLevel: entry.painLevel,
+                fatigueLevel: fatigueLevel
+            ),
+            plannedSession: nil
+        )
+        session.status = outcome.didTriggerDeload ? .deload : .completed
+        applyScoreOutcome(outcome, to: rank)
+        session.scoreImpact = outcome.consistencyDelta
+        try modelContext.save()
+        UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+        return (log, outcome)
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
+}
+
+/// What the athlete entered on the run log sheet. Distance and time are
+/// optional (0 = not entered).
+struct RunLogEntry: Equatable {
+    var distanceKm: Double
+    var movingSeconds: Int
+    var rpe: Int
+    var howFelt: Int
+    var notes: String
+}
+
+/// Completes a planned (or just-missed) run without Garmin. The run counts
+/// like a Garmin completion: completed at 80% of the planned distance or
+/// more, partial below that, and a "very weak" feel turns it into a deload.
+/// A later Garmin activity on the same day replaces this manual row and
+/// keeps the athlete's RPE and feel.
+@discardableResult
+func recordManualRun(
+    _ entry: RunLogEntry,
+    for session: WorkoutSession,
+    in modelContext: ModelContext,
+    now: Date = Date(),
+    calendar: Calendar = .current
+) throws -> SessionStatus {
+    guard session.isRun else { throw SessionLoggingError.notLoggable }
+    guard session.status == .planned || session.status == .missed else { throw SessionLoggingError.alreadyLogged }
+    let sessionId = session.id
+    let existingLogs = try modelContext.fetch(FetchDescriptor<RunLog>(predicate: #Predicate { $0.sessionId == sessionId }))
+    guard existingLogs.isEmpty else { throw SessionLoggingError.alreadyLogged }
+
+    do {
+        let distanceKm = max(0, entry.distanceKm)
+        let movingSeconds = max(0, entry.movingSeconds)
+        let completedAt = calendar.isDate(now, inSameDayAs: session.scheduledDate)
+            ? now
+            : calendar.date(byAdding: .hour, value: 12, to: calendar.startOfDay(for: session.scheduledDate)) ?? session.scheduledDate
+        let log = RunLog(
+            sessionId: session.id,
+            completedAt: completedAt,
+            distanceKm: distanceKm,
+            movingSeconds: movingSeconds,
+            averagePaceSecPerKm: distanceKm > 0 && movingSeconds > 0 ? Int((Double(movingSeconds) / distanceKm).rounded()) : 0,
+            rpe: min(10, max(0, entry.rpe)),
+            feelScore: min(5, max(1, entry.howFelt)),
+            notes: entry.notes,
+            source: .manual
+        )
+        modelContext.insert(log)
+
+        let rank = try modelContext.fetch(FetchDescriptor<RankState>()).first ?? {
+            let rank = RankState()
+            modelContext.insert(rank)
+            return rank
+        }()
+        if session.status == .missed {
+            refundMissedSessionPenalty(on: rank)
+        }
+
+        let ratio = garminRunCompletionRatio(plannedDistanceKm: session.plannedDistanceKm, actualDistanceKm: distanceKm)
+        let fatigueLevel = ReadinessScale.fatigueLevel(fromHowFelt: entry.howFelt)
+        let outcome: ScoreOutcome
+        let status: SessionStatus
+        // Feel decides first: a run cut short because the athlete felt
+        // terrible is a deload, not merely a partial.
+        if let ratio, ratio < garminFullRunCompletionRatio, fatigueLevel < 9 {
+            outcome = partialRunOutcome(completionRatio: ratio)
+            status = .partial
+        } else {
+            outcome = TrainingEngine().score(
+                log: SessionLogInput(
+                    completed: true,
+                    pullUps: 0,
+                    pushUps: 0,
+                    plankSeconds: 0,
+                    loggedPullUps: false,
+                    loggedPushUps: false,
+                    loggedPlankSeconds: false,
+                    rpe: entry.rpe,
+                    painLevel: 0,
+                    fatigueLevel: fatigueLevel
+                ),
+                plannedSession: nil
+            )
+            status = outcome.didTriggerDeload ? .deload : .completed
+        }
+        session.status = status
+        applyScoreOutcome(outcome, to: rank)
+        session.scoreImpact = outcome.consistencyDelta
+        try modelContext.save()
+        UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+        return status
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
+}
+
+/// Lets the athlete add RPE and feel to a run Garmin completed. A "very
+/// weak" feel turns the completed session into a deload; the score already
+/// counted the run, so it is not scored again.
+func rateRun(
+    _ log: RunLog,
+    rpe: Int,
+    howFelt: Int,
+    notes: String? = nil,
+    session: WorkoutSession?,
+    in modelContext: ModelContext
+) throws {
+    do {
+        log.rpe = min(10, max(1, rpe))
+        log.feelScore = min(5, max(1, howFelt))
+        if let notes {
+            log.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let session, session.status == .completed,
+           ReadinessScale.fatigueLevel(fromHowFelt: howFelt) >= 9 {
+            session.status = .deload
+        }
+        try modelContext.save()
+        UserDefaults.standard.set(true, forKey: CoachVerdictRefreshFlag.needsRefreshKey)
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
+}
+
+/// Yesterday's sessions that were never logged: the athlete trained late
+/// and logs the next morning. Strength needs a PerformanceLog, runs any
+/// attached RunLog. Runs first, like the due list.
+func lateLoggableSessions(
+    from sessions: [WorkoutSession],
+    logs: [PerformanceLog],
+    runLogs: [RunLog],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> [WorkoutSession] {
+    let startOfToday = calendar.startOfDay(for: now)
+    guard let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday) else { return [] }
+    let loggedStrength = Set(logs.map(\.sessionId))
+    let loggedRuns = Set(runLogs.map(\.sessionId))
+    return sessions
+        .filter { session in
+            guard session.status == .planned || session.status == .missed else { return false }
+            guard session.scheduledDate >= startOfYesterday, session.scheduledDate < startOfToday else { return false }
+            return session.isRun ? !loggedRuns.contains(session.id) : !loggedStrength.contains(session.id)
+        }
+        .sorted { lhs, rhs in
+            if lhs.isRun != rhs.isRun { return lhs.isRun }
+            return lhs.scheduledDate < rhs.scheduledDate
+        }
+}
+
+private let localDeloadMarker = "Deloaded after pain or very weak feedback."
+
+/// Cuts the next planned strength session to deload volume after a pain or
+/// "very weak" log, for when the coach could not regenerate the plan (offline,
+/// or the proxy skipped). Sets drop to at most 3, reps and holds to 65%, and
+/// every effort to light. A session is never cut twice.
+@discardableResult
+func applyLocalDeload(in modelContext: ModelContext, now: Date = Date(), calendar: Calendar = .current) throws -> WorkoutSession? {
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now
+    let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\.scheduledDate)]))
+    guard let next = sessions.first(where: {
+        $0.status == .planned && $0.discipline == .strength && $0.scheduledDate >= tomorrow
+    }) else { return nil }
+    guard !next.summary.contains(localDeloadMarker) else { return nil }
+
+    do {
+        let nextId = next.id
+        let prescriptions = try modelContext.fetch(FetchDescriptor<SetPrescription>(predicate: #Predicate { $0.sessionId == nextId }))
+        let light = PlannedEffort.light(localDeloadMarker)
+        for prescription in prescriptions {
+            prescription.sets = min(prescription.sets, 3)
+            if prescription.targetReps > 0 {
+                prescription.targetReps = max(1, Int(Double(prescription.targetReps) * 0.65))
+            }
+            if prescription.targetSeconds > 0 {
+                prescription.targetSeconds = max(10, Int(Double(prescription.targetSeconds) * 0.65))
+            }
+            prescription.intensity = "Light"
+            prescription.plannedEffortLabelRaw = light.label.rawValue
+            prescription.plannedEffortTargetRPE = light.targetRPE
+            prescription.plannedEffortTargetRIR = light.targetRIR
+            prescription.plannedEffortStimulusRaw = light.stimulus.rawValue
+            prescription.plannedEffortReason = light.reason
+        }
+        next.plannedEffortLabelRaw = light.label.rawValue
+        next.plannedEffortTargetRPE = light.targetRPE
+        next.plannedEffortReason = light.reason
+        next.summary = "\(next.summary) \(localDeloadMarker)"
+        next.estimatedDurationMinutes = estimatedWorkoutDurationMinutes(for: prescriptions)
+        try modelContext.save()
+        return next
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
+}
+
+/// Garmin readiness only describes today when it is from today or
+/// yesterday; older snapshots must not be shown as current.
+func freshReadinessSnapshot(
+    from snapshots: [GarminDailySnapshot],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> GarminDailySnapshot? {
+    guard let newest = snapshots.max(by: { $0.date < $1.date }) else { return nil }
+    let age = calendar.dateComponents([.day], from: calendar.startOfDay(for: newest.date), to: calendar.startOfDay(for: now)).day ?? .max
+    return age <= 1 ? newest : nil
+}
+
 /// Parses the date strings the Garmin proxy passes through: bare ISO dates
 /// ("2026-06-08"), full ISO-8601 instants, and Garmin's local activity time
 /// ("2026-06-08 07:01:33"). Wall-clock formats are read in the calendar's
@@ -274,6 +654,8 @@ func parseGarminDate(_ value: String, calendar: Calendar = .current) -> Date? {
 
 /// Upserts exactly one GarminDailySnapshot per calendar day. Days missing
 /// from the response (throttled sidecar) are left absent, never zero-filled.
+/// Within a day, a metric the sidecar could not fetch (`unavailableMetrics`)
+/// or a zero reading never overwrites a stored value: zero means "no data".
 func ingest(
     wellness: [GarminWellnessDayResponse],
     in modelContext: ModelContext,
@@ -298,14 +680,20 @@ func ingest(
             modelContext.insert(snapshot)
             snapshotsByDay[dayStart] = snapshot
         }
+        let unavailable = Set(day.unavailableMetrics ?? [])
+        func merged(_ stored: Int, _ incoming: Int, _ metric: String) -> Int {
+            unavailable.contains(metric) || incoming == 0 ? stored : incoming
+        }
         snapshot.date = dayStart
-        snapshot.sleepScore = day.sleepScore
-        snapshot.sleepSeconds = day.sleepSeconds
-        snapshot.hrvStatus = day.hrvStatus
-        snapshot.hrvMs = day.hrvMs
-        snapshot.bodyBattery = day.bodyBattery
-        snapshot.trainingReadiness = day.trainingReadiness
-        snapshot.restingHr = day.restingHr
+        snapshot.sleepScore = merged(snapshot.sleepScore, day.sleepScore, "sleepScore")
+        snapshot.sleepSeconds = merged(snapshot.sleepSeconds, day.sleepSeconds, "sleepSeconds")
+        if !unavailable.contains("hrvStatus"), !day.hrvStatus.isEmpty {
+            snapshot.hrvStatus = day.hrvStatus
+        }
+        snapshot.hrvMs = merged(snapshot.hrvMs, day.hrvMs, "hrvMs")
+        snapshot.bodyBattery = merged(snapshot.bodyBattery, day.bodyBattery, "bodyBattery")
+        snapshot.trainingReadiness = merged(snapshot.trainingReadiness, day.trainingReadiness, "trainingReadiness")
+        snapshot.restingHr = merged(snapshot.restingHr, day.restingHr, "restingHr")
         snapshot.fetchedAt = Date()
     }
 }
@@ -317,6 +705,84 @@ struct GarminActivityIngest: Equatable {
     var partialRuns = 0
     /// New standalone Garmin logs (real runs that matched no session).
     var importedRuns = 0
+}
+
+struct GarminAttachedLogReconciliation: Equatable {
+    var completedRuns = 0
+    var partialRuns = 0
+    var detachedLogs = 0
+
+    var changedCount: Int {
+        completedRuns + partialRuns + detachedLogs
+    }
+}
+
+/// Repairs legacy Garmin rows that were attached to a planned or missed run
+/// before automatic completion existed. The relationship itself is trusted
+/// only when both the exact session id and local calendar day agree. That keeps
+/// duplicate activity ids attached to another replanned session out of scope.
+///
+/// The strongest same-day log becomes the session's completion source. Any
+/// extra same-day logs remain real Garmin history but are detached, matching
+/// the current ingest rule that one planned session can claim only one run.
+@discardableResult
+func reconcileAttachedGarminRunLogs(
+    sessions: [WorkoutSession],
+    runLogs: [RunLog],
+    ranks: [RankState],
+    in modelContext: ModelContext,
+    calendar: Calendar = .current
+) throws -> GarminAttachedLogReconciliation {
+    let logsBySessionId = Dictionary(
+        grouping: runLogs.filter {
+            $0.source == .garmin &&
+            $0.sessionId != RunLog.unattachedSessionId &&
+            !isReplaceablePreviewRunLog($0)
+        },
+        by: \.sessionId
+    )
+    var availableRanks = ranks
+    var result = GarminAttachedLogReconciliation()
+
+    for session in sessions.sorted(by: { $0.scheduledDate < $1.scheduledDate }) {
+        guard session.discipline == .running else { continue }
+        guard session.status == .planned || session.status == .missed else { continue }
+        let sameDayLogs = (logsBySessionId[session.id] ?? []).filter {
+            calendar.isDate($0.completedAt, inSameDayAs: session.scheduledDate)
+        }
+        guard let strongestLog = sameDayLogs.max(by: { $0.distanceKm < $1.distanceKm }) else { continue }
+
+        if garminRunCompletionStatus(for: session, actualDistanceKm: strongestLog.distanceKm) != nil,
+           availableRanks.isEmpty {
+            let rank = RankState()
+            modelContext.insert(rank)
+            availableRanks = [rank]
+        }
+
+        let completionStatus = try completeRunFromGarmin(
+            session: session,
+            log: strongestLog,
+            ranks: availableRanks,
+            in: modelContext
+        )
+
+        switch completionStatus {
+        case .some(.completed):
+            result.completedRuns += 1
+        case .some(.partial):
+            result.partialRuns += 1
+        default:
+            break
+        }
+
+        for log in sameDayLogs where completionStatus == nil || log.id != strongestLog.id {
+            log.sessionId = RunLog.unattachedSessionId
+            log.needsConfirmation = false
+            result.detachedLogs += 1
+        }
+    }
+
+    return result
 }
 
 /// Ingests synced Garmin running activities. An activity landing on the same
@@ -335,12 +801,24 @@ func matchGarminActivities(
     in modelContext: ModelContext,
     calendar: Calendar = .current
 ) throws -> GarminActivityIngest {
+    let ranks = try modelContext.fetch(FetchDescriptor<RankState>())
+    let reconciliation = try reconcileAttachedGarminRunLogs(
+        sessions: sessions,
+        runLogs: existingRunLogs,
+        ranks: ranks,
+        in: modelContext,
+        calendar: calendar
+    )
     let existingGarminRunLogs = existingRunLogs.filter { $0.source == .garmin }
     var existingLogsByActivityId: [String: RunLog] = [:]
     for log in existingGarminRunLogs where !log.garminActivityId.isEmpty {
         existingLogsByActivityId[log.garminActivityId] = log
     }
-    let replaceableLogs = existingGarminRunLogs.filter(isReplaceablePreviewRunLog)
+    // Preview/demo rows and the athlete's own manual run logs give way to
+    // the first real Garmin activity on the planned day; a manual log's RPE
+    // and feel carry over to the Garmin row.
+    let manualLogs = existingRunLogs.filter { $0.source == .manual && $0.sessionId != RunLog.unattachedSessionId }
+    let replaceableLogs = existingGarminRunLogs.filter(isReplaceablePreviewRunLog) + manualLogs
     let replaceableLogsBySession = Dictionary(grouping: replaceableLogs, by: \.sessionId)
     let replaceableSessionIds = Set(replaceableLogs.map(\.sessionId))
     // A session already holding a real Garmin log is not a candidate, and each
@@ -352,6 +830,8 @@ func matchGarminActivities(
             .map(\.sessionId)
     )
     var ingest = GarminActivityIngest()
+    ingest.completedRuns = reconciliation.completedRuns
+    ingest.partialRuns = reconciliation.partialRuns
 
     for activity in activities {
         // The proxy only forwards running activities; this is a defensive check.
@@ -370,8 +850,16 @@ func matchGarminActivities(
             calendar.isDate($0.scheduledDate, inSameDayAs: startTime) &&
             garminRunCompletionStatus(for: $0, actualDistanceKm: activity.distanceKm) != nil
         }
-        let session = candidates.min(by: {
-            abs($0.plannedDistanceKm - activity.distanceKm) < abs($1.plannedDistanceKm - activity.distanceKm)
+        let session = candidates.min(by: { lhs, rhs in
+            let lhsSynced = isSyncedGarminPlannedRun(lhs)
+            let rhsSynced = isSyncedGarminPlannedRun(rhs)
+            if lhsSynced != rhsSynced { return lhsSynced }
+
+            let lhsDistanceDelta = abs(lhs.plannedDistanceKm - activity.distanceKm)
+            let rhsDistanceDelta = abs(rhs.plannedDistanceKm - activity.distanceKm)
+            if lhsDistanceDelta != rhsDistanceDelta { return lhsDistanceDelta < rhsDistanceDelta }
+
+            return lhs.scheduledDate < rhs.scheduledDate
         })
 
         if existingLog != nil && session == nil {
@@ -399,6 +887,15 @@ func matchGarminActivities(
         if let session {
             claimedSessionIds.insert(session.id)
             for replaceableLog in replaceableLogsBySession[session.id] ?? [] where replaceableLog.id != log.id {
+                if replaceableLog.source == .manual {
+                    if replaceableLog.rpe > 0 {
+                        log.rpe = replaceableLog.rpe
+                        log.feelScore = replaceableLog.feelScore
+                    }
+                    if log.notes.isEmpty {
+                        log.notes = replaceableLog.notes
+                    }
+                }
                 modelContext.delete(replaceableLog)
             }
             let ranks = try modelContext.fetch(FetchDescriptor<RankState>())
@@ -422,9 +919,23 @@ private func isReplaceablePreviewRunLog(_ log: RunLog) -> Bool {
     log.garminActivityId.hasPrefix("preview-")
 }
 
-func confirmedGarminRunLogs(from logs: [RunLog]) -> [RunLog] {
+private func isSyncedGarminPlannedRun(_ session: WorkoutSession) -> Bool {
+    session.garminSyncStatus == .synced || !session.garminWorkoutId.isEmpty || session.pushedToGarminAt != nil
+}
+
+/// Real running history: Garmin logs (one per activity id) plus the
+/// athlete's manual run logs. A same-day Garmin activity normally replaces
+/// the manual row during sync; when it can't (too short to match, or not
+/// attached), Garmin still wins that day so a run is never counted twice.
+func confirmedRunLogs(from logs: [RunLog], calendar: Calendar = .current) -> [RunLog] {
     var logsByActivityId: [String: RunLog] = [:]
     var logsWithoutActivityId: [RunLog] = []
+    let garminDays = Set(logs.filter { $0.source == .garmin }.map { calendar.startOfDay(for: $0.completedAt) })
+    let manualLogs = logs.filter {
+        $0.source == .manual &&
+        $0.sessionId != RunLog.unattachedSessionId &&
+        !garminDays.contains(calendar.startOfDay(for: $0.completedAt))
+    }
 
     for log in logs where log.source == .garmin {
         let activityId = log.garminActivityId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -440,7 +951,7 @@ func confirmedGarminRunLogs(from logs: [RunLog]) -> [RunLog] {
         }
     }
 
-    return (logsWithoutActivityId + Array(logsByActivityId.values))
+    return (logsWithoutActivityId + Array(logsByActivityId.values) + manualLogs)
         .sorted { $0.completedAt < $1.completedAt }
 }
 
@@ -464,35 +975,87 @@ private func preferredGarminRunLog(_ lhs: RunLog, _ rhs: RunLog) -> RunLog {
 /// run history: baseline weekly volume = the last 28 days of running divided
 /// by four weeks; longest recent run = the longest run in the last 42 days.
 /// Manually entered values act only as a fallback until real runs exist.
+///
+/// The 28 days are always divided by four. Dividing by the span the data
+/// covered made one run after three weeks off read as a full weekly base;
+/// the Garmin sync now pulls 90 days, so a first sync sees the whole window.
+/// Once real runs exist, a quiet window reads as 0 instead of keeping a
+/// stale pre-break value. While the recorded history is too thin to stand
+/// for a weekly base (fewer than 3 runs in six weeks and nothing older than
+/// four weeks, e.g. a new watch), the athlete's own numbers are kept: one
+/// short run must not turn a 45 km/week runner into a beginner.
 func updateRaceGoalBaselines(
     goal: RaceGoal,
     logs: [RunLog],
     now: Date = Date(),
     calendar: Calendar = .current
 ) {
-    let garminLogs = confirmedGarminRunLogs(from: logs)
+    let garminLogs = confirmedRunLogs(from: logs)
     guard !garminLogs.isEmpty else { return }
 
     let fourWeeksAgo = calendar.date(byAdding: .day, value: -28, to: now) ?? now
     let sixWeeksAgo = calendar.date(byAdding: .day, value: -42, to: now) ?? now
+    let runsInSixWeeks = garminLogs.filter { $0.completedAt >= sixWeeksAgo && $0.completedAt <= now }.count
+    let historyReachesBack = garminLogs.contains { $0.completedAt < fourWeeksAgo }
+    guard runsInSixWeeks >= 3 || historyReachesBack else { return }
 
-    let inWindow = garminLogs.filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
-    let recentVolume = inWindow.reduce(0.0) { $0 + $1.distanceKm }
-    if recentVolume > 0, let oldest = inWindow.map(\.completedAt).min() {
-        // Divide by the span the data actually covers (a first sync only sees
-        // ~7 days), converging to a true 4-week average as history grows.
-        let daysCovered = min(28.0, max(1.0, now.timeIntervalSince(oldest) / 86_400))
-        let weeksCovered = max(1.0, daysCovered / 7.0)
-        goal.baselineWeeklyKm = (recentVolume / weeksCovered * 10).rounded() / 10
-    }
+    let recentVolume = garminLogs
+        .filter { $0.completedAt >= fourWeeksAgo && $0.completedAt <= now }
+        .reduce(0.0) { $0 + $1.distanceKm }
+    goal.baselineWeeklyKm = (recentVolume / 4 * 10).rounded() / 10
 
     let longestRecent = garminLogs
         .filter { $0.completedAt >= sixWeeksAgo && $0.completedAt <= now }
         .map(\.distanceKm)
         .max() ?? 0
-    if longestRecent > 0 {
-        goal.longestRecentRunKm = (longestRecent * 10).rounded() / 10
+    goal.longestRecentRunKm = (longestRecent * 10).rounded() / 10
+}
+
+/// The run kind the coach sees for a past run. A run linked to a planned
+/// running session reports that session's kind. Otherwise the kind is
+/// inferred only in clear cases, relative to the athlete's own recent runs
+/// (`peers`, at least five): clearly long by distance, an RPE of 1-4 (easy)
+/// or 7+ (tempo), heart rate at or below the median (easy) or 8%+ above it
+/// (tempo), or, without heart rate, a flat run 8%+ faster than the median
+/// pace (tempo) or slower than it (easy). Everything else stays nil, so the
+/// proxy's easy share is not guessed.
+func coachRunKind(for run: RunLog, plannedKindsBySessionId: [UUID: String], peers: [RunLog]) -> String? {
+    if let planned = plannedKindsBySessionId[run.sessionId], !planned.isEmpty {
+        return planned
     }
+    guard run.distanceKm > 0, run.movingSeconds > 0 else { return nil }
+    let comparable = peers.filter { $0.distanceKm > 0 && $0.movingSeconds > 0 }
+    guard comparable.count >= 5 else { return nil }
+
+    let medianDistance = median(comparable.map(\.distanceKm))
+    if run.distanceKm >= 15, run.distanceKm >= medianDistance * 1.5 {
+        return RunKind.long.rawValue
+    }
+    if (1...4).contains(run.rpe) { return RunKind.easy.rawValue }
+    if run.rpe >= 7 { return RunKind.tempo.rawValue }
+
+    let peerHeartRates = comparable.map(\.averageHr).filter { $0 > 0 }
+    if run.averageHr > 0, peerHeartRates.count >= 5 {
+        let medianHr = median(peerHeartRates.map(Double.init))
+        if Double(run.averageHr) <= medianHr { return RunKind.easy.rawValue }
+        if Double(run.averageHr) >= medianHr * 1.08 { return RunKind.tempo.rawValue }
+        return nil
+    }
+
+    let gainPerKm = Double(run.elevationGainM) / run.distanceKm
+    guard gainPerKm <= 20 else { return nil }
+    let pace = Double(run.movingSeconds) / run.distanceKm
+    let medianPace = median(comparable.map { Double($0.movingSeconds) / $0.distanceKm })
+    if pace <= medianPace * 0.92 { return RunKind.tempo.rawValue }
+    if pace > medianPace { return RunKind.easy.rawValue }
+    return nil
+}
+
+private func median(_ values: [Double]) -> Double {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return 0 }
+    let middle = sorted.count / 2
+    return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
 }
 
 /// Mirrors the sidecar's running filter (any typeKey containing "running" or
@@ -579,6 +1142,11 @@ func persist(
 
     let sessionPlans = maxSessions.map { Array(plan.sessions.prefix($0)) } ?? plan.sessions
     for sessionPlan in sessionPlans {
+        guard shouldPersistGeneratedSession(
+            scheduledDate: sessionPlan.date,
+            replacingFuturePlannedSessions: replacingFuturePlannedSessions
+        ) else { continue }
+
         let estimatedDurationMinutes = sessionPlan.estimatedDurationMinutes > 0
             ? sessionPlan.estimatedDurationMinutes
             : estimatedWorkoutDurationMinutes(for: sessionPlan.blocks)
@@ -635,6 +1203,12 @@ func persist(
     let start = calendar.startOfDay(for: weekStart)
     for run in runningWeek.sessions {
         let date = calendar.date(byAdding: .day, value: run.dayOffset, to: start) ?? start
+        guard shouldPersistGeneratedSession(
+            scheduledDate: date,
+            replacingFuturePlannedSessions: replacingFuturePlannedSessions,
+            calendar: calendar
+        ) else { continue }
+
         let session = WorkoutSession(
             scheduledDate: date,
             title: run.title,
@@ -654,6 +1228,17 @@ func persist(
         modelContext.insert(session)
     }
     return stalePushedGarminIds
+}
+
+private func shouldPersistGeneratedSession(
+    scheduledDate: Date,
+    replacingFuturePlannedSessions: Bool,
+    calendar: Calendar = .current
+) -> Bool {
+    guard replacingFuturePlannedSessions else { return true }
+    let today = calendar.startOfDay(for: Date())
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
+    return calendar.startOfDay(for: scheduledDate) >= tomorrow
 }
 
 @discardableResult
@@ -688,9 +1273,11 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
     let start = calendar.startOfDay(for: weekStart)
     let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
     let today = calendar.startOfDay(for: Date())
+    // Today stays locked during refreshes, even after training today: a
+    // double day keeps its second session and its watch workout.
     let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? today
-
     let sessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+
     let sessionsToDelete = sessions.filter {
         $0.status == .planned &&
         $0.scheduledDate >= start &&
@@ -721,6 +1308,7 @@ private func deleteFuturePlannedSessions(in modelContext: ModelContext, for week
 }
 
 func wipeAllData(in modelContext: ModelContext) throws {
+    try deleteAll(CoachChatMessage.self, in: modelContext)
     try deleteAll(CoachVerdict.self, in: modelContext)
     try deleteAll(CoachDecision.self, in: modelContext)
     try deleteAll(CoachPlan.self, in: modelContext)
@@ -733,6 +1321,215 @@ func wipeAllData(in modelContext: ModelContext) throws {
     try deleteAll(RaceGoal.self, in: modelContext)
     try deleteAll(GarminDailySnapshot.self, in: modelContext)
     try deleteAll(UserProfile.self, in: modelContext)
+}
+
+// MARK: - New plan
+
+/// Everything the coach plans from, as one editable value. Onboarding starts
+/// from the defaults; "Start a new plan" starts from the current profile.
+struct PlanInputs: Equatable {
+    var pullUps = 5
+    var pushUps = 20
+    var plankSeconds = 60
+    var goalPullUps = 50
+    var goalPushUps = 100
+    var goalPlankSeconds = 300
+    var targetDate = Calendar.current.date(byAdding: .year, value: 1, to: Date()) ?? Date()
+    var trainingDays: Set<TrainingWeekday> = TrainingWeekday.defaultTrainingDays(for: 4)
+    /// The longest a strength session may take; 0 leaves it to the coach.
+    var sessionMinutes = 0
+    var equipment: Set<EquipmentKind> = [.pullUpBar, .yogaMat]
+    var strictForm = true
+    var painNotes = ""
+    var isTrainingForRace = false
+    var raceName = ""
+    var raceDate = Calendar.current.date(byAdding: .weekOfYear, value: 16, to: Date()) ?? Date()
+    var raceDistanceKm = 50
+    var raceElevationGainM = 1000
+    var runningDays: Set<TrainingWeekday> = [.tuesday, .thursday, .saturday]
+    var longRunDay: TrainingWeekday = .saturday
+
+    /// Why the inputs can't be saved yet, in the order the athlete meets the
+    /// controls. Nil when they can.
+    var blockingReason: String? {
+        if !(2...6).contains(trainingDays.count) { return "Pick 2 to 6 strength days." }
+        if isTrainingForRace && runningDays.isEmpty { return "Pick at least one running day." }
+        if !equipment.contains(.pullUpBar) { return "Add a pull-up bar to continue." }
+        if !strictForm { return "Turn on strict reps to continue." }
+        return nil
+    }
+
+    /// The long-run day, moved onto a picked running day if it isn't one.
+    var resolvedLongRunDay: TrainingWeekday? {
+        runningDays.contains(longRunDay) ? longRunDay : TrainingWeekday.allCases.last { runningDays.contains($0) }
+    }
+
+    func applyingStrengthNumbers(_ numbers: StrengthNumbers) -> PlanInputs {
+        var copy = self
+        copy.pullUps = numbers.pullUps
+        copy.pushUps = numbers.pushUps
+        copy.plankSeconds = numbers.plankSeconds
+        return copy
+    }
+}
+
+extension PlanInputs {
+    /// Pre-filled from the profile, the race goal and the athlete's current
+    /// numbers.
+    init(profile: UserProfile, raceGoal: RaceGoal?, current: StrengthNumbers) {
+        self.init()
+        pullUps = current.pullUps
+        pushUps = current.pushUps
+        plankSeconds = current.plankSeconds
+        goalPullUps = profile.goalPullUps
+        goalPushUps = profile.goalPushUps
+        goalPlankSeconds = profile.goalPlankSeconds
+        targetDate = profile.targetDate
+        trainingDays = profile.trainingDays
+        sessionMinutes = max(0, profile.sessionMinutes)
+        equipment = profile.equipment
+        strictForm = profile.strictFormAccepted
+        painNotes = profile.painNotes
+        if let raceGoal {
+            isTrainingForRace = true
+            raceName = raceGoal.name
+            raceDate = raceGoal.raceDate
+            raceDistanceKm = max(1, Int(raceGoal.distanceKm.rounded()))
+            raceElevationGainM = max(0, raceGoal.elevationGainM)
+        }
+        if !profile.runningDays.isEmpty {
+            runningDays = profile.runningDays
+        }
+        longRunDay = profile.longRunDay.flatMap { runningDays.contains($0) ? $0 : nil }
+            ?? TrainingWeekday.allCases.last { runningDays.contains($0) }
+            ?? .saturday
+    }
+}
+
+struct StrengthNumbers: Equatable {
+    var pullUps: Int
+    var pushUps: Int
+    var plankSeconds: Int
+}
+
+/// Where the athlete stands now, per movement: the best strict value logged
+/// in the last four weeks; with nothing that recent, the latest logged
+/// value; with nothing logged, the profile's baseline.
+func currentStrengthNumbers(
+    profile: UserProfile,
+    logs: [PerformanceLog],
+    now: Date = Date(),
+    calendar: Calendar = .current
+) -> StrengthNumbers {
+    let recentStart = calendar.date(byAdding: .day, value: -28, to: calendar.startOfDay(for: now)) ?? now
+    let newestFirst = logs.filter { $0.completedAt <= now }.sorted { $0.completedAt > $1.completedAt }
+
+    func current(_ value: (PerformanceLog) -> Int, logged: (PerformanceLog) -> Bool, baseline: Int) -> Int {
+        let loggedValues = newestFirst.filter(logged)
+        if let recentBest = loggedValues.filter({ $0.completedAt >= recentStart }).map(value).max() {
+            return recentBest
+        }
+        return loggedValues.first.map(value) ?? baseline
+    }
+
+    return StrengthNumbers(
+        pullUps: current(\.pullUps, logged: \.loggedPullUps, baseline: profile.baselinePullUps),
+        pushUps: current(\.pushUps, logged: \.loggedPushUps, baseline: profile.baselinePushUps),
+        plankSeconds: current(\.plankSeconds, logged: \.loggedPlankSeconds, baseline: profile.baselinePlankSeconds)
+    )
+}
+
+struct NewPlanReset: Equatable {
+    var removedSessionCount: Int
+    /// Watch workouts of removed sessions, queued for deletion on Garmin.
+    var stalePushedGarminIds: [String]
+}
+
+/// "Start a new plan": keeps the athlete's history and replaces the plan.
+/// In one save it removes every open (planned) session from today on with
+/// its blocks and prescriptions, clears the coach plan, decisions and read,
+/// writes the new inputs to the profile and race goal, and starts a new plan
+/// block now. Logs, runs, readiness, past sessions, rank and chat stay.
+/// Today's open sessions go too: the athlete asked for a fresh start, and a
+/// replan never fills today, so leaving them would turn into misses.
+/// Removed watch workouts join the stale queue only once the save succeeds;
+/// the next Garmin plan sync deletes them.
+@discardableResult
+func startNewPlan(
+    with inputs: PlanInputs,
+    profile: UserProfile,
+    in modelContext: ModelContext,
+    staleWorkoutQueue: GarminStaleWorkoutQueue = GarminStaleWorkoutQueue(),
+    now: Date = Date(),
+    calendar: Calendar = .current
+) throws -> NewPlanReset {
+    do {
+        let startOfToday = calendar.startOfDay(for: now)
+        let openSessions = try modelContext.fetch(FetchDescriptor<WorkoutSession>())
+            .filter { $0.status == .planned && $0.scheduledDate >= startOfToday }
+            .sorted { $0.scheduledDate < $1.scheduledDate }
+        let staleIds = openSessions.map(\.garminWorkoutId).filter { !$0.isEmpty }
+        let openIds = Set(openSessions.map(\.id))
+
+        for prescription in try modelContext.fetch(FetchDescriptor<SetPrescription>()) where openIds.contains(prescription.sessionId) {
+            modelContext.delete(prescription)
+        }
+        for block in try modelContext.fetch(FetchDescriptor<WorkoutBlock>()) where openIds.contains(block.sessionId) {
+            modelContext.delete(block)
+        }
+        for session in openSessions {
+            modelContext.delete(session)
+        }
+
+        // Decisions belong to plans; the read judged the old plan.
+        try deleteAll(CoachDecision.self, in: modelContext)
+        try deleteAll(CoachPlan.self, in: modelContext)
+        try deleteAll(CoachVerdict.self, in: modelContext)
+
+        profile.baselinePullUps = inputs.pullUps
+        profile.baselinePushUps = inputs.pushUps
+        profile.baselinePlankSeconds = inputs.plankSeconds
+        profile.goalPullUps = inputs.goalPullUps
+        profile.goalPushUps = inputs.goalPushUps
+        profile.goalPlankSeconds = inputs.goalPlankSeconds
+        profile.targetDate = inputs.targetDate
+        profile.trainingDays = inputs.trainingDays
+        profile.sessionMinutes = max(0, inputs.sessionMinutes)
+        profile.equipment = inputs.equipment
+        profile.strictFormAccepted = inputs.strictForm
+        profile.painNotes = inputs.painNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.planBlockStartedAt = now
+
+        let raceGoals = try modelContext.fetch(FetchDescriptor<RaceGoal>(sortBy: [SortDescriptor(\.createdAt)]))
+        if inputs.isTrainingForRace {
+            // Edit the goal in place: its weekly base and longest run come
+            // from run history, which a new plan keeps.
+            let goal: RaceGoal
+            if let existing = raceGoals.first {
+                goal = existing
+            } else {
+                goal = RaceGoal(createdAt: now)
+                modelContext.insert(goal)
+            }
+            goal.name = inputs.raceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            goal.raceDate = inputs.raceDate
+            goal.distanceKm = Double(inputs.raceDistanceKm)
+            goal.elevationGainM = inputs.raceElevationGainM
+            profile.runningDays = inputs.runningDays
+            profile.longRunDay = inputs.resolvedLongRunDay
+        } else {
+            for goal in raceGoals {
+                modelContext.delete(goal)
+            }
+        }
+
+        try modelContext.save()
+        staleWorkoutQueue.enqueue(staleIds)
+        return NewPlanReset(removedSessionCount: openSessions.count, stalePushedGarminIds: staleIds)
+    } catch {
+        modelContext.rollback()
+        throw error
+    }
 }
 
 func applyScoreOutcome(_ outcome: ScoreOutcome, to rank: RankState) {
@@ -879,5 +1676,37 @@ func exerciseMovementDescription(_ exercise: ExerciseKind) -> String {
         "A timed hang from a bar: grip the bar, keep arms straight, keep shoulders active, and hold without swinging."
     case .shoulderMobility:
         "Slow arm circles: raise both arms forward to overhead, sweep them out and down, then reverse the direction. Stay pain-free."
+    case .negativePullUp:
+        "A slow lowering from the top of a pull-up: jump or step until your chin is over the bar, then lower for 3 to 5 seconds to straight arms."
+    case .bandAssistedPullUp:
+        "A pull-up with a band looped over the bar under one knee or foot: the band helps at the bottom, the form stays strict."
+    case .invertedRow:
+        "A horizontal pull under a low bar or a sturdy table: body straight, pull your chest to the bar, then lower with control."
+    case .archerPullUp:
+        "A wide-grip pull-up toward one hand while the other arm stays nearly straight. Alternate sides."
+    case .lSitPullUp:
+        "A strict pull-up with your legs held straight out in an L for the whole rep."
+    case .weightedPullUp:
+        "A strict pull-up with extra load: a dumbbell between your feet or a loaded backpack."
+    case .kneePushUp:
+        "A push-up from your knees: keep a straight line from knees to shoulders, chest to the floor, then press to locked arms."
+    case .diamondPushUp:
+        "A push-up with your hands together under your chest and elbows close to your body."
+    case .declinePushUp:
+        "A push-up with your feet raised on a step or bench: body straight, chest to the floor."
+    case .deficitPushUp:
+        "A push-up with your hands on two raised surfaces so your chest can sink below hand level. Move with control."
+    case .archerPushUp:
+        "A wide push-up where you lower toward one hand while the other arm stays straight. Alternate sides."
+    case .weightedPushUp:
+        "A strict push-up wearing a loaded backpack."
+    case .sidePlank:
+        "A side hold on one forearm: hips high, body in one straight line. Hold each side."
+    case .longLeverPlank:
+        "A plank with your forearms placed ahead of your shoulders: ribs down, glutes tight. Harder than a normal plank."
+    case .rkcPlank:
+        "A short, maximal-tension plank: pull your elbows toward your toes and squeeze glutes and thighs hard."
+    case .weightedPlank:
+        "A strict plank with a loaded backpack or a dumbbell resting on your upper back."
     }
 }

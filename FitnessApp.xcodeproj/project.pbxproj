@@ -20,10 +20,12 @@
 		AA0000000000000000000111 /* CoachValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* CoachValidationTests.swift */; };
 		AA0000000000000000000112 /* FitnessAppUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000212 /* FitnessAppUITests.swift */; };
 		AA0000000000000000000113 /* PersistenceResetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000214 /* PersistenceResetTests.swift */; };
+		AA00000000000000000001A2 /* NewPlanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000002A2 /* NewPlanTests.swift */; };
 		AA0000000000000000000114 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000230 /* AppShellView.swift */; };
 		AA0000000000000000000115 /* LockinComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000231 /* LockinComponents.swift */; };
 		AA0000000000000000000116 /* TrainingPlanStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000232 /* TrainingPlanStore.swift */; };
 		AA0000000000000000000117 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000233 /* OnboardingView.swift */; };
+		AA00000000000000000001A1 /* NewPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000002A1 /* NewPlanView.swift */; };
 		AA0000000000000000000118 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000234 /* TodayView.swift */; };
 		AA0000000000000000000119 /* WorkoutInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000235 /* WorkoutInfoView.swift */; };
 		AA000000000000000000011A /* CalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000236 /* CalendarView.swift */; };
@@ -31,6 +33,7 @@
 		AA000000000000000000011C /* CoachView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000238 /* CoachView.swift */; };
 		AA000000000000000000011D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000239 /* SettingsView.swift */; };
 		AA000000000000000000011E /* LogWorkoutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023A /* LogWorkoutView.swift */; };
+		AA000000000000000000011F /* CoachChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000023B /* CoachChatView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,6 +68,7 @@
 		AA0000000000000000000212 /* FitnessAppUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FitnessAppUITests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000213 /* FitnessApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FitnessApp.entitlements; sourceTree = "<group>"; };
 		AA0000000000000000000214 /* PersistenceResetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceResetTests.swift; sourceTree = "<group>"; };
+		AA00000000000000000002A2 /* NewPlanTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanTests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000221 /* FitnessApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FitnessApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000222 /* FitnessAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000223 /* FitnessAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FitnessAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -72,6 +76,7 @@
 		AA0000000000000000000231 /* LockinComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockinComponents.swift; sourceTree = "<group>"; };
 		AA0000000000000000000232 /* TrainingPlanStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingPlanStore.swift; sourceTree = "<group>"; };
 		AA0000000000000000000233 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		AA00000000000000000002A1 /* NewPlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPlanView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000234 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000235 /* WorkoutInfoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutInfoView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000236 /* CalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarView.swift; sourceTree = "<group>"; };
@@ -79,6 +84,7 @@
 		AA0000000000000000000238 /* CoachView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000239 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AA000000000000000000023A /* LogWorkoutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogWorkoutView.swift; sourceTree = "<group>"; };
+		AA000000000000000000023B /* CoachChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachChatView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -131,11 +137,13 @@
 				AA0000000000000000000231 /* LockinComponents.swift */,
 				AA0000000000000000000232 /* TrainingPlanStore.swift */,
 				AA0000000000000000000233 /* OnboardingView.swift */,
+				AA00000000000000000002A1 /* NewPlanView.swift */,
 				AA0000000000000000000234 /* TodayView.swift */,
 				AA0000000000000000000235 /* WorkoutInfoView.swift */,
 				AA0000000000000000000236 /* CalendarView.swift */,
 				AA0000000000000000000237 /* ProgressView.swift */,
 				AA0000000000000000000238 /* CoachView.swift */,
+				AA000000000000000000023B /* CoachChatView.swift */,
 				AA0000000000000000000239 /* SettingsView.swift */,
 				AA000000000000000000023A /* LogWorkoutView.swift */,
 				AA0000000000000000000209 /* Assets.xcassets */,
@@ -148,6 +156,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000210 /* TrainingEngineTests.swift */,
+				AA00000000000000000002A2 /* NewPlanTests.swift */,
 				AA0000000000000000000211 /* CoachValidationTests.swift */,
 				AA0000000000000000000214 /* PersistenceResetTests.swift */,
 			);
@@ -313,11 +322,13 @@
 				AA0000000000000000000115 /* LockinComponents.swift in Sources */,
 				AA0000000000000000000116 /* TrainingPlanStore.swift in Sources */,
 				AA0000000000000000000117 /* OnboardingView.swift in Sources */,
+				AA00000000000000000001A1 /* NewPlanView.swift in Sources */,
 				AA0000000000000000000118 /* TodayView.swift in Sources */,
 				AA0000000000000000000119 /* WorkoutInfoView.swift in Sources */,
 				AA000000000000000000011A /* CalendarView.swift in Sources */,
 				AA000000000000000000011B /* ProgressView.swift in Sources */,
 				AA000000000000000000011C /* CoachView.swift in Sources */,
+				AA000000000000000000011F /* CoachChatView.swift in Sources */,
 				AA000000000000000000011D /* SettingsView.swift in Sources */,
 				AA000000000000000000011E /* LogWorkoutView.swift in Sources */,
 			);
@@ -328,6 +339,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000110 /* TrainingEngineTests.swift in Sources */,
+				AA00000000000000000001A2 /* NewPlanTests.swift in Sources */,
 				AA0000000000000000000111 /* CoachValidationTests.swift in Sources */,
 				AA0000000000000000000113 /* PersistenceResetTests.swift in Sources */,
 			);
@@ -593,7 +605,8 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FitnessAppUITests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -614,7 +627,8 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = FitnessAppUITests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

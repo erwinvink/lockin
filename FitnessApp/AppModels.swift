@@ -98,6 +98,10 @@ struct PlannedEffort: Equatable {
     }
 }
 
+/// Every exercise the coach can plan. Mirrors the proxy's exercise library
+/// (Proxy/src/coach/skills/fitness-coach-planner/references/exercise-library.json);
+/// a proxy test keeps the two lists identical, because a plan with an
+/// unknown name is rejected here.
 enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
     case pullUp
     case pushUp
@@ -108,6 +112,22 @@ enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
     case pikePushUp
     case deadHang
     case shoulderMobility
+    case negativePullUp
+    case bandAssistedPullUp
+    case invertedRow
+    case archerPullUp
+    case lSitPullUp
+    case weightedPullUp
+    case kneePushUp
+    case diamondPushUp
+    case declinePushUp
+    case deficitPushUp
+    case archerPushUp
+    case weightedPushUp
+    case sidePlank
+    case longLeverPlank
+    case rkcPlank
+    case weightedPlank
 
     var id: String { rawValue }
 
@@ -122,6 +142,22 @@ enum ExerciseKind: String, CaseIterable, Codable, Identifiable {
         case .pikePushUp: "Pike push-up"
         case .deadHang: "Dead hang"
         case .shoulderMobility: "Shoulder mobility"
+        case .negativePullUp: "Negative pull-up"
+        case .bandAssistedPullUp: "Band-assisted pull-up"
+        case .invertedRow: "Inverted row"
+        case .archerPullUp: "Archer pull-up"
+        case .lSitPullUp: "L-sit pull-up"
+        case .weightedPullUp: "Weighted pull-up"
+        case .kneePushUp: "Knee push-up"
+        case .diamondPushUp: "Diamond push-up"
+        case .declinePushUp: "Decline push-up"
+        case .deficitPushUp: "Deficit push-up"
+        case .archerPushUp: "Archer push-up"
+        case .weightedPushUp: "Weighted push-up"
+        case .sidePlank: "Side plank"
+        case .longLeverPlank: "Long-lever plank"
+        case .rkcPlank: "RKC plank"
+        case .weightedPlank: "Weighted plank"
         }
     }
 }
@@ -335,6 +371,9 @@ final class UserProfile {
     var painNotes: String = ""
     var runningDaysRaw: String = ""
     var longRunDayRaw: String = ""
+    /// Set by "Start a new plan". Nil on profiles from before that existed,
+    /// which read as their creation date (see `planBlockStartedAt`).
+    var planBlockStartedAtRaw: Date? = nil
 
     init(
         id: UUID = UUID(),
@@ -380,7 +419,19 @@ final class UserProfile {
     }
 
     var equipment: Set<EquipmentKind> {
-        Set(equipmentRaw.split(separator: ",").compactMap { EquipmentKind(rawValue: String($0)) })
+        get {
+            Set(equipmentRaw.split(separator: ",").compactMap { EquipmentKind(rawValue: String($0)) })
+        }
+        set {
+            equipmentRaw = newValue.map(\.rawValue).sorted().joined(separator: ",")
+        }
+    }
+
+    /// When the current plan block began: the last "Start a new plan", or
+    /// the day the profile was created.
+    var planBlockStartedAt: Date {
+        get { planBlockStartedAtRaw ?? createdAt }
+        set { planBlockStartedAtRaw = newValue }
     }
 
     var trainingDays: Set<TrainingWeekday> {
@@ -1030,6 +1081,147 @@ func humanReadableCoachPlanDecision(_ action: String) -> String {
         return action.isEmpty ? "Keep plan" : action
             .replacingOccurrences(of: "_", with: " ")
             .capitalized
+    }
+}
+
+enum CoachChatRole: String, Codable {
+    case user
+    case coach
+}
+
+enum CoachChatMessageStatus: String, Codable {
+    case sending
+    case sent
+    case failed
+}
+
+@Model
+final class CoachChatMessage {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var roleRaw: String = CoachChatRole.user.rawValue
+    var text: String = ""
+    var statusRaw: String = CoachChatMessageStatus.sent.rawValue
+    var evidenceRaw: String = ""
+    var memorySummary: String = ""
+    var answerKind: String = ""
+    /// Suggested next questions, one per line.
+    var followUpPromptsRaw: String = ""
+    /// False when the proxy answered with its built-in quick answer instead
+    /// of the coach model. Older messages default to true.
+    var usedModel: Bool = true
+
+    init(
+        id: UUID = UUID(),
+        createdAt: Date = Date(),
+        role: CoachChatRole,
+        text: String,
+        status: CoachChatMessageStatus = .sent,
+        evidence: [String] = [],
+        memorySummary: String = "",
+        answerKind: String = "",
+        followUpPrompts: [String] = [],
+        usedModel: Bool = true
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.roleRaw = role.rawValue
+        self.text = text
+        self.statusRaw = status.rawValue
+        self.evidenceRaw = evidence.joined(separator: "|")
+        self.memorySummary = memorySummary
+        self.answerKind = answerKind
+        self.followUpPromptsRaw = followUpPrompts.joined(separator: "\n")
+        self.usedModel = usedModel
+    }
+
+    var role: CoachChatRole {
+        get { CoachChatRole(rawValue: roleRaw) ?? .user }
+        set { roleRaw = newValue.rawValue }
+    }
+
+    var status: CoachChatMessageStatus {
+        get { CoachChatMessageStatus(rawValue: statusRaw) ?? .sent }
+        set { statusRaw = newValue.rawValue }
+    }
+
+    var evidence: [String] {
+        get { evidenceRaw.split(separator: "|").map(String.init) }
+        set { evidenceRaw = newValue.joined(separator: "|") }
+    }
+
+    var followUpPrompts: [String] {
+        get { followUpPromptsRaw.split(separator: "\n").map(String.init) }
+        set { followUpPromptsRaw = newValue.joined(separator: "\n") }
+    }
+}
+
+/// Keeping the on-device chat history bounded, retrying a question, and
+/// choosing which turns go to the proxy.
+enum CoachChatHistory {
+    /// Older messages are deleted beyond this; the proxy only reads the last 20 turns.
+    static let maxStoredMessages = 200
+    static let maxSentTurns = 20
+
+    /// Deletes the oldest messages so at most `limit` remain. Saves only when it deleted something.
+    static func prune(in modelContext: ModelContext, keeping limit: Int = maxStoredMessages) throws {
+        var newestFirst = FetchDescriptor<CoachChatMessage>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        newestFirst.fetchOffset = limit
+        let overflow = try modelContext.fetch(newestFirst)
+        guard !overflow.isEmpty else { return }
+        for message in overflow {
+            modelContext.delete(message)
+        }
+        try modelContext.save()
+    }
+
+    static func clear(in modelContext: ModelContext) throws {
+        for message in try modelContext.fetch(FetchDescriptor<CoachChatMessage>()) {
+            modelContext.delete(message)
+        }
+        try modelContext.save()
+    }
+
+    /// Readies a failed question for another try: it moves to the end of the
+    /// conversation as the same bubble, and the error reply it got is removed.
+    static func prepareRetry(of question: CoachChatMessage, in messages: [CoachChatMessage], modelContext: ModelContext, now: Date = Date()) {
+        let sorted = messages.sorted { $0.createdAt < $1.createdAt }
+        if let index = sorted.firstIndex(where: { $0.id == question.id }),
+           sorted.indices.contains(index + 1),
+           sorted[index + 1].role == .coach,
+           sorted[index + 1].status == .failed {
+            modelContext.delete(sorted[index + 1])
+        }
+        question.status = .sent
+        question.createdAt = max(now, (sorted.last?.createdAt ?? now).addingTimeInterval(0.001))
+    }
+
+    /// The sent turns the proxy should see, oldest first, ending with `question`.
+    /// Failed messages, and questions whose reply failed, are left out.
+    static func turns(from messages: [CoachChatMessage], including question: CoachChatMessage) -> [CoachChatTurnRequest] {
+        var combined = messages.filter { $0.id != question.id }
+        combined.append(question)
+        let sorted = combined.sorted { $0.createdAt < $1.createdAt }
+        let sentMessages = sorted.enumerated().compactMap { index, message -> CoachChatMessage? in
+            guard message.status == .sent else { return nil }
+            if message.role == .user,
+               sorted.indices.contains(index + 1),
+               sorted[index + 1].role == .coach,
+               sorted[index + 1].status == .failed {
+                return nil
+            }
+            return message
+        }
+
+        return sentMessages
+            .suffix(maxSentTurns)
+            .map {
+                CoachChatTurnRequest(
+                    role: $0.role.rawValue,
+                    text: $0.text,
+                    createdAt: $0.createdAt
+                )
+            }
     }
 }
 

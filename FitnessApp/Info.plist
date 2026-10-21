@@ -20,6 +20,10 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CoachProxyEndpoint</key>
+	<string>$(COACH_PROXY_ENDPOINT)</string>
+	<key>CoachProxyAppToken</key>
+	<string>$(COACH_PROXY_APP_TOKEN)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

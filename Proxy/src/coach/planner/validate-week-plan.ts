@@ -1,5 +1,27 @@
-import { flatGoalMetricsRequiringProgression } from "./coach-temperament";
-import type { CoachContext, ContextState, EffortLabel, EffortStimulus, ExerciseKind, SessionFocus } from "./types";
+import {
+  describeStep,
+  GOAL_METRICS,
+  goalValue,
+  hardestLabel,
+  maxHardStrengthSessions,
+  METRIC_LABEL,
+  metricForExercise,
+  STRENGTH_LIMITS,
+  strengthProgressionPlan,
+  type GoalMetric,
+  type MetricProgression
+} from "./strength-guardrails";
+import { EXERCISE_KINDS, missingEquipment } from "./exercise-catalog";
+import {
+  hardSetCount,
+  isHardLabel,
+  isNearLimitLabel,
+  strengthPhase,
+  strengthPhaseActive,
+  strengthSessionRule,
+  type StrengthPhase
+} from "./strength-phase";
+import type { CoachContext, ContextState, EffortLabel, EffortStimulus, ExerciseKind, SessionFocus, WeeklyPlan } from "./types";
 
 type ValidationResult = {
   accepted: boolean;
@@ -8,8 +30,20 @@ type ValidationResult = {
 
 type GoalWorkSummary = {
   target: number;
+  sets: number;
   volume: number;
 };
+
+export type WeeklyPlanValidationOptions = {
+  /**
+   * The fixed running week is heavy (see strengthMaintenanceReason): earned
+   * progression may hold, but targets must not regress below it.
+   */
+  allowProgressionHoldForRunning?: boolean;
+};
+
+const ASSESSMENT_SPACING_DAYS = 28;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const contextStates = new Set<ContextState>([
   "building",
@@ -21,21 +55,60 @@ const contextStates = new Set<ContextState>([
 const sessionFocuses = new Set<SessionFocus>(["pull", "push", "core", "mixed", "recovery"]);
 const effortLabels = new Set<EffortLabel>(["light", "medium", "hard", "very_hard", "max_output"]);
 const effortStimuli = new Set<EffortStimulus>(["recovery", "technique", "volume", "strength", "test"]);
-const exerciseKinds = new Set<ExerciseKind>([
-  "pullUp",
-  "pushUp",
-  "plank",
-  "scapularPull",
-  "hollowHold",
-  "inclinePushUp",
-  "pikePushUp",
-  "deadHang",
-  "shoulderMobility"
-]);
+const exerciseKinds = new Set<ExerciseKind>(EXERCISE_KINDS);
 const loggingFields = new Set(["pullUps", "pushUps", "plankSeconds"]);
 const runningTitlePattern = /\b(?:easy|long|recovery|tempo|interval)\s+run\b|\brunning\b|\brun\b|\bjog(?:ging)?\b|\bintervals\b/i;
+const phaseSummaryPattern = /^(?:Build|Offload|Restore|Maintenance|Assessment):/;
 
-export function validateWeeklyPlan(plan: unknown, context: CoachContext): ValidationResult {
+const normalStates = new Set(["building", "plateau", "insufficient_history"]);
+
+/** Recovery-week and race-taper rules, each with the limit and the value. */
+function validatePhaseRules(plan: WeeklyPlan, phase: StrengthPhase, messages: string[]) {
+  if (phase.recoveryWeek && typeof plan.summary === "string" && !plan.summary.trim().startsWith("Offload:")) {
+    messages.push("This is a planned recovery week: the summary must start with Offload:.");
+  }
+  plan.sessions.forEach((session, index) => {
+    if (!isRecord(session) || typeof session.dayOffset !== "number") return;
+    const rule = strengthSessionRule(session.dayOffset, phase);
+    if (!rule.light) return;
+    const label = `Session ${index + 1} (${session.title})`;
+    const efforts = [
+      { owner: "session", effort: session.plannedEffort },
+      ...(Array.isArray(session.exercises) ? session.exercises : []).map((exercise) => ({ owner: String(exercise.exercise), effort: exercise.plannedEffort, exercise }))
+    ];
+    for (const { owner, effort } of efforts) {
+      if (!isRecord(effort)) continue;
+      if (effort.stimulus === "test" || effort.label === "max_output") {
+        messages.push(`${label} ${owner} is a test, but ${rule.reason}: no tests. Use medium working sets.`);
+      } else if (rule.noHard && isHardLabel(effort.label)) {
+        messages.push(`${label} ${owner} is ${effort.label}; ${rule.reason}. Lower it to medium or light.`);
+      } else if (isNearLimitLabel(effort.label)) {
+        messages.push(`${label} ${owner} is ${effort.label}; ${rule.reason}: at most hard.`);
+      }
+    }
+    for (const exercise of Array.isArray(session.exercises) ? session.exercises : []) {
+      if (!isRecord(exercise) || metricForExercise(exercise.exercise) === null) continue;
+      if (rule.maxGoalSets !== null && typeof exercise.sets === "number" && exercise.sets > rule.maxGoalSets) {
+        messages.push(`${label} ${exercise.exercise} has ${exercise.sets} sets; ${rule.reason}: at most ${rule.maxGoalSets} sets per goal exercise.`);
+      }
+    }
+  });
+  const cap = phase.recoveryWeek?.hardSetCap ?? null;
+  if (cap !== null) {
+    const hardSets = hardSetCount(plan);
+    if (hardSets > cap) {
+      messages.push(
+        `The recovery week has ${hardSets} hard strength sets (hard, very_hard, max_output); the cap is ${cap}, 60% of the ${phase.recoveryWeek!.referenceHardSets} hard sets in the last loading week. Cut ${hardSets - cap} hard sets or lower them to medium.`
+      );
+    }
+  }
+}
+
+export function validateWeeklyPlan(
+  plan: unknown,
+  context: CoachContext,
+  options: WeeklyPlanValidationOptions = {}
+): ValidationResult {
   const messages: string[] = [];
 
   if (!isRecord(plan)) {
@@ -44,10 +117,14 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
 
   if (typeof plan.summary !== "string") {
     messages.push("Plan summary is missing or not a string.");
+  } else if (!phaseSummaryPattern.test(plan.summary.trim())) {
+    messages.push("Plan summary must start with Build:, Offload:, Restore:, Maintenance:, or Assessment:.");
   }
 
   if (typeof plan.contextState !== "string" || !contextStates.has(plan.contextState as ContextState)) {
     messages.push("Plan contextState is missing or unknown.");
+  } else if (plan.contextState !== context.readiness.state) {
+    messages.push(`Plan contextState must match computed readiness ${context.readiness.state}.`);
   }
 
   if (!Array.isArray(plan.safetyFlags) || !plan.safetyFlags.every((flag) => typeof flag === "string")) {
@@ -58,16 +135,26 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     return { accepted: false, messages: ["Plan sessions is missing or not an array."] };
   }
 
+  const hasSelectedTrainingDays = context.profile.trainingDays.length > 0;
   const allowedTrainingOffsets = new Set(context.profile.trainingDayOffsets);
-  const expectedSessionCount = allowedTrainingOffsets.size > 0 ? allowedTrainingOffsets.size : context.profile.weeklySessions;
+  const maximumSessionCount = hasSelectedTrainingDays
+    ? Math.min(context.profile.weeklySessions, allowedTrainingOffsets.size)
+    : context.profile.weeklySessions;
+  const hasSafetyFlags = Array.isArray(plan.safetyFlags) && plan.safetyFlags.length > 0;
 
-  if (plan.sessions.length !== expectedSessionCount) {
-    messages.push(`Expected ${expectedSessionCount} sessions, got ${plan.sessions.length}.`);
+  if (plan.sessions.length > maximumSessionCount) {
+    messages.push(`Expected no more than ${maximumSessionCount} future sessions, got ${plan.sessions.length}.`);
+  }
+
+  if (maximumSessionCount > 0 && plan.sessions.length === 0 && !hasSafetyFlags) {
+    messages.push("Plan includes no future strength sessions, so safetyFlags must explain why.");
   }
 
   let previousDayOffset = -1;
   const sessionEffortLabels: EffortLabel[] = [];
   const usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>> = {};
+  const testedMetrics = new Set<GoalMetric>();
+  const progression = strengthProgressionPlan(context, { maintenance: options.allowProgressionHoldForRunning === true });
 
   for (const [sessionIndex, session] of plan.sessions.entries()) {
     if (!isRecord(session)) {
@@ -96,7 +183,7 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     const sessionEffort = validatePlannedEffort(session.plannedEffort, `Session ${sessionIndex + 1} plannedEffort`, messages);
     if (sessionEffort) {
       sessionEffortLabels.push(sessionEffort.label);
-      validateEffortPolicy(sessionEffort, `Session ${sessionIndex + 1}`, plan.contextState, messages);
+      validateEffortPolicy(sessionEffort, `Session ${sessionIndex + 1}`, context.readiness.state, messages);
     }
 
     const estimatedDurationMinutes = session.estimatedDurationMinutes;
@@ -133,7 +220,7 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
     }
 
     if (typeof dayOffset === "number" && Number.isInteger(dayOffset)) {
-      if (allowedTrainingOffsets.size > 0 && dayOffset >= 1 && dayOffset <= 6 && !allowedTrainingOffsets.has(dayOffset)) {
+      if (hasSelectedTrainingDays && dayOffset >= 1 && dayOffset <= 6 && !allowedTrainingOffsets.has(dayOffset)) {
         messages.push(`Session ${sessionIndex + 1} dayOffset ${dayOffset} is not one of the selected future training days.`);
       }
       if (dayOffset <= previousDayOffset) {
@@ -148,8 +235,20 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
         continue;
       }
 
+      const supported = context.profile.supportedExercises ?? EXERCISE_KINDS;
       if (typeof exercise.exercise !== "string" || !exerciseKinds.has(exercise.exercise as ExerciseKind)) {
-        messages.push(`Session ${sessionIndex + 1} has an unknown exercise.`);
+        messages.push(
+          `Session ${sessionIndex + 1} has an unknown exercise ${JSON.stringify(exercise.exercise)}; use an exact name from exercise-library.json (${supported.join(", ")}).`
+        );
+      } else if (!supported.includes(exercise.exercise as ExerciseKind)) {
+        messages.push(
+          `Session ${sessionIndex + 1} uses ${exercise.exercise}, which this app version cannot show; use one of ${supported.join(", ")}.`
+        );
+      } else {
+        const missing = missingEquipment(exercise.exercise as ExerciseKind, context.profile.equipment);
+        if (missing) {
+          messages.push(`Session ${sessionIndex + 1} uses ${exercise.exercise}: ${missing}, which the athlete's equipment (${context.profile.equipment.join(", ")}) does not include. Pick an exercise from the same ladder that fits.`);
+        }
       }
 
       const sets = exercise.sets;
@@ -183,13 +282,28 @@ export function validateWeeklyPlan(plan: unknown, context: CoachContext): Valida
         messages
       );
       if (exerciseEffort) {
-        validateEffortPolicy(exerciseEffort, `Session ${sessionIndex + 1} exercise`, plan.contextState, messages);
+        validateEffortPolicy(exerciseEffort, `Session ${sessionIndex + 1} exercise`, context.readiness.state, messages);
         collectUsefulGoalWork(exercise, exerciseEffort, usefulGoalWork);
       }
+      validateGoalPrescription(exercise, exerciseEffort, `Session ${sessionIndex + 1}`, context, progression, testedMetrics, messages);
     }
   }
 
-  validateWeekEffortPolicy(plan.contextState, plan.safetyFlags, context, sessionEffortLabels, usefulGoalWork, messages);
+  validateHardSessionLoad(plan.sessions, context, messages);
+  const phase = strengthPhase(context);
+  if (strengthPhaseActive(phase) && normalStates.has(context.readiness.state)) {
+    validatePhaseRules(plan as unknown as WeeklyPlan, phase, messages);
+  }
+
+  validateWeekEffortPolicy(
+    context,
+    sessionEffortLabels,
+    usefulGoalWork,
+    progression,
+    testedMetrics,
+    maximumSessionCount,
+    messages
+  );
 
   return { accepted: messages.length === 0, messages };
 }
@@ -277,25 +391,31 @@ function validateEffortPolicy(
 }
 
 function validateWeekEffortPolicy(
-  contextState: unknown,
-  safetyFlags: unknown,
   context: CoachContext,
   sessionEffortLabels: EffortLabel[],
   usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
+  progression: Record<GoalMetric, MetricProgression>,
+  testedMetrics: Set<GoalMetric>,
+  maximumSessionCount: number,
   messages: string[]
 ) {
   const normalProgressionStates = new Set(["building", "plateau", "insufficient_history"]);
-  const hasSafetyFlags = Array.isArray(safetyFlags) && safetyFlags.length > 0;
-  if (!normalProgressionStates.has(String(contextState)) || hasSafetyFlags) return;
+  if (!normalProgressionStates.has(context.readiness.state)) return;
+  // A planned recovery week or the race taper: lighter on purpose, so no
+  // all-light, useful-floor or progression requirement (offload band below).
+  if (strengthPhaseActive(strengthPhase(context))) {
+    for (const metric of GOAL_METRICS) validateMetricProgression(progression[metric], usefulGoalWork[metric], messages);
+    return;
+  }
 
   if (sessionEffortLabels.length > 0 && sessionEffortLabels.every((label) => label === "light")) {
-    messages.push("Normal progression weeks cannot be all light unless safetyFlags explain why.");
+    messages.push("Normal progression weeks cannot be all light without computed recovery or maintenance evidence.");
   }
 
   const floors: Array<["pullUps" | "pushUps" | "plankSeconds", number, string]> = [
-    ["pullUps", 0.45, "pull-up"],
-    ["pushUps", 0.45, "push-up"],
-    ["plankSeconds", 0.45, "plank"]
+    ["pullUps", STRENGTH_LIMITS.usefulFloorRatio, "pull-up"],
+    ["pushUps", STRENGTH_LIMITS.usefulFloorRatio, "push-up"],
+    ["plankSeconds", STRENGTH_LIMITS.usefulFloorRatio, "plank"]
   ];
 
   for (const [metric, multiplier, label] of floors) {
@@ -308,13 +428,182 @@ function validateWeekEffortPolicy(
     }
   }
 
-  for (const { metric, label, latestTarget, latestVolume } of flatGoalMetricsRequiringProgression(context)) {
-    const prescribed = usefulGoalWork[metric];
-    if (!prescribed || (prescribed.target <= latestTarget && prescribed.volume <= latestVolume)) {
+  // No session can be scheduled this week (e.g. the only training day is
+  // today), so there is nowhere to put the earned progression: it carries
+  // over to the next week instead of failing the plan.
+  if (maximumSessionCount === 0) return;
+
+  for (const metric of GOAL_METRICS) {
+    // A deliberate test resets the standard; progression continues from it.
+    if (testedMetrics.has(metric)) continue;
+    validateMetricProgression(progression[metric], usefulGoalWork[metric], messages);
+  }
+}
+
+/**
+ * Keeps the week's top working prescription per goal metric continuous with
+ * the evidence: earned progression must move by the metric's step (or add
+ * exactly one set at the same target), a maintenance week may hold but not
+ * regress, and unearned weeks stay in the hold band.
+ */
+function validateMetricProgression(
+  entry: MetricProgression,
+  prescribed: GoalWorkSummary | undefined,
+  messages: string[]
+) {
+  const { label, previousTarget, previousSets, target: band } = entry;
+  const unit = entry.metric === "plankSeconds" ? "seconds" : "reps";
+
+  if (entry.status === "earned") {
+    if (!prescribed) {
+      messages.push(`Clean matched performance earned ${label} progression. ${entry.note} safetyFlags alone cannot bypass it.`);
+      return;
+    }
+    if (previousTarget === null || previousSets === null || !band) return;
+    const repRoute = prescribed.target > previousTarget && prescribed.target >= band.min && prescribed.target <= band.max && prescribed.sets <= previousSets;
+    const setRoute = entry.setRoute !== null && prescribed.target === entry.setRoute.target && prescribed.sets === entry.setRoute.sets;
+    if (repRoute || setRoute) return;
+
+    let explained = false;
+    if (prescribed.target > Math.max(band.max, previousTarget)) {
       messages.push(
-        `Normal progression ${label} work repeats the recent flat prescription. Increase reps, hold time, sets, or add safetyFlags with a clear reason.`
+        `${label} progression must be ${describeStep(entry.metric, previousTarget)} from ${previousTarget} (at most ${band.max} ${unit}${entry.cap !== null ? `, working cap ${entry.cap}` : ""}); got +${prescribed.target - previousTarget}.`
+      );
+      explained = true;
+    }
+    if (prescribed.target > previousTarget && prescribed.sets > previousSets) {
+      messages.push(`${label} progression cannot increase sets and the target in the same step (previous ${previousSets} sets, got ${prescribed.sets}).`);
+      explained = true;
+    }
+    if (!explained) {
+      messages.push(
+        `Clean matched performance earned ${label} progression. ${entry.note} Got ${prescribed.target} ${unit} x ${prescribed.sets} sets. safetyFlags alone cannot bypass it.`
       );
     }
+    return;
+  }
+
+  if (entry.status === "offload") {
+    if (prescribed && band && prescribed.target > band.max) {
+      messages.push(`${label} work must not progress this week (${entry.note}); got ${prescribed.target} ${unit}, at most ${band.max}.`);
+    }
+    return;
+  }
+
+  if (!prescribed || !band || previousTarget === null || previousSets === null) return;
+
+  if (entry.status === "maintenance") {
+    if (prescribed.target < band.min) {
+      messages.push(
+        `Maintenance week: hold ${label} work at ${band.min} ${unit} or more (earned standard ${previousTarget}); got ${prescribed.target}. Holding is allowed, regressing is not.`
+      );
+    }
+    if (prescribed.target > band.max) {
+      messages.push(`${label} progression must be ${describeStep(entry.metric, previousTarget)} from ${previousTarget} (at most ${band.max} ${unit}); got +${prescribed.target - previousTarget}.`);
+    }
+    if (prescribed.target > previousTarget && prescribed.sets > previousSets) {
+      messages.push(`${label} progression cannot increase sets and the target in the same step (previous ${previousSets} sets, got ${prescribed.sets}).`);
+    } else if (prescribed.sets > Math.min(STRENGTH_LIMITS.goalSets.max, previousSets + 1)) {
+      messages.push(`${label} sets can rise by at most one per week: at most ${previousSets + 1} sets (previous ${previousSets}); got ${prescribed.sets}.`);
+    }
+    return;
+  }
+
+  if (entry.status === "hold") {
+    if (prescribed.target > band.max) {
+      messages.push(
+        `${label} progression is not earned this week: keep the top working target between ${band.min} and ${band.max} ${unit} (previous ${previousTarget}); got ${prescribed.target}.`
+      );
+    } else if (prescribed.target < band.min) {
+      messages.push(
+        `${label} target dropped more than one step without a computed reason: keep the top working target between ${band.min} and ${band.max} ${unit} (previous ${previousTarget}); got ${prescribed.target}.`
+      );
+    }
+    if (entry.maxSets !== null && prescribed.sets > entry.maxSets) {
+      messages.push(`${label} sets can rise by at most one per week: at most ${entry.maxSets} sets (previous ${previousSets}); got ${prescribed.sets}.`);
+    }
+  }
+}
+
+function validateGoalPrescription(
+  exercise: Record<string, unknown>,
+  effort: { label: EffortLabel; stimulus: EffortStimulus } | null,
+  label: string,
+  context: CoachContext,
+  progression: Record<GoalMetric, MetricProgression>,
+  testedMetrics: Set<GoalMetric>,
+  messages: string[]
+) {
+  const metric = metricForExercise(exercise.exercise);
+  if (!metric) return;
+  const unit = metric === "plankSeconds" ? "seconds" : "reps";
+  const value = goalValue(metric, exercise);
+  const best = context.history.bestRecentTests[metric];
+
+  if (effort?.stimulus === "test") {
+    testedMetrics.add(metric);
+    const performance = context.plannedWork.recentGoalPerformance?.[metric];
+    const weekStart = Date.parse(context.profile.weekStart);
+    const latestTest = performance?.latestTestDate ?? null;
+    const baselineSetAt = performance?.baselineSetAt ?? null;
+    const testAge = latestTest ? weekStart - Date.parse(latestTest) : Number.POSITIVE_INFINITY;
+    const baselineAge = baselineSetAt ? weekStart - Date.parse(baselineSetAt) : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(testAge) && testAge < ASSESSMENT_SPACING_DAYS * DAY_MS) {
+      messages.push(
+        `${label} ${exercise.exercise} is a test, but the last ${METRIC_LABEL[metric]} test was on ${String(latestTest).slice(0, 10)}, fewer than ${ASSESSMENT_SPACING_DAYS} days ago. Use working sets instead.`
+      );
+    } else if (Number.isFinite(baselineAge) && baselineAge < ASSESSMENT_SPACING_DAYS * DAY_MS) {
+      messages.push(
+        `${label} ${exercise.exercise} is a test, but the ${METRIC_LABEL[metric]} baseline was set at the plan block start on ${String(baselineSetAt).slice(0, 10)}, fewer than ${ASSESSMENT_SPACING_DAYS} days ago. Use working sets instead.`
+      );
+    }
+    return;
+  }
+
+  const cap = progression[metric].cap;
+  if (cap !== null && value > cap) {
+    messages.push(
+      `${label} ${exercise.exercise} prescribes ${value} ${unit} per set; the working cap is ${cap} (${Math.round(STRENGTH_LIMITS.workingCapRatio[metric] * 100)}% of the best recent ${best}). Lower it to ${cap} or fewer.`
+    );
+  }
+
+  const useful = effort && effort.label !== "light" && effort.stimulus !== "recovery" && effort.stimulus !== "technique";
+  const sets = exercise.sets;
+  if (useful && typeof sets === "number" && Number.isInteger(sets) && sets >= 1 &&
+    (sets < STRENGTH_LIMITS.goalSets.min || sets > STRENGTH_LIMITS.goalSets.max)) {
+    messages.push(
+      `${label} ${exercise.exercise} has ${sets} working sets; goal work uses ${STRENGTH_LIMITS.goalSets.min}-${STRENGTH_LIMITS.goalSets.max} sets.`
+    );
+  }
+}
+
+function validateHardSessionLoad(sessions: unknown[], context: CoachContext, messages: string[]) {
+  const hardOffsets: number[] = [];
+  for (const session of sessions) {
+    if (!isRecord(session) || typeof session.dayOffset !== "number") continue;
+    if (hardestLabel(session as WeeklyPlan["sessions"][number]) !== null) hardOffsets.push(session.dayOffset);
+  }
+
+  const maxHard = maxHardStrengthSessions(context);
+  if (hardOffsets.length > maxHard) {
+    const phase = strengthPhase(context);
+    const why = phase.recoveryWeek ? " in a planned recovery week" : phase.raceTaper ? " in the last 10 days before the race" : context.running ? " alongside the running week" : "";
+    messages.push(
+      `The plan has ${hardOffsets.length} hard strength sessions (hard, very_hard, or max_output in the session or any exercise); the weekly cap is ${maxHard}${why}. Make ${hardOffsets.length - maxHard} of them medium or light.`
+    );
+  }
+
+  const unique = [...new Set(hardOffsets)].sort((a, b) => a - b);
+  let streakStart = 0;
+  for (let index = 1; index <= unique.length; index += 1) {
+    if (index < unique.length && unique[index] === unique[index - 1] + 1) continue;
+    const length = index - streakStart;
+    if (length > STRENGTH_LIMITS.maxConsecutiveHardDays) {
+      messages.push(
+        `Hard strength sessions fall on ${length} consecutive days (offsets ${unique[streakStart]}-${unique[index - 1]}); allow at most ${STRENGTH_LIMITS.maxConsecutiveHardDays}. Make one of them medium or light, or move it.`
+      );
+    }
+    streakStart = index;
   }
 }
 
@@ -323,7 +612,7 @@ function collectUsefulGoalWork(
   effort: { label: EffortLabel; stimulus: EffortStimulus },
   usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>
 ) {
-  if (effort.label === "light" || effort.stimulus === "recovery" || effort.stimulus === "technique") return;
+  if (effort.label === "light" || effort.stimulus === "recovery" || effort.stimulus === "technique" || effort.stimulus === "test") return;
 
   const exerciseKind = exercise.exercise;
   const sets = typeof exercise.sets === "number" && Number.isInteger(exercise.sets) ? exercise.sets : 0;
@@ -331,11 +620,11 @@ function collectUsefulGoalWork(
   const seconds = typeof exercise.seconds === "number" && Number.isInteger(exercise.seconds) ? exercise.seconds : 0;
 
   if (exerciseKind === "pullUp") {
-    recordGoalWork(usefulGoalWork, "pullUps", reps, reps * sets);
+    recordGoalWork(usefulGoalWork, "pullUps", reps, sets);
   } else if (exerciseKind === "pushUp") {
-    recordGoalWork(usefulGoalWork, "pushUps", reps, reps * sets);
+    recordGoalWork(usefulGoalWork, "pushUps", reps, sets);
   } else if (exerciseKind === "plank") {
-    recordGoalWork(usefulGoalWork, "plankSeconds", seconds, seconds * sets);
+    recordGoalWork(usefulGoalWork, "plankSeconds", seconds, sets);
   }
 }
 
@@ -343,11 +632,10 @@ function recordGoalWork(
   usefulGoalWork: Partial<Record<"pullUps" | "pushUps" | "plankSeconds", GoalWorkSummary>>,
   metric: "pullUps" | "pushUps" | "plankSeconds",
   target: number,
-  volume: number
+  sets: number
 ) {
   const previous = usefulGoalWork[metric];
-  usefulGoalWork[metric] = {
-    target: Math.max(previous?.target ?? 0, target),
-    volume: Math.max(previous?.volume ?? 0, volume)
-  };
+  if (!previous || target > previous.target || (target === previous.target && sets > previous.sets)) {
+    usefulGoalWork[metric] = { target, sets, volume: target * sets };
+  }
 }

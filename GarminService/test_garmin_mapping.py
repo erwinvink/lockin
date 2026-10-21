@@ -15,7 +15,16 @@ No network and no garminconnect import here or in garmin_mapping.
 
 import pytest
 
-from garmin_mapping import build_workout, running_activity, wellness_day
+from garmin_mapping import (
+    build_workout,
+    running_activity,
+    tag_workout,
+    tagged_session_fingerprints,
+    unavailable_metrics,
+    wellness_day,
+    workout_fingerprint,
+    workout_tag,
+)
 
 # ---------------------------------------------------------------------------
 # Wellness fixtures
@@ -222,6 +231,33 @@ class TestWellnessDay:
         assert isinstance(out["restingHr"], int)
 
 
+class TestUnavailableMetrics:
+    def test_failed_sources_map_to_proxy_field_names_in_order(self):
+        row = wellness_day("2026-06-09", None, None, None, None, None)
+        failed = {"rhr", "readiness", "body_battery", "hrv", "sleep"}
+        assert unavailable_metrics(row, failed) == [
+            "sleepScore",
+            "sleepSeconds",
+            "hrvStatus",
+            "hrvMs",
+            "bodyBattery",
+            "trainingReadiness",
+            "restingHr",
+        ]
+
+    def test_nothing_failed_means_nothing_unavailable(self):
+        row = wellness_day("2026-06-09", None, None, None, None, None)
+        assert unavailable_metrics(row, set()) == []
+
+    def test_resting_hr_recovered_from_sleep_is_available(self):
+        row = wellness_day("2026-06-09", SLEEP_JSON, None, None, None, None)
+        assert unavailable_metrics(row, {"rhr"}) == []
+
+    def test_resting_hr_unavailable_when_its_fallback_failed(self):
+        row = wellness_day("2026-06-09", None, None, None, None, None)
+        assert unavailable_metrics(row, {"sleep"}) == ["sleepScore", "sleepSeconds", "restingHr"]
+
+
 # ---------------------------------------------------------------------------
 # Activity fixtures
 # ---------------------------------------------------------------------------
@@ -410,7 +446,28 @@ class TestBuildWorkout:
             "displayOrder": 1,
             "displayable": True,
         }
-        assert main["endConditionValue"] == 21100.0
+        # distanceKm is the whole session: the 10 min warm-up and 5 min
+        # cool-down (~2.5 km at an easy 6:00/km) come out of the main step.
+        assert main["endConditionValue"] == 18600.0
+
+    def test_hard_distance_session_total_matches_planned_distance(self):
+        w = build_workout(make_payload(kind="tempo", distanceKm=10.0))
+        warmup, main, cooldown = steps_of(w)
+        jog_m = (warmup["endConditionValue"] + cooldown["endConditionValue"]) / 360.0 * 1000.0
+        assert main["endConditionValue"] + jog_m == pytest.approx(10000.0, abs=1.0)
+
+    def test_short_hard_distance_session_keeps_a_real_main_step(self):
+        w = build_workout(make_payload(kind="intervals", distanceKm=3.0))
+        assert steps_of(w)[1]["endConditionValue"] == 1500.0
+
+    def test_easy_distance_session_keeps_full_distance(self):
+        w = build_workout(make_payload(kind="easy", distanceKm=8.0, target=None))
+        assert steps_of(w)[0]["endConditionValue"] == 8000.0
+
+    def test_hard_estimated_duration_from_distance_counts_distance_once(self):
+        # 7.5 km main at the 345 s/km pace midpoint + 15 min warm-up/cool-down
+        w = build_workout(make_payload(kind="tempo", distanceKm=10.0, durationMinutes=None))
+        assert w["estimatedDurationInSecs"] == 3488
 
     def test_pace_target_converted_to_speed_bounds(self):
         """PINNED: pace low/high are sec-per-km with low = FASTER.
@@ -451,6 +508,20 @@ class TestBuildWorkout:
         assert main["targetValueOne"] == 138.0
         assert main["targetValueTwo"] == 152.0
 
+    @pytest.mark.parametrize("target", [
+        {"type": "hr", "low": 0, "high": 0},
+        {"type": "hr", "low": 0, "high": 150},
+        {"type": "hr", "low": None, "high": 150},
+        {"type": "pace", "low": 0, "high": 0},
+        {"type": "none", "low": 0, "high": 0},
+    ])
+    def test_empty_or_zero_targets_go_as_no_target(self, target):
+        w = build_workout(make_payload(target=target))
+        main = steps_of(w)[1]
+        assert main["targetType"]["workoutTargetTypeKey"] == "no.target"
+        assert "targetValueOne" not in main
+        assert "targetValueTwo" not in main
+
     def test_no_target(self):
         w = build_workout(make_payload(target=None))
         main = steps_of(w)[1]
@@ -476,3 +547,37 @@ class TestBuildWorkout:
         w = build_workout(make_payload(title=None, notes=None))
         assert w["workoutName"] == "tempo run"
         assert "description" not in w or w["description"] in (None, "")
+
+
+# ---------------------------------------------------------------------------
+# Workout tags (idempotent pushes)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkoutTags:
+    def test_fingerprint_changes_with_content_and_date(self):
+        base = make_payload()
+        assert workout_fingerprint(base) == workout_fingerprint(dict(base))
+        assert workout_fingerprint(base) != workout_fingerprint(make_payload(distanceKm=12))
+        assert workout_fingerprint(base) != workout_fingerprint(make_payload(date="2026-06-13"))
+        # The app's existing id is bookkeeping, not content.
+        assert workout_fingerprint(base) == workout_fingerprint(make_payload(existingGarminWorkoutId="5"))
+
+    def test_tag_is_appended_to_the_description(self):
+        w = tag_workout(build_workout(make_payload()), "sess-123", "abc123abc123")
+        assert w["description"] == "Rustig insturen, laatste 2k vlot\n\nlockin:sess-123:abc123abc123"
+        bare = tag_workout(build_workout(make_payload(notes=None)), "sess-123", "abc123abc123")
+        assert bare["description"] == "lockin:sess-123:abc123abc123"
+
+    def test_finds_tagged_workouts_for_one_session_only(self):
+        workouts = [
+            {"workoutId": 1, "description": "notes\n\n" + workout_tag("sess-1", "aaaaaaaaaaaa")},
+            {"workoutId": 2, "description": workout_tag("sess-10", "bbbbbbbbbbbb")},
+            {"workoutId": 3, "workoutName": "x", "description": None},
+            "garbage",
+            {"workoutId": 4, "workoutName": workout_tag("sess-1", "cccccccccccc")},
+        ]
+        assert tagged_session_fingerprints(workouts, "sess-1") == [
+            ("1", "aaaaaaaaaaaa"),
+            ("4", "cccccccccccc"),
+        ]

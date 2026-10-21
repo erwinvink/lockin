@@ -1,4 +1,4 @@
-import type { MetricSummary, MonthSummary, TrainingLog, TrendSummary } from "./types";
+import type { MetricSummary, MonthSummary, RollingTrendSummary, TrainingLog, TrendSummary } from "./types";
 
 type MetricName = "pullUps" | "pushUps" | "plankSeconds";
 type FlagName = "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds";
@@ -56,6 +56,85 @@ export function summarizeTrend(lastFullMonth: MonthSummary, previousFullMonth: M
     plankSecondsDelta,
     logCountDelta: lastFullMonth.logCount - previousFullMonth.logCount,
     label: positive > negative ? "improving" : negative > positive ? "declining" : "flat"
+  };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Rolling windows for plateau and decline detection. */
+export const ROLLING_TREND = {
+  windowDays: 21,
+  /** Logs of a metric each window needs before that metric is compared. */
+  minLogsPerWindow: 2
+} as const;
+
+/**
+ * Plateau and decline from rolling windows instead of calendar months: the
+ * best of the last 21 days against the best of the 21 days before, per goal
+ * metric. A metric is compared only when both windows hold at least two logs
+ * of it, so one odd session never decides the label. `sinceMs` (the plan
+ * block start) drops older logs, so a lower retest at a new block is not read
+ * as a decline against the old block.
+ */
+export function summarizeRollingTrend(logs: TrainingLog[], now: Date, sinceMs: number | null = null): RollingTrendSummary {
+  const { windowDays, minLogsPerWindow } = ROLLING_TREND;
+  const end = now.getTime();
+  const recentStart = end - windowDays * DAY_MS;
+  const previousStart = recentStart - windowDays * DAY_MS;
+  const eligible = logs.filter((log) => {
+    const at = Date.parse(log.completedAt);
+    return Number.isFinite(at) && at <= end && (sinceMs === null || at >= sinceMs);
+  });
+  const inWindow = (from: number, to: number) =>
+    eligible.filter((log) => {
+      const at = Date.parse(log.completedAt);
+      return at > from && at <= to;
+    });
+  const recentLogs = inWindow(recentStart, end);
+  const previousLogs = inWindow(previousStart, recentStart);
+  const recent = windowSummary(recentLogs, recentStart, end);
+  const previous = windowSummary(previousLogs, previousStart, recentStart);
+
+  const metricDelta = (metric: MetricName): number | null => {
+    const recentMetric = summarizeMetric(recentLogs, metric);
+    const previousMetric = summarizeMetric(previousLogs, metric);
+    if (recentMetric.count < minLogsPerWindow || previousMetric.count < minLogsPerWindow) return null;
+    return delta(recentMetric.best, previousMetric.best);
+  };
+  const pullUpsDelta = metricDelta("pullUps");
+  const pushUpsDelta = metricDelta("pushUps");
+  const plankSecondsDelta = metricDelta("plankSeconds");
+  const knownDeltas = [pullUpsDelta, pushUpsDelta, plankSecondsDelta].filter((value): value is number => value !== null);
+  const positive = knownDeltas.filter((value) => value > 0).length;
+  const negative = knownDeltas.filter((value) => value < 0).length;
+
+  return {
+    windowDays,
+    recent,
+    previous,
+    pullUpsDelta,
+    pushUpsDelta,
+    plankSecondsDelta,
+    logCountDelta: recentLogs.length - previousLogs.length,
+    label:
+      knownDeltas.length === 0
+        ? "insufficient_history"
+        : positive > negative
+          ? "improving"
+          : negative > positive
+            ? "declining"
+            : "flat"
+  };
+}
+
+function windowSummary(logs: TrainingLog[], from: number, to: number): RollingTrendSummary["recent"] {
+  return {
+    from: new Date(from).toISOString(),
+    to: new Date(to).toISOString(),
+    logCount: logs.length,
+    pullUps: summarizeMetric(logs, "pullUps").best,
+    pushUps: summarizeMetric(logs, "pushUps").best,
+    plankSeconds: summarizeMetric(logs, "plankSeconds").best
   };
 }
 

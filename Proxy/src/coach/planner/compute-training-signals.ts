@@ -1,4 +1,4 @@
-import type { CoachContext, GarminWellnessDay, RunSummary } from "./types";
+import type { CoachContext, CoachWellnessDay, RunSummary } from "./types";
 
 /**
  * Pre-computed numbers for the coach read. LLMs are unreliable at arithmetic
@@ -18,8 +18,13 @@ export type TrainingSignals = {
     longestRunLast6WeeksKm: number;
     /** Most recent three long-ish runs (one per week max), oldest first. */
     recentLongRunsKm: number[];
-    /** Share of runs in the last 4 weeks that were easy/recovery, 0-1. */
-    easyShareLast4Weeks: number | null;
+    /**
+     * Share of running time in the last 4 weeks at low intensity, 0-1: easy,
+     * recovery and long runs (long runs are mostly Zone 2). This is the
+     * 80/20 split by time: a normal build week reads about 0.8; well below
+     * 0.75 means too much hard running. Runs without a kind are left out.
+     */
+    lowIntensityTimeShareLast4Weeks: number | null;
     runCountLast7Days: number;
   };
   race: {
@@ -50,7 +55,7 @@ export type TrainingSignals = {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const EASY_KINDS = new Set(["easy", "recovery"]);
+const LOW_INTENSITY_KINDS = new Set(["easy", "recovery", "long"]);
 const SUPPRESSED_HRV = new Set(["UNBALANCED", "LOW", "POOR"]);
 
 export function computeTrainingSignals(context: CoachContext, now = new Date()): TrainingSignals | null {
@@ -75,7 +80,11 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
     .map((run) => run.elevationLossM)
     .filter((value): value is number => typeof value === "number" && value > 0);
 
-  const easyRunsWithKind = last28.filter((run) => typeof run.kind === "string" && run.kind.length > 0);
+  const runsWithKind = last28.filter((run) => typeof run.kind === "string" && run.kind.length > 0);
+  const kindTime = runsWithKind.reduce((total, run) => total + runSeconds(run), 0);
+  const lowIntensityTime = runsWithKind
+    .filter((run) => LOW_INTENSITY_KINDS.has(run.kind as string))
+    .reduce((total, run) => total + runSeconds(run), 0);
 
   const lastRun = runs.at(-1) ?? null;
 
@@ -90,10 +99,7 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
       last7DaysDescentM: descentValues.length > 0 ? descentValues.reduce((a, b) => a + b, 0) : null,
       longestRunLast6WeeksKm: round1(Math.max(0, ...last42.map((run) => run.distanceKm))),
       recentLongRunsKm: weeklyLongRuns(last28, now).map(round1),
-      easyShareLast4Weeks:
-        easyRunsWithKind.length > 0
-          ? round2(easyRunsWithKind.filter((run) => EASY_KINDS.has(run.kind as string)).length / easyRunsWithKind.length)
-          : null,
+      lowIntensityTimeShareLast4Weeks: kindTime > 0 ? round2(lowIntensityTime / kindTime) : null,
       runCountLast7Days: last7.length
     },
     race: raceSignals(running.raceGoal.raceDate, running.weeksToRace, now),
@@ -122,7 +128,7 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
 export const coachReferencePoints = [
   "Volume jumps: week-over-week load ratios are weak, contested evidence (acute:chronic ratios predict injury no better than chance in some cohorts) — treat a sharp rise vs the 4-week average as a hedged caution, never as an injury verdict.",
   "HRV gate: when overnight HRV is suppressed, favor easy work or rest that day; when balanced or rising, hard sessions are fine. Use it to gate intensity, not to rewrite the plan.",
-  "Taper: 8-14 days out, reduce running volume roughly 41-60% while keeping intensity and session frequency — do not add fitness in the final two weeks.",
+  "Taper: 15-21 days out run at most 80% of the pre-taper volume, 8-14 days out about 50-70% with one short quality session, and in race week only short shakeouts around the race — do not add fitness in the final two weeks.",
   "Downhill conditioning: trail runners who train downhill repeats show markedly less muscle damage and better strength retention; descent exposure matters for ultra prep, not just ascent.",
   "Strength serves the race: heavy (≥80% 1RM) strength work and plyometrics improve running economy — frame strength sessions as part of the ultra build, not a separate hobby.",
   "Long-run progression: grow the weekly long run gradually and respect recovery weeks; the longest recent run versus race distance is the key readiness gap to narrate."
@@ -135,6 +141,11 @@ function runsBetween(runs: RunSummary[], now: Date, daysBackStart: number, daysB
     const at = new Date(run.completedAt).getTime();
     return at > windowStart && at <= windowEnd;
   });
+}
+
+/** Moving time, or 6 min/km when a manual log has none. */
+function runSeconds(run: RunSummary): number {
+  return run.movingSeconds > 0 ? run.movingSeconds : Math.max(0, run.distanceKm) * 360;
 }
 
 function sumKm(runs: RunSummary[]): number {
@@ -164,7 +175,7 @@ function raceSignals(raceDate: string, weeksToRace: number, now: Date): Training
   return { daysToRace: days, weeksToRace, taperStatus };
 }
 
-function wellnessSignals(wellness: GarminWellnessDay[]): TrainingSignals["wellness"] {
+function wellnessSignals(wellness: CoachWellnessDay[]): TrainingSignals["wellness"] {
   const latest = [...wellness]
     .sort((a, b) => a.date.localeCompare(b.date))
     .at(-1);
@@ -184,10 +195,15 @@ function wellnessSignals(wellness: GarminWellnessDay[]): TrainingSignals["wellne
     latestDate: latest.date,
     hrvStatus: status.length > 0 ? status : null,
     hrvGate,
-    sleepScore: latest.sleepScore > 0 ? latest.sleepScore : null,
-    trainingReadiness: latest.trainingReadiness > 0 ? latest.trainingReadiness : null,
-    restingHr: latest.restingHr > 0 ? latest.restingHr : null
+    sleepScore: positiveOrNull(latest.sleepScore),
+    trainingReadiness: positiveOrNull(latest.trainingReadiness),
+    restingHr: positiveOrNull(latest.restingHr)
   };
+}
+
+// 0 (or null) means Garmin had no value: never a real low score.
+function positiveOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && value > 0 ? value : null;
 }
 
 function round1(value: number): number {

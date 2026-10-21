@@ -1,12 +1,28 @@
 export type ExerciseKind =
   | "pullUp"
-  | "pushUp"
-  | "plank"
+  | "negativePullUp"
+  | "bandAssistedPullUp"
+  | "invertedRow"
   | "scapularPull"
-  | "hollowHold"
-  | "inclinePushUp"
-  | "pikePushUp"
   | "deadHang"
+  | "archerPullUp"
+  | "lSitPullUp"
+  | "weightedPullUp"
+  | "pushUp"
+  | "inclinePushUp"
+  | "kneePushUp"
+  | "pikePushUp"
+  | "diamondPushUp"
+  | "declinePushUp"
+  | "deficitPushUp"
+  | "archerPushUp"
+  | "weightedPushUp"
+  | "plank"
+  | "sidePlank"
+  | "longLeverPlank"
+  | "rkcPlank"
+  | "weightedPlank"
+  | "hollowHold"
   | "shoulderMobility";
 
 export type SessionFocus = "pull" | "push" | "core" | "mixed" | "recovery";
@@ -25,6 +41,8 @@ export type PlannedEffort = {
 export type CoachRequest = {
   userId?: string;
   model: string;
+  /** The athlete's IANA time zone (e.g. "Europe/Amsterdam"); optional for old clients. */
+  timeZone?: string;
   baseline: { pullUps: number; pushUps: number; plankSeconds: number };
   goals: { pullUps: number; pushUps: number; plankSeconds: number };
   profileNotes: string;
@@ -33,9 +51,15 @@ export type CoachRequest = {
   trainingDays?: string[];
   trainingDayOffsets?: number[];
   equipment: string[];
+  /** Exercise names the app can show and log (newer apps); older apps get the legacy nine. */
+  supportedExercises?: string[];
   targetDate: string;
   trainingLogs: TrainingLog[];
   plannedSessions: PlannedSession[];
+  /** Local midnight the current plan block began (ISO-8601); optional for old clients. */
+  planBlockStartedAt?: string;
+  /** When the plan whose future sessions are in plannedSessions was generated (newer apps). */
+  currentPlanGeneratedAt?: string;
   running?: RunningRequest;
 };
 
@@ -71,6 +95,15 @@ export type PlannedSession = {
   focus: SessionFocus;
   status: string;
   exercises?: PlannedExercisePrescription[];
+  /** "running" for planned runs; older apps send nothing (strength assumed when exercises exist). */
+  discipline?: "strength" | "running";
+  /** Planned runs only (newer apps): what the planner prescribed. */
+  runKind?: string;
+  distanceKm?: number;
+  elevationMeters?: number;
+  durationMinutes?: number;
+  target?: RunTarget;
+  zone?: string;
 };
 
 export type PlannedExercisePrescription = {
@@ -110,6 +143,22 @@ export type TrendSummary = {
   label: "improving" | "flat" | "declining" | "insufficient_history";
 };
 
+/** Best of the last N days against the best of the N days before (see summarizeRollingTrend). */
+export type RollingTrendSummary = TrendSummary & {
+  windowDays: number;
+  recent: RollingWindowSummary;
+  previous: RollingWindowSummary;
+};
+
+export type RollingWindowSummary = {
+  from: string;
+  to: string;
+  logCount: number;
+  pullUps: number | null;
+  pushUps: number | null;
+  plankSeconds: number | null;
+};
+
 export type RPECalibrationSummary = {
   recentPlannedLogCount: number;
   averageDeltaLast5: number | null;
@@ -129,6 +178,8 @@ export type CoachContext = {
     trainingDayOffsets: number[];
     equipment: string[];
     targetDate: string;
+    /** Exercises the app supports; absent in hand-built contexts (then the full catalog). */
+    supportedExercises?: ExerciseKind[];
   };
   history: {
     last5Logs: TrainingLog[];
@@ -137,10 +188,21 @@ export type CoachContext = {
     lastFullMonth: MonthSummary;
     previousFullMonth: MonthSummary;
     twoFullMonthTrend: TrendSummary;
+    /** Plateau and decline evidence: the last 21 days against the 21 before (logs since the block start). */
+    rollingTrend?: RollingTrendSummary;
+    /** The current level: the baseline plus logs since the plan block start (all logs without one). */
     bestRecentTests: {
       pullUps: number | null;
       pushUps: number | null;
       plankSeconds: number | null;
+    };
+    /** Higher bests logged before the current block (context only). */
+    bestBeforeBlock?: {
+      blockStartedAt: string;
+      pullUps: number | null;
+      pushUps: number | null;
+      plankSeconds: number | null;
+      note: string;
     };
   };
   adherence: {
@@ -152,8 +214,12 @@ export type CoachContext = {
     completed: number;
     partial?: number;
     missed: number;
+    missedLast14Days?: number;
     deload: number;
+    /** Sessions from before today still marked planned (overdue). */
     pending?: number;
+    /** Today's sessions not done yet: open all day, outside the score. */
+    pendingToday?: number;
     adherenceScorePct?: number | null;
   };
   plannedWork: {
@@ -169,13 +235,102 @@ export type CoachContext = {
       pushUps: PlannedGoalTrend;
       plankSeconds: PlannedGoalTrend;
     };
+    recentGoalPerformance?: {
+      pullUps: RecentGoalPerformance;
+      pushUps: RecentGoalPerformance;
+      plankSeconds: RecentGoalPerformance;
+    };
   };
   readiness: {
     state: ContextState;
     riskFlags: string[];
   };
   running?: RunningContext;
-  garmin?: { wellness: GarminWellnessDay[] };
+  garmin?: { wellness: CoachWellnessDay[] };
+  /** Present when the app sent planBlockStartedAt. */
+  block?: PlanBlockContext;
+  /** Planned recovery weeks (computed from the request; absent in hand-built contexts). */
+  periodization?: PeriodizationContext;
+  /** The plan made earlier for the coming days, and what changed since (plan continuity). */
+  currentPlan?: CurrentPlanContext;
+};
+
+export type CurrentPlanRun = {
+  dayOffset: number;
+  title: string;
+  kind: string | null;
+  distanceKm: number | null;
+  elevationMeters: number | null;
+  target: RunTarget | null;
+};
+
+export type CurrentPlanStrengthSession = {
+  dayOffset: number;
+  title: string;
+  focus: SessionFocus;
+  hardestEffort: EffortLabel | null;
+  goalWork: Array<{ exercise: string; sets: number; target: number; effort: string | null }>;
+};
+
+export type CurrentPlanContext = {
+  /** When that plan was generated; null when unknown (then the last day counts). */
+  generatedAt: string | null;
+  /** "app": the planned sessions the app sent; "auto_plan": a newer plan from the auto-plan store. */
+  source: "app" | "auto_plan";
+  runs: CurrentPlanRun[];
+  strengthSessions: CurrentPlanStrengthSession[];
+  /** Computed reasons the plan may change; empty means keep it. */
+  changeSignals: string[];
+  keepUnlessChanged: boolean;
+  rule: string;
+};
+
+export type BlockWeekClassification = "loading" | "recovery" | "reactive_offload" | "taper_or_race" | "low_volume" | "no_training";
+
+/** One complete plan-block week as the recovery-week rule read it. */
+export type BlockWeekSummary = {
+  blockWeek: number;
+  startsAt: string;
+  runningKm: number | null;
+  hardStrengthSets: number;
+  classification: BlockWeekClassification;
+  note: string;
+};
+
+/** Planned recovery weeks (3:1) on the plan-block calendar; see periodization.ts. */
+export type PeriodizationContext = {
+  cycle: "3:1";
+  /** Block week of weekStart (1-based); null without a block start. */
+  blockWeek: number | null;
+  /** Loading weeks in a row since the block start or the last unloading week. */
+  loadingWeeksSinceRecovery: number;
+  lastUnloadingWeek: { blockWeek: number; startsAt: string; classification: BlockWeekClassification; note: string } | null;
+  recoveryWeekDue: boolean;
+  recoveryWeekReason: string;
+  /** The limits of this recovery week, when one is due. */
+  recoveryWeek: {
+    startsAt: string;
+    endsAt: string;
+    /** Average weekly km of the four block weeks before this one. */
+    referenceWeeklyKm: number | null;
+    weeklyKmCap: number | null;
+    targetWeeklyKm: { low: number; high: number } | null;
+    longRunCapKm: number | null;
+    maxQualityRuns: number;
+    /** Hard strength sets prescribed in the last loading week. */
+    referenceHardStrengthSets: number | null;
+    hardStrengthSetCap: number | null;
+    maxHardStrengthSessions: number;
+    maxGoalSetsPerExercise: number;
+  } | null;
+  recentWeeks: BlockWeekSummary[];
+};
+
+/** Where the planned week sits in the athlete's current plan block. */
+export type PlanBlockContext = {
+  startedAt: string;
+  /** Whole weeks from the block start to weekStart, 1-based. */
+  weekInBlock: number;
 };
 
 export type PlannedGoalTrend = {
@@ -183,6 +338,23 @@ export type PlannedGoalTrend = {
   latestVolume: number | null;
   flatCount: number;
   latestDate: string | null;
+  /** Top working prescription of the latest past week (tests excluded). */
+  latestWorkingTarget?: number | null;
+  latestWorkingSets?: number | null;
+  latestWorkingDate?: string | null;
+};
+
+export type RecentGoalPerformance = {
+  latestLoggedBest: number | null;
+  prescribedTarget: number | null;
+  prescribedSets: number | null;
+  delta: number | null;
+  clean: boolean | null;
+  consecutiveCleanCompletionsAtStandard: number;
+  completedAt: string | null;
+  latestTestDate: string | null;
+  /** The plan block start: the baseline set there counts as a fresh test for test spacing. */
+  baselineSetAt?: string | null;
 };
 
 export type WeeklyPlan = {
@@ -284,7 +456,12 @@ export type CoachSnapshot = {
 
 export type RunKind = "easy" | "long" | "recovery" | "hills" | "tempo" | "intervals";
 
-export type RunTarget = { type: "pace" | "hr"; low: number; high: number };
+/**
+ * Watch target for a run. The model only writes "pace" or "hr"; the proxy
+ * writes "none" (low 0, high 0) when it drops an implausible target, which
+ * the app and the Garmin sidecar treat as an effort-based run.
+ */
+export type RunTarget = { type: "pace" | "hr" | "none"; low: number; high: number };
 
 export type RunningWeek = {
   summary: string;
@@ -337,6 +514,7 @@ export type RunningRequest = {
   recentRuns: RunSummary[];
 };
 
+/** One wellness day as the Garmin sidecar sends it (and /garmin/snapshot passes on). */
 export type GarminWellnessDay = {
   date: string;
   sleepScore: number;
@@ -346,6 +524,20 @@ export type GarminWellnessDay = {
   bodyBattery: number;
   trainingReadiness: number;
   restingHr: number;
+  /** Fields whose Garmin call failed; their 0/"" values are placeholders, not data. */
+  unavailableMetrics?: string[];
+};
+
+/** A wellness day inside the coach context: missing or failed metrics are null. */
+export type CoachWellnessDay = {
+  date: string;
+  sleepScore: number | null;
+  sleepSeconds: number | null;
+  hrvStatus: string | null;
+  hrvMs: number | null;
+  bodyBattery: number | null;
+  trainingReadiness: number | null;
+  restingHr: number | null;
 };
 
 export type RunningContext = RunningRequest & { weeksToRace: number };

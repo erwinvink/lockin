@@ -1,33 +1,66 @@
 {
-  "version": "2026-05-11",
+  "version": "2026-10-21",
+  "equipmentRule": "requiredEquipment must all be in the athlete's equipment; when anyOfEquipment is present, at least one of it must be too. Exercise names are exact: use only the keys below.",
+  "selectionRules": {
+    "pullUps": [
+      { "currentMax": "0-2", "use": "negativePullUp (3-5 s lowering, 3-5 reps), bandAssistedPullUp when a resistance band is available, invertedRow for pulling volume, scapularPull and deadHang as support; full pullUp only as singles inside the working cap." },
+      { "currentMax": "3-8", "use": "submaximal pullUp sets inside the working cap as the main work, negativePullUp as a finisher, invertedRow or bandAssistedPullUp for extra volume." },
+      { "currentMax": "9-12", "use": "pullUp volume sets; archerPullUp or lSitPullUp in small doses for technique and strength." },
+      { "currentMax": "13+", "use": "keep one pullUp volume day for the goal and add strength work: weightedPullUp (with dumbbells or a loaded backpack), archerPullUp or lSitPullUp." }
+    ],
+    "pushUps": [
+      { "currentMax": "0-9", "use": "inclinePushUp and kneePushUp for volume; full pushUp in small sets inside the working cap." },
+      { "currentMax": "10-25", "use": "full pushUp sets as the main work; inclinePushUp for extra volume." },
+      { "currentMax": "26-40", "use": "full pushUp sets; diamondPushUp or declinePushUp for variation and triceps or shoulder strength; pikePushUp as support." },
+      { "currentMax": "41+", "use": "keep one high-rep pushUp day for the goal and add harder variants instead of ever more reps: declinePushUp, deficitPushUp, archerPushUp, or weightedPushUp with a loaded backpack." }
+    ],
+    "plankSeconds": [
+      { "currentMax": "0-29 s", "use": "short plank holds (15-20 s) and hollowHold regressions." },
+      { "currentMax": "30-120 s", "use": "plank holds inside the working cap; sidePlank for lateral core." },
+      { "currentMax": "121 s+", "use": "harder variants instead of longer holds: longLeverPlank, rkcPlank, weightedPlank (loaded backpack); keep one plank hold a week for the goal." }
+    ]
+  },
   "exercises": {
     "pullUp": {
       "title": "Pull-up",
       "goalMetric": "pullUps",
+      "family": "pull",
       "requiredEquipment": ["pullUpBar"],
       "formStandard": "Dead hang start, chin over bar, no kipping, controlled lower.",
       "trainingRole": ["goal", "pull-strength"],
       "defaultRestSeconds": 120
     },
-    "pushUp": {
-      "title": "Push-up",
-      "goalMetric": "pushUps",
-      "requiredEquipment": [],
-      "formStandard": "Locked plank body line, controlled depth, full elbow extension.",
-      "trainingRole": ["goal", "push-volume"],
+    "negativePullUp": {
+      "title": "Negative pull-up",
+      "goalMetric": null,
+      "family": "pull",
+      "requiredEquipment": ["pullUpBar"],
+      "formStandard": "Jump or step to chin over bar, lower under control for 3-5 seconds to a full hang.",
+      "trainingRole": ["pull-strength", "regression"],
       "defaultRestSeconds": 90
     },
-    "plank": {
-      "title": "Plank",
-      "goalMetric": "plankSeconds",
-      "requiredEquipment": [],
-      "formStandard": "Straight body line, no sagging hips, steady breathing.",
-      "trainingRole": ["goal", "core-endurance"],
+    "bandAssistedPullUp": {
+      "title": "Band-assisted pull-up",
+      "goalMetric": null,
+      "family": "pull",
+      "requiredEquipment": ["pullUpBar", "resistanceBand"],
+      "formStandard": "Band looped over the bar under a knee or foot; strict pull-up form, full range.",
+      "trainingRole": ["pull-strength", "regression"],
       "defaultRestSeconds": 90
+    },
+    "invertedRow": {
+      "title": "Inverted row",
+      "goalMetric": null,
+      "family": "pull",
+      "requiredEquipment": [],
+      "formStandard": "Under a low bar or a sturdy table edge, body straight, pull the chest to the bar, lower under control.",
+      "trainingRole": ["pull-volume", "regression"],
+      "defaultRestSeconds": 75
     },
     "scapularPull": {
       "title": "Scapular pull",
       "goalMetric": null,
+      "family": "pull",
       "requiredEquipment": ["pullUpBar"],
       "formStandard": "Arms straight, shoulder blades move without elbow bend.",
       "trainingRole": ["pull-support", "technique"],
@@ -36,38 +69,181 @@
     "deadHang": {
       "title": "Dead hang",
       "goalMetric": null,
+      "family": "pull",
       "requiredEquipment": ["pullUpBar"],
       "formStandard": "Full hang with controlled shoulders and no swinging.",
       "trainingRole": ["grip", "pull-support"],
       "defaultRestSeconds": 60
     },
-    "hollowHold": {
-      "title": "Hollow hold",
+    "archerPullUp": {
+      "title": "Archer pull-up",
       "goalMetric": null,
+      "family": "pull",
+      "requiredEquipment": ["pullUpBar"],
+      "formStandard": "Wide grip, pull toward one hand while the other arm stays nearly straight; alternate sides.",
+      "trainingRole": ["pull-strength", "progression"],
+      "defaultRestSeconds": 120
+    },
+    "lSitPullUp": {
+      "title": "L-sit pull-up",
+      "goalMetric": null,
+      "family": "pull",
+      "requiredEquipment": ["pullUpBar"],
+      "formStandard": "Legs held straight out in an L for the whole rep, strict pull-up, no swing.",
+      "trainingRole": ["pull-strength", "core", "progression"],
+      "defaultRestSeconds": 120
+    },
+    "weightedPullUp": {
+      "title": "Weighted pull-up",
+      "goalMetric": null,
+      "family": "pull",
+      "requiredEquipment": ["pullUpBar"],
+      "anyOfEquipment": ["dumbbells", "backpack"],
+      "formStandard": "Strict pull-up with a dumbbell between the feet or a loaded backpack; name the load in intensity.",
+      "trainingRole": ["pull-strength", "progression"],
+      "defaultRestSeconds": 150
+    },
+    "pushUp": {
+      "title": "Push-up",
+      "goalMetric": "pushUps",
+      "family": "push",
       "requiredEquipment": [],
-      "formStandard": "Low back pressed down, ribs tucked, controlled breathing.",
-      "trainingRole": ["core-support"],
-      "defaultRestSeconds": 45
+      "formStandard": "Locked plank body line, controlled depth, full elbow extension.",
+      "trainingRole": ["goal", "push-volume"],
+      "defaultRestSeconds": 90
     },
     "inclinePushUp": {
       "title": "Incline push-up",
       "goalMetric": null,
+      "family": "push",
       "requiredEquipment": [],
       "formStandard": "Strict push-up line with hands elevated.",
       "trainingRole": ["push-support", "regression"],
       "defaultRestSeconds": 75
     },
+    "kneePushUp": {
+      "title": "Knee push-up",
+      "goalMetric": null,
+      "family": "push",
+      "requiredEquipment": [],
+      "formStandard": "Knees down, straight line from knees to shoulders, chest to the floor, full lockout.",
+      "trainingRole": ["push-volume", "regression"],
+      "defaultRestSeconds": 60
+    },
     "pikePushUp": {
       "title": "Pike push-up",
       "goalMetric": null,
+      "family": "push",
       "requiredEquipment": [],
       "formStandard": "Hips high, controlled press, head moves toward floor.",
       "trainingRole": ["push-support", "shoulders"],
       "defaultRestSeconds": 75
     },
+    "diamondPushUp": {
+      "title": "Diamond push-up",
+      "goalMetric": null,
+      "family": "push",
+      "requiredEquipment": [],
+      "formStandard": "Hands together under the chest, elbows close to the body, full range.",
+      "trainingRole": ["push-strength", "triceps", "progression"],
+      "defaultRestSeconds": 90
+    },
+    "declinePushUp": {
+      "title": "Decline push-up",
+      "goalMetric": null,
+      "family": "push",
+      "requiredEquipment": [],
+      "formStandard": "Feet raised on a step or bench, body straight, chest to the floor.",
+      "trainingRole": ["push-strength", "progression"],
+      "defaultRestSeconds": 90
+    },
+    "deficitPushUp": {
+      "title": "Deficit push-up",
+      "goalMetric": null,
+      "family": "push",
+      "requiredEquipment": [],
+      "formStandard": "Hands on two raised surfaces (books, parallettes), chest below hand level, controlled.",
+      "trainingRole": ["push-strength", "progression"],
+      "defaultRestSeconds": 90
+    },
+    "archerPushUp": {
+      "title": "Archer push-up",
+      "goalMetric": null,
+      "family": "push",
+      "requiredEquipment": [],
+      "formStandard": "Wide hands, lower toward one hand while the other arm stays straight; alternate sides.",
+      "trainingRole": ["push-strength", "progression"],
+      "defaultRestSeconds": 90
+    },
+    "weightedPushUp": {
+      "title": "Weighted push-up",
+      "goalMetric": null,
+      "family": "push",
+      "requiredEquipment": [],
+      "anyOfEquipment": ["backpack"],
+      "formStandard": "Strict push-up wearing a loaded backpack; name the load in intensity.",
+      "trainingRole": ["push-strength", "progression"],
+      "defaultRestSeconds": 120
+    },
+    "plank": {
+      "title": "Plank",
+      "goalMetric": "plankSeconds",
+      "family": "core",
+      "requiredEquipment": [],
+      "formStandard": "Straight body line, no sagging hips, steady breathing.",
+      "trainingRole": ["goal", "core-endurance"],
+      "defaultRestSeconds": 90
+    },
+    "sidePlank": {
+      "title": "Side plank",
+      "goalMetric": null,
+      "family": "core",
+      "requiredEquipment": [],
+      "formStandard": "On one forearm, hips high, body in one line; hold each side for the prescribed seconds.",
+      "trainingRole": ["core-support", "lateral-core"],
+      "defaultRestSeconds": 45
+    },
+    "longLeverPlank": {
+      "title": "Long-lever plank",
+      "goalMetric": null,
+      "family": "core",
+      "requiredEquipment": [],
+      "formStandard": "Forearms placed ahead of the shoulders (or hands far forward), ribs down, glutes tight.",
+      "trainingRole": ["core-strength", "progression"],
+      "defaultRestSeconds": 75
+    },
+    "rkcPlank": {
+      "title": "RKC plank",
+      "goalMetric": null,
+      "family": "core",
+      "requiredEquipment": [],
+      "formStandard": "Maximal-tension plank: elbows pulled toward the toes, glutes and quads squeezed; short holds (10-20 s).",
+      "trainingRole": ["core-strength", "progression"],
+      "defaultRestSeconds": 75
+    },
+    "weightedPlank": {
+      "title": "Weighted plank",
+      "goalMetric": null,
+      "family": "core",
+      "requiredEquipment": [],
+      "anyOfEquipment": ["backpack", "dumbbells"],
+      "formStandard": "Strict plank with a loaded backpack or a dumbbell resting on the upper back; name the load in intensity.",
+      "trainingRole": ["core-strength", "progression"],
+      "defaultRestSeconds": 90
+    },
+    "hollowHold": {
+      "title": "Hollow hold",
+      "goalMetric": null,
+      "family": "core",
+      "requiredEquipment": [],
+      "formStandard": "Low back pressed down, ribs tucked, controlled breathing.",
+      "trainingRole": ["core-support"],
+      "defaultRestSeconds": 45
+    },
     "shoulderMobility": {
       "title": "Shoulder mobility",
       "goalMetric": null,
+      "family": "mobility",
       "requiredEquipment": [],
       "formStandard": "Pain-free range, controlled movement, no forcing.",
       "trainingRole": ["warm-up", "recovery"],
