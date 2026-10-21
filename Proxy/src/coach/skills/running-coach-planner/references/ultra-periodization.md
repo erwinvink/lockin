@@ -39,7 +39,7 @@ A standard build week for an athlete with an established base: the long run, one
 
 - Keep roughly 80% of weekly running time easy (Zone 2, conversational) and at most 20% hard (tempo, intervals, hard hills).
 - Easy days stay easy. Recovery runs carry no quality content. Use `guardrails.easyReference` (the athlete's own recent easy runs) as the easy pace and heart-rate band.
-- `trainingSignals.running.easyShareLast4Weeks` shows the recent easy share of runs with a known kind; when it is well below 0.7, favor easy running this week.
+- `trainingSignals.running.easyShareLast4Weeks` is the share of recent runs labelled easy or recovery. Long runs and quality sessions count as not easy, so a normal week of a long run, one quality session and two easy runs reads 0.5. Only a value well below that (most runs hard) is a reason to favor easy running; do not call a 0.5 share low.
 
 ## Back-to-Back Long Runs
 
