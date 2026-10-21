@@ -1202,6 +1202,36 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(combined.strengthWeek.sessions.first?.exercises.first?.exercise, "pullUp")
     }
 
+    func testCoachChatResponseDecodesFractionalSecondDatesAndTheQuickAnswerFlag() throws {
+        // toISOString() output; plain `.iso8601` rejects the ".123" on iOS 17.
+        let modelJSON = """
+        {
+          "answer": "Hold the plan today.",
+          "evidence": ["Pain 4/10 on 21 Jun"],
+          "followUpPrompts": ["How hard should it feel?", "Can I run tomorrow?"],
+          "memorySummary": "",
+          "contextState": "building",
+          "answerKind": "today",
+          "usedModel": true,
+          "generatedAt": "2026-10-21T10:15:30.123Z"
+        }
+        """
+        let model = try JSONDecoder.coachDecoder.decode(CoachChatResponse.self, from: Data(modelJSON.utf8))
+        XCTAssertTrue(model.usedModel)
+        XCTAssertEqual(model.followUpPrompts, ["How hard should it feel?", "Can I run tomorrow?"])
+        XCTAssertEqual(model.generatedAt.timeIntervalSince1970, 1_792_577_730.123, accuracy: 0.001)
+
+        let fallbackJSON = modelJSON
+            .replacingOccurrences(of: "\"usedModel\": true", with: "\"usedModel\": false")
+            .replacingOccurrences(of: "30.123Z", with: "30Z")
+        let fallback = try JSONDecoder.coachDecoder.decode(CoachChatResponse.self, from: Data(fallbackJSON.utf8))
+        XCTAssertFalse(fallback.usedModel)
+        XCTAssertEqual(fallback.generatedAt.timeIntervalSince1970, 1_792_577_730, accuracy: 0.001)
+
+        XCTAssertEqual(parseCoachDate("2026-10-21T12:15:30+02:00")?.timeIntervalSince1970, 1_792_577_730)
+        XCTAssertNil(parseCoachDate("21 October 2026"))
+    }
+
     func testGarminStatusResponseDecodesProxyShape() throws {
         let degradedJSON = """
         { "ok": false, "userId": "user-1", "loggedIn": true, "state": "connected", "connectedEmail": "runner@example.com", "lastError": "Garmin service timed out." }
