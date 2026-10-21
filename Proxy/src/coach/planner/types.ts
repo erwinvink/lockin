@@ -306,7 +306,12 @@ export type CoachSnapshot = {
 
 export type RunKind = "easy" | "long" | "recovery" | "hills" | "tempo" | "intervals";
 
-export type RunTarget = { type: "pace" | "hr"; low: number; high: number };
+/**
+ * Watch target for a run. The model only writes "pace" or "hr"; the proxy
+ * writes "none" (low 0, high 0) when it drops an implausible target, which
+ * the app and the Garmin sidecar treat as an effort-based run.
+ */
+export type RunTarget = { type: "pace" | "hr" | "none"; low: number; high: number };
 
 export type RunningWeek = {
   summary: string;

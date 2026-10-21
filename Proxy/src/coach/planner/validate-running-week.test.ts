@@ -220,14 +220,19 @@ test("rejects a long run jumping more than 40% past the recent longest run witho
   assert.ok(result.messages.some((message) => message.includes("40%")));
 });
 
-test("accepts the same long-run jump when safety flags explain it", () => {
+// Finding: any safety flag used to waive the long-run cap. Flags are notes now.
+test("a safety flag no longer waives the 1.4x long-run cap", () => {
   const week = validWeek();
   week.sessions[2] = { ...week.sessions[2], distanceKm: 30, durationMinutes: 195 };
   week.safetyFlags = ["Race distance demands a longer run; the rest of the week stays easy."];
 
   const result = validateRunningWeek(week, baseContext);
 
-  assert.deepEqual(result, { accepted: true, messages: [] });
+  assert.equal(result.accepted, false);
+  const message = result.messages.find((m) => m.includes("40%"));
+  assert.ok(message);
+  assert.ok(message.includes("30 km") && message.includes("cap 28 km") && message.includes("20 km"));
+  assert.ok(message.includes("safety flags cannot waive"));
 });
 
 test("rejects a week where hard sessions outnumber half the runs without safety flags", () => {
@@ -240,14 +245,18 @@ test("rejects a week where hard sessions outnumber half the runs without safety 
   assert.ok(result.messages.some((message) => message.includes("hard running")));
 });
 
-test("accepts a hard-heavy week when safety flags explain it", () => {
+// Finding: any safety flag used to waive the hard-run ratio. Flags are notes now.
+test("a safety flag no longer waives the hard-run cap", () => {
   const week = validWeek();
   week.sessions[0] = { ...week.sessions[0], kind: "hills" };
   week.safetyFlags = ["Deliberate back-to-back stimulus before next week's recovery block."];
 
   const result = validateRunningWeek(week, baseContext);
 
-  assert.deepEqual(result, { accepted: true, messages: [] });
+  assert.equal(result.accepted, false);
+  const message = result.messages.find((m) => m.includes("hard running"));
+  assert.ok(message);
+  assert.ok(message.includes("3 hard runs") && message.includes("capped at 2"));
 });
 
 test("rejects a target whose low bound exceeds its high bound", () => {
@@ -459,6 +468,8 @@ test("skips long-run placement when longRunDayOffset is absent", () => {
   const context = contextWith({ longRunDayOffset: undefined });
   const week = validWeek();
   week.sessions[1] = { ...week.sessions[1], distanceKm: 24, durationMinutes: 150 };
+  // Keep the week inside the weekly volume cap (51.8 km from the 45 km baseline).
+  week.sessions[2] = { ...week.sessions[2], distanceKm: 12, durationMinutes: 75 };
 
   const result = validateRunningWeek(week, context);
 
@@ -706,12 +717,24 @@ test("rejects an all-easy build week far from the race without safety flags", ()
   assert.ok(result.messages.some((m) => m.includes("at least one quality session")));
 });
 
-test("accepts an all-easy week with safety flags, in taper, or with few runs", () => {
+test("accepts an all-easy week for a computed reason, in taper, or with few runs, but not for a safety flag", () => {
+  // Finding: a safety flag used to excuse an all-easy build week.
   const flagged = raceExemptionWeek();
   flagged.sessions = flagged.sessions.map((s) => ({ ...s, kind: "easy", distanceKm: 6 }));
   flagged.safetyFlags = ["Recovery week after a 15% volume block."];
   assert.equal(
     validateRunningWeek(flagged, { ...baseContext, running: { ...baseRunning, weeksToRace: 10 } }).accepted,
+    false
+  );
+
+  const overreaching = raceExemptionWeek();
+  overreaching.sessions = overreaching.sessions.map((s) => ({ ...s, kind: "easy", distanceKm: 6 }));
+  assert.equal(
+    validateRunningWeek(overreaching, {
+      ...baseContext,
+      readiness: { state: "overreaching", riskFlags: ["recent_effort_above_plan"] },
+      running: { ...baseRunning, weeksToRace: 10 }
+    }).accepted,
     true
   );
 
