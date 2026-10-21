@@ -1,6 +1,7 @@
 import { COACH_CHAT_MAX_MESSAGES, truncateText, type CoachChatMessage } from "./chat";
 import { localDateParts, validTimeZone } from "./local-time";
 import { disciplineCoachSystemPrompt, disciplineCoachTemperament } from "./planner/coach-temperament";
+import { EXERCISE_CATALOG, isExerciseKind } from "./planner/exercise-catalog";
 import type { TrainingSignals } from "./planner/compute-training-signals";
 import type {
   CoachContext,
@@ -368,7 +369,7 @@ function exerciseName(exercise: string): string {
     case "pikePushUp": return "pike push-ups";
     case "deadHang": return "dead hang";
     case "shoulderMobility": return "shoulder mobility";
-    default: return humanize(exercise);
+    default: return isExerciseKind(exercise) ? EXERCISE_CATALOG[exercise].title.toLowerCase() : humanize(exercise);
   }
 }
 

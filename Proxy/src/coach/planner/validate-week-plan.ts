@@ -11,6 +11,7 @@ import {
   type GoalMetric,
   type MetricProgression
 } from "./strength-guardrails";
+import { EXERCISE_KINDS, missingEquipment } from "./exercise-catalog";
 import {
   hardSetCount,
   isHardLabel,
@@ -54,17 +55,7 @@ const contextStates = new Set<ContextState>([
 const sessionFocuses = new Set<SessionFocus>(["pull", "push", "core", "mixed", "recovery"]);
 const effortLabels = new Set<EffortLabel>(["light", "medium", "hard", "very_hard", "max_output"]);
 const effortStimuli = new Set<EffortStimulus>(["recovery", "technique", "volume", "strength", "test"]);
-const exerciseKinds = new Set<ExerciseKind>([
-  "pullUp",
-  "pushUp",
-  "plank",
-  "scapularPull",
-  "hollowHold",
-  "inclinePushUp",
-  "pikePushUp",
-  "deadHang",
-  "shoulderMobility"
-]);
+const exerciseKinds = new Set<ExerciseKind>(EXERCISE_KINDS);
 const loggingFields = new Set(["pullUps", "pushUps", "plankSeconds"]);
 const runningTitlePattern = /\b(?:easy|long|recovery|tempo|interval)\s+run\b|\brunning\b|\brun\b|\bjog(?:ging)?\b|\bintervals\b/i;
 const phaseSummaryPattern = /^(?:Build|Offload|Restore|Maintenance|Assessment):/;
@@ -245,7 +236,14 @@ export function validateWeeklyPlan(
       }
 
       if (typeof exercise.exercise !== "string" || !exerciseKinds.has(exercise.exercise as ExerciseKind)) {
-        messages.push(`Session ${sessionIndex + 1} has an unknown exercise.`);
+        messages.push(
+          `Session ${sessionIndex + 1} has an unknown exercise ${JSON.stringify(exercise.exercise)}; use an exact name from exercise-library.json (${EXERCISE_KINDS.join(", ")}).`
+        );
+      } else {
+        const missing = missingEquipment(exercise.exercise as ExerciseKind, context.profile.equipment);
+        if (missing) {
+          messages.push(`Session ${sessionIndex + 1} uses ${exercise.exercise}: ${missing}, which the athlete's equipment (${context.profile.equipment.join(", ")}) does not include. Pick an exercise from the same ladder that fits.`);
+        }
       }
 
       const sets = exercise.sets;

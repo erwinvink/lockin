@@ -1,4 +1,5 @@
 import { flatGoalMetricsRequiringProgression } from "./coach-temperament";
+import { exerciseLadder } from "./exercise-catalog";
 import {
   hardSetCount,
   isHardLabel,
@@ -310,6 +311,9 @@ export function strengthGuardrailsForPrompt(
       ])
     ),
     phase: strengthPhaseForPrompt(strengthPhase(context)),
+    exerciseLadder: exerciseLadder(context.history.bestRecentTests, context.profile.equipment),
+    exerciseLadderRule:
+      "Pick goal and support exercises from the exerciseLadder step for the athlete's current max (selectionRules in exercise-library.json); use exact exercise names from the library. Equipment is enforced: an exercise whose equipment the athlete lacks is sent back for repair. Variants (negatives, band-assisted, rows, weighted, archer, decline, side or long-lever planks) are support work and do not log goal numbers; keep the goal exercise itself in the week whenever the current max allows it.",
     workingCapRule:
       "Working reps or hold seconds per set must not exceed maxPerSet, except stimulus test. Over-cap values are lowered to the cap. basedOnBest is the current level: the baseline set at the plan block start plus logs since then. olderBestBeforeThisBlock is context only; never plan from it.",
     goalSetsPerExercise: STRENGTH_LIMITS.goalSets,
