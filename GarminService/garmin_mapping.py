@@ -305,7 +305,9 @@ def _step(order: int, step_type: dict, end_condition: dict, end_value: float,
             step["targetType"] = dict(_TARGET_SPEED)
             step["targetValueOne"] = round(1000.0 / slow_sec, 4)
             step["targetValueTwo"] = round(1000.0 / fast_sec, 4)
-        elif target_type == "hr" and low is not None and high is not None:
+        elif target_type == "hr" and low and high and low > 0 and high > 0:
+            # A 0-0 band would tell the watch to alarm on every heartbeat;
+            # anything without two positive bounds goes as no target.
             step["targetType"] = dict(_TARGET_HR)
             step["targetValueOne"] = float(min(low, high))
             step["targetValueTwo"] = float(max(low, high))

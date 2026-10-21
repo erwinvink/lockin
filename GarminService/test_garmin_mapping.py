@@ -508,6 +508,20 @@ class TestBuildWorkout:
         assert main["targetValueOne"] == 138.0
         assert main["targetValueTwo"] == 152.0
 
+    @pytest.mark.parametrize("target", [
+        {"type": "hr", "low": 0, "high": 0},
+        {"type": "hr", "low": 0, "high": 150},
+        {"type": "hr", "low": None, "high": 150},
+        {"type": "pace", "low": 0, "high": 0},
+        {"type": "none", "low": 0, "high": 0},
+    ])
+    def test_empty_or_zero_targets_go_as_no_target(self, target):
+        w = build_workout(make_payload(target=target))
+        main = steps_of(w)[1]
+        assert main["targetType"]["workoutTargetTypeKey"] == "no.target"
+        assert "targetValueOne" not in main
+        assert "targetValueTwo" not in main
+
     def test_no_target(self):
         w = build_workout(make_payload(target=None))
         main = steps_of(w)[1]
