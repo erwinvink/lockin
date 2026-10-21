@@ -144,7 +144,7 @@ final class FitnessAppUITests: XCTestCase {
     func testOnboardingScreenShowsGoalSetup() {
         let app = launchFreshApp()
 
-        XCTAssertTrue(app.images["lockin-wordmark"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Set up lockin"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Create profile"].exists)
     }
 
@@ -252,7 +252,7 @@ final class FitnessAppUITests: XCTestCase {
         tapWhenReady(app.buttons["Wipe all app data"], in: app)
         XCTAssertTrue(app.alerts["Wipe all app data?"].waitForExistence(timeout: 5))
         app.alerts["Wipe all app data?"].buttons["Wipe everything"].tap()
-        XCTAssertTrue(app.images["lockin-wordmark"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Set up lockin"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Create profile"].exists)
     }
 

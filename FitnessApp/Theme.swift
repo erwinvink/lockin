@@ -28,12 +28,6 @@ enum AppTheme {
     static let accentInk = Color.white
     static let warning = markerRed
 
-    // Legacy aliases so screens not yet redrawn stay on-palette.
-    static let gold = accent
-    static let goldSoft = accent.opacity(0.08)
-    static let accentSoft = accent.opacity(0.08)
-    static let warningSoft = markerRed.opacity(0.10)
-
     // MARK: Geometry
     static let screenMargin: CGFloat = 20
     static let sectionSpacing: CGFloat = 22
@@ -156,23 +150,9 @@ extension Font {
     }
 }
 
-/// Small label ("STREAK", "OPEN ACTIVITIES"). Callers pass the final string —
-/// UI tests assert the text verbatim.
-struct MicroLabel: View {
-    var text: String
-    var color: Color = AppTheme.muted
-
-    var body: some View {
-        Text(text)
-            .font(.trail(12, .semibold, relativeTo: .caption1))
-            .tracking(0.6)
-            .foregroundStyle(color)
-    }
-}
-
 // MARK: - Hairlines and sections
 
-/// 1pt rule between rows and around ruled sections.
+/// 1pt rule between rows.
 struct Hairline: View {
     var body: some View {
         Rectangle()
@@ -223,19 +203,6 @@ struct CardModifier: ViewModifier {
 extension View {
     func card(padding: CGFloat = 16) -> some View {
         modifier(CardModifier(padding: padding))
-    }
-
-    func panel() -> some View {
-        card()
-    }
-
-    /// Ruled section: hairlines above and below, open background.
-    func ruled(verticalPadding: CGFloat = 14) -> some View {
-        VStack(spacing: 0) {
-            Hairline()
-            self.padding(.vertical, verticalPadding)
-            Hairline()
-        }
     }
 
     /// Input treatment shared by every free-text field.

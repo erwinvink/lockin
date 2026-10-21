@@ -1,58 +1,6 @@
 import SwiftUI
 
-// MARK: - Brand
-
-/// Onboarding brand block. The wordmark is template-rendered so it sits on
-/// the dark canvas in warm off-white.
-struct BrandHeader: View {
-    var subtitle: String?
-
-    var body: some View {
-        VStack(alignment: .center, spacing: 12) {
-            Image("LockinWordmark")
-                .renderingMode(.template)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 188, height: 36)
-                .foregroundStyle(AppTheme.text)
-                .accessibilityLabel("lockin")
-                .accessibilityIdentifier("lockin-wordmark")
-            if let subtitle {
-                Text(subtitle)
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(AppTheme.muted)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
 // MARK: - Chips and metadata
-
-/// Quiet status chip: hairline capsule, no fill, color carried by the text
-/// and icon. The single chip shape in the app.
-struct StatusPill: View {
-    var text: String
-    var color: Color = AppTheme.accent
-    var systemImage: String? = "checkmark.circle.fill"
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.system(size: 10, weight: .semibold))
-            }
-            Text(text)
-                .font(.trail(12, .semibold, relativeTo: .caption1))
-                .lineLimit(1)
-        }
-        .foregroundStyle(color)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .overlay(Capsule().strokeBorder(AppTheme.divider, lineWidth: 1))
-    }
-}
 
 /// Effort as a trail mark plus words: "Medium, RPE 6". The mark carries the
 /// grade; the words make sure colour never carries meaning alone.
@@ -84,31 +32,6 @@ struct EffortPill: View {
         let base = prefix.map { "\($0): \(label.title)" } ?? label.title
         guard let targetRPE, targetRPE > 0 else { return base }
         return "\(base), RPE \(targetRPE)"
-    }
-}
-
-struct DurationPill: View {
-    var minutes: Int
-
-    var body: some View {
-        if minutes > 0 {
-            HStack(spacing: 4) {
-                Image(systemName: "clock")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(displayText)
-                    .font(.lockinMeta.monospacedDigit())
-                    .lineLimit(1)
-            }
-            .foregroundStyle(AppTheme.muted)
-            .accessibilityLabel("Estimated duration \(displayText)")
-        }
-    }
-
-    private var displayText: String {
-        if minutes < 60 { return "\(minutes) min" }
-        let hours = minutes / 60
-        let remainingMinutes = minutes % 60
-        return remainingMinutes == 0 ? "\(hours) hr" : "\(hours) hr \(remainingMinutes) min"
     }
 }
 
@@ -228,6 +151,174 @@ func raceCountdownText(_ raceDate: Date) -> String {
     if days <= 0 { return "Today" }
     if days < 14 { return days == 1 ? "1 day" : "\(days) days" }
     return "\(days / 7) wk"
+}
+
+// MARK: - Forms
+
+/// A form group: a 17pt title over its content. Profile and Onboarding read
+/// as quiet lists, so the groups sit a step below the 22pt section headers.
+struct FormGroup<Trailing: View, Content: View>: View {
+    var title: String
+    @ViewBuilder var trailing: Trailing
+    @ViewBuilder var content: Content
+
+    init(
+        _ title: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.trailing = trailing()
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.trail(17, .semibold, relativeTo: .headline))
+                    .foregroundStyle(AppTheme.text)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                trailing
+            }
+            content
+        }
+    }
+}
+
+/// Rows on one white card, split by soft rules inset from the leading edge.
+struct ListCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content
+        }
+        .padding(.leading, 14)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                .fill(AppTheme.surface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
+                .strokeBorder(AppTheme.divider, lineWidth: 1)
+        )
+    }
+}
+
+struct ListCardRow<Content: View>: View {
+    var minHeight: CGFloat = 50
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            content
+        }
+        .padding(.trailing, 14)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
+    }
+}
+
+struct ListCardValueRow: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        ListCardRow {
+            Text(title)
+                .font(.lockinBody)
+                .foregroundStyle(AppTheme.text)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.trail(16, .semibold, relativeTo: .body).monospacedDigit())
+                .foregroundStyle(AppTheme.text)
+                .multilineTextAlignment(.trailing)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct ListCardRule: View {
+    var body: some View {
+        Rectangle()
+            .fill(AppTheme.dividerSoft)
+            .frame(height: 1)
+    }
+}
+
+struct NoteText: View {
+    var text: String
+    var isError = false
+
+    init(_ text: String, isError: Bool = false) {
+        self.text = text
+        self.isError = isError
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.trail(13, .regular, relativeTo: .footnote))
+            .foregroundStyle(isError ? AppTheme.markerRedText : AppTheme.muted)
+            .lineSpacing(1)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Lays children out left to right and wraps to a new row when one is full.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 320
+        let rows = rows(for: subviews, maxWidth: width)
+        return CGSize(width: width, height: rows.reduce(0) { $0 + $1.height } + CGFloat(max(0, rows.count - 1)) * spacing)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var origin = bounds.origin
+        for row in rows(for: subviews, maxWidth: bounds.width) {
+            var x = origin.x
+            for item in row.items {
+                item.subview.place(
+                    at: CGPoint(x: x, y: origin.y),
+                    proposal: ProposedViewSize(item.size)
+                )
+                x += item.size.width + spacing
+            }
+            origin.y += row.height + spacing
+        }
+    }
+
+    private func rows(for subviews: Subviews, maxWidth: CGFloat) -> [FlowRow] {
+        var rows: [FlowRow] = []
+        var current = FlowRow()
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if !current.items.isEmpty, current.width + spacing + size.width > maxWidth {
+                rows.append(current)
+                current = FlowRow()
+            }
+            current.add(subview: subview, size: size, spacing: spacing)
+        }
+        if !current.items.isEmpty {
+            rows.append(current)
+        }
+        return rows
+    }
+
+    private struct FlowRow {
+        var items: [(subview: LayoutSubview, size: CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+
+        mutating func add(subview: LayoutSubview, size: CGSize, spacing: CGFloat) {
+            width += items.isEmpty ? size.width : spacing + size.width
+            height = max(height, size.height)
+            items.append((subview, size))
+        }
+    }
 }
 
 // MARK: - Trailhead: trail marks

@@ -257,99 +257,6 @@ struct SettingsView: View {
 
 // MARK: - Building blocks
 
-/// A Profile group: a 17pt title over its content. Settings read as a quiet
-/// list, so the groups sit a step below the 22pt section headers elsewhere.
-private struct ProfileGroup<Trailing: View, Content: View>: View {
-    var title: String
-    @ViewBuilder var trailing: Trailing
-    @ViewBuilder var content: Content
-
-    init(
-        _ title: String,
-        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
-        @ViewBuilder content: () -> Content
-    ) {
-        self.title = title
-        self.trailing = trailing()
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.trail(17, .semibold, relativeTo: .headline))
-                    .foregroundStyle(AppTheme.text)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-                trailing
-            }
-            content
-        }
-    }
-}
-
-/// Rows on one white card, split by soft rules inset from the leading edge.
-private struct ProfileList<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            content
-        }
-        .padding(.leading, 14)
-        .background(
-            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-                .fill(AppTheme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.cardRadius, style: .continuous)
-                .strokeBorder(AppTheme.divider, lineWidth: 1)
-        )
-    }
-}
-
-private struct ProfileRow<Content: View>: View {
-    var minHeight: CGFloat = 50
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        HStack(spacing: 12) {
-            content
-        }
-        .padding(.trailing, 14)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
-    }
-}
-
-private struct ProfileValueRow: View {
-    var title: String
-    var value: String
-
-    var body: some View {
-        ProfileRow {
-            Text(title)
-                .font(.lockinBody)
-                .foregroundStyle(AppTheme.text)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.trail(16, .semibold, relativeTo: .body).monospacedDigit())
-                .foregroundStyle(AppTheme.text)
-                .multilineTextAlignment(.trailing)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct RowRule: View {
-    var body: some View {
-        Rectangle()
-            .fill(AppTheme.dividerSoft)
-            .frame(height: 1)
-    }
-}
-
 /// Lighter than the 2pt secondary button: for the second of two actions
 /// side by side.
 private struct QuietActionButtonStyle: ButtonStyle {
@@ -366,24 +273,6 @@ private struct QuietActionButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
                     .strokeBorder(AppTheme.post.opacity(0.6), lineWidth: 1)
             )
-    }
-}
-
-private struct NoteText: View {
-    var text: String
-    var isError = false
-
-    init(_ text: String, isError: Bool = false) {
-        self.text = text
-        self.isError = isError
-    }
-
-    var body: some View {
-        Text(text)
-            .font(.trail(13, .regular, relativeTo: .footnote))
-            .foregroundStyle(isError ? AppTheme.markerRedText : AppTheme.muted)
-            .lineSpacing(1)
-            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -431,15 +320,15 @@ private struct GoalsSection: View {
     var profile: UserProfile
 
     var body: some View {
-        ProfileGroup("Goals") {
-            ProfileList {
-                ProfileValueRow(title: "Pull-ups", value: "\(profile.goalPullUps)")
-                RowRule()
-                ProfileValueRow(title: "Push-ups", value: "\(profile.goalPushUps)")
-                RowRule()
-                ProfileValueRow(title: "Plank", value: format(seconds: profile.goalPlankSeconds))
-                RowRule()
-                ProfileValueRow(
+        FormGroup("Goals") {
+            ListCard {
+                ListCardValueRow(title: "Pull-ups", value: "\(profile.goalPullUps)")
+                ListCardRule()
+                ListCardValueRow(title: "Push-ups", value: "\(profile.goalPushUps)")
+                ListCardRule()
+                ListCardValueRow(title: "Plank", value: format(seconds: profile.goalPlankSeconds))
+                ListCardRule()
+                ListCardValueRow(
                     title: "Target date",
                     value: profile.targetDate.formatted(.dateTime.day().month(.abbreviated).year())
                 )
@@ -475,7 +364,7 @@ private struct RaceGoalSection: View {
     var onGoalChange: () -> Void
 
     var body: some View {
-        ProfileGroup("Race goal") {
+        FormGroup("Race goal") {
             if let raceGoal {
                 RaceGoalEditor(
                     profile: profile,
@@ -519,8 +408,8 @@ private struct RaceGoalEditor: View {
                 size: .small
             )
 
-            ProfileList {
-                ProfileRow {
+            ListCard {
+                ListCardRow {
                     Text("Race name")
                         .font(.lockinBody)
                         .foregroundStyle(AppTheme.text)
@@ -531,33 +420,33 @@ private struct RaceGoalEditor: View {
                         .foregroundStyle(AppTheme.text)
                         .tint(AppTheme.text)
                 }
-                RowRule()
-                ProfileRow {
+                ListCardRule()
+                ListCardRow {
                     DatePicker("Race date", selection: raceDateBinding, displayedComponents: .date)
                         .font(.lockinBody)
                         .tint(AppTheme.text)
                 }
-                RowRule()
-                ProfileRow {
+                ListCardRule()
+                ListCardRow {
                     IntegerField(title: "Distance", value: distanceBinding, range: 1...500, suffix: "km")
                 }
-                RowRule()
-                ProfileRow {
+                ListCardRule()
+                ListCardRow {
                     IntegerField(title: "Climb", value: elevationBinding, range: 0...30_000, suffix: "m")
                 }
-                RowRule()
+                ListCardRule()
                 if hasConfirmedRuns {
                     // Real run history owns these numbers; editable fields here
                     // would be silently overwritten on the next sync.
-                    ProfileValueRow(title: "Weekly base", value: "\(Int(goal.baselineWeeklyKm.rounded())) km")
-                    RowRule()
-                    ProfileValueRow(title: "Longest recent run", value: "\(Int(goal.longestRecentRunKm.rounded())) km")
+                    ListCardValueRow(title: "Weekly base", value: "\(Int(goal.baselineWeeklyKm.rounded())) km")
+                    ListCardRule()
+                    ListCardValueRow(title: "Longest recent run", value: "\(Int(goal.longestRecentRunKm.rounded())) km")
                 } else {
-                    ProfileRow {
+                    ListCardRow {
                         IntegerField(title: "Weekly base", value: baselineWeeklyBinding, range: 0...300, suffix: "km")
                     }
-                    RowRule()
-                    ProfileRow {
+                    ListCardRule()
+                    ListCardRow {
                         IntegerField(title: "Longest recent run", value: longestRecentRunBinding, range: 0...200, suffix: "km")
                     }
                 }
@@ -578,8 +467,8 @@ private struct RaceGoalEditor: View {
             .padding(.top, 6)
 
             if !orderedRunningDays.isEmpty {
-                ProfileList {
-                    ProfileRow {
+                ListCard {
+                    ListCardRow {
                         Text("Long run day")
                             .font(.lockinBody)
                             .foregroundStyle(AppTheme.text)
@@ -699,7 +588,7 @@ private struct GarminSection: View {
     @State private var watchRetryStatus: String?
 
     var body: some View {
-        ProfileGroup("Garmin") {
+        FormGroup("Garmin") {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
                     Image(systemName: "applewatch")
@@ -1075,9 +964,9 @@ private struct ReminderSection: View {
     var onReminderTimeChange: (Date) -> Void
 
     var body: some View {
-        ProfileGroup("Reminder") {
-            ProfileList {
-                ProfileRow(minHeight: 54) {
+        FormGroup("Reminder") {
+            ListCard {
+                ListCardRow(minHeight: 54) {
                     Toggle("Training reminder", isOn: Binding(
                         get: { profile.remindersEnabled },
                         set: { newValue in
@@ -1088,8 +977,8 @@ private struct ReminderSection: View {
                     .foregroundStyle(AppTheme.text)
                     .tint(AppTheme.text)
                 }
-                RowRule()
-                ProfileRow {
+                ListCardRule()
+                ListCardRow {
                     DatePicker(
                         "Time",
                         selection: Binding(
@@ -1113,7 +1002,7 @@ private struct DataSection: View {
     var onResetTap: () -> Void
 
     var body: some View {
-        ProfileGroup("Data") {
+        FormGroup("Data") {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Training data stays on this iPhone, with a private iCloud backup. Wiping deletes your profile, goals, race goal, sessions, logs, runs, streaks, coach history and pending reminders.")
                     .font(.trail(14, .regular, relativeTo: .subheadline))
@@ -1139,7 +1028,7 @@ private struct DemoHistorySeedSection: View {
     var onSeedTap: () -> Void
 
     var body: some View {
-        ProfileGroup("Demo data") {
+        FormGroup("Demo data") {
             VStack(alignment: .leading, spacing: 12) {
                 NoteText("Loads a fake two-week training block with strength logs, Garmin-style runs, readiness, a race goal and a coach read. Simulator builds only.")
                 Button(action: onSeedTap) {
