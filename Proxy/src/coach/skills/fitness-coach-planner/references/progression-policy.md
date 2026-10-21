@@ -74,26 +74,20 @@ Choose the phase from current evidence, not from a rigid four-week calendar:
 
 Prefix the plan `summary` with the phase. The summary must explain the pull-up, push-up, and plank decision separately.
 
-Use `plannedWork.recentGoalPerformance` as the main progression evidence. `clean` already means pain below 4, fatigue below 9, and actual RPE no more than 1 point above planned RPE. If planned RPE was unavailable, the result is not clean evidence for mandatory progression.
+Use `plannedWork.recentGoalPerformance` as the main progression evidence; `strengthGuardrails.progression` turns it into the allowed range for each metric. `clean` already means pain below 4, fatigue below 9, and actual RPE no more than 1 point above planned RPE. When a log has no planned RPE (manual or older logs), the planned effort label's RPE is used, else 7.
 
-- Pull-ups or push-ups: when the clean logged best is at least target +2, increase the prescribed target by exactly 1 repetition on selected sets in the next useful plan.
-- Plank: when the clean logged hold is at least target +2 seconds, increase selected holds by 5-10 seconds.
-- When the result only meets the current standard, hold after the first clean exposure and progress after the second consecutive clean exposure at or above that same standard.
+- Earned progression: a clean logged best at least 2 above the target (plank: 2 seconds) earns it immediately; otherwise the second consecutive clean completion at or above the same standard earns it. After the first clean exposure at the standard, hold.
+- Earned step sizes, scaled to the metric and level: pull-ups +1 rep; push-ups +1 rep below 15, +1-2 below 30, +1-3 from 30; plank +5-10 seconds below 60 s, +5-15 seconds from 60 s.
+- Instead of the rep or hold step, one more set at the same target also counts as the progression (`setRoute`). When the working cap blocks the rep step, the extra set is the progression; when sets are already at 6 too, hold and plan an Assessment when it is due.
 - Never increase sets and repetitions or hold time together.
-- If clean evidence earned progression, progression is mandatory unless computed recovery state or the fixed running week genuinely requires `Maintenance`. Safety text alone cannot override the evidence.
+- If clean evidence earned progression, progression is mandatory unless computed recovery state or `strengthGuardrails.maintenance.allowed` applies. Maintenance holds the earned standard: no regression. Safety text alone cannot override the evidence.
+- Without earned progression, keep the top working target within one step below the previous working target and no higher than it (`allowedTopTarget`); sets may rise by at most one per week. This is how underloaded weeks progress: add one set, not reps.
 
-Do not freeze all numbers just because the athlete is new to the app.
-
-If the current month has at least 2 valid completed logs, pain stays below 4, how-you-felt feedback is Normal/Strong/Very strong, and perceived effort is not repeatedly 9-10:
-
-- Progress one variable only in the next week.
-- Prefer +1 rep on selected sets or +5-10 seconds on selected plank holds. Do not increase sets in the same step.
-- Explain the progression in `progressionRationale`.
-- Keep all progression inside the caps below.
+Do not freeze all numbers just because the athlete is new to the app: with no previous prescription (`status: free`), start inside the working cap and above the useful floor.
 
 If the last 2-3 completed sessions were logged as light/easy perceived effort, pain is below 4, and how-you-felt feedback is Normal, Strong, or Very strong, do not keep the next week light by default. Add a visible medium or hard goal stimulus unless the safety notes explain why not.
 
-If recent actual RPE is consistently below planned RPE by 2 or more points, pain is below 4, and how-you-felt feedback is Normal, Strong, or Very strong, treat the current plan as underloaded and progress one variable.
+If recent actual RPE is consistently below planned RPE by 2 or more points, pain is below 4, and how-you-felt feedback is Normal, Strong, or Very strong, treat the current plan as underloaded: add one set within the bounds; rep or hold increases still need earned progression.
 
 If recent actual RPE is consistently above planned RPE by 2 or more points, treat the current plan as too stressful and reduce one stress variable or simplify exercise selection, even when the athlete completed the work.
 
@@ -115,11 +109,13 @@ Normal `building`, `plateau`, and `insufficient_history` weeks should not be all
 
 ## Progression Caps
 
-Use the best actually logged recent value, falling back to baseline.
+Use the best actually logged recent value, falling back to baseline. These caps are enforced (`strengthGuardrails.workingCaps`); only `stimulus: test` may exceed them.
 
-- Pull-up working reps per set: usually <= 85% of latest valid pull-up max.
-- Push-up working reps per set: usually <= 75% of latest valid push-up max.
-- Plank working holds: usually <= 80% of latest valid plank max.
+- Pull-up working reps per set: at most 85% of the best recent pull-up value (at least 1).
+- Push-up working reps per set: at most 75% of the best recent push-up value.
+- Plank working holds: at most 80% of the best recent plank value (at least 10 seconds).
+- Goal work uses 2-6 sets per exercise.
+- At most 2 hard strength sessions a week alongside a running week (3 without), never on more than two consecutive days.
 - Increase one stress variable at a time: sets, reps, hold length, density, or complexity.
 - For non-recovery goal work, avoid prescribing every working set below a useful floor. As a default, the main goal prescription should reach at least ~45% of the latest valid goal max unless the exercise is intentionally light technique/recovery and the week still includes another useful stimulus.
 
@@ -143,9 +139,9 @@ Never suppress progression or add catch-up work for an old or isolated miss. Low
 ## Running Priority And Rest
 
 - Fixed running sessions lead the combined plan.
-- Never put hard strength on a long, tempo, interval, hill, or race-run day.
+- Never put hard strength on a long, tempo, interval, hill, or race-run day, and never very_hard or max_output strength (tests included) on the day before a long run or the race.
 - Leave at least one of future offsets 1 through 6 unused by both running and strength.
-- When running stress blocks a safe increase, use `Maintenance` and name the running constraint in the summary and progression rationale.
+- A normal running build week does not block strength progression. Use `Maintenance` only when `strengthGuardrails.maintenance.allowed` is true, name its reason in the summary and progression rationale, and keep at least the earned standard.
 
 ## Logging Rules
 
