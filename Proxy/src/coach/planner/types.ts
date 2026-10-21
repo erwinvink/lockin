@@ -40,6 +40,8 @@ export type CoachRequest = {
   plannedSessions: PlannedSession[];
   /** Local midnight the current plan block began (ISO-8601); optional for old clients. */
   planBlockStartedAt?: string;
+  /** When the plan whose future sessions are in plannedSessions was generated (newer apps). */
+  currentPlanGeneratedAt?: string;
   running?: RunningRequest;
 };
 
@@ -75,6 +77,15 @@ export type PlannedSession = {
   focus: SessionFocus;
   status: string;
   exercises?: PlannedExercisePrescription[];
+  /** "running" for planned runs; older apps send nothing (strength assumed when exercises exist). */
+  discipline?: "strength" | "running";
+  /** Planned runs only (newer apps): what the planner prescribed. */
+  runKind?: string;
+  distanceKm?: number;
+  elevationMeters?: number;
+  durationMinutes?: number;
+  target?: RunTarget;
+  zone?: string;
 };
 
 export type PlannedExercisePrescription = {

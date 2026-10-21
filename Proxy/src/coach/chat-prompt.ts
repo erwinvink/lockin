@@ -282,13 +282,37 @@ function strengthLogSummary(log: TrainingLog, session: PlannedSession | undefine
 }
 
 function sessionSummary(session: PlannedSession, timeZone: string): Record<string, unknown> {
+  const isRun = isPlannedRun(session);
   return compact({
     date: dayLabel(new Date(session.scheduledDate), timeZone),
     title: session.title,
-    focus: session.focus,
+    focus: isRun ? null : session.focus,
     status: session.status,
+    run: isRun ? plannedRunSummary(session) : null,
     work: exercisesSummary(session.exercises ?? [])
   });
+}
+
+/** A planned run in athlete language: "Easy run, 10 km, 120 m climb, heart rate 132-145 bpm, Zone 2". */
+function plannedRunSummary(session: PlannedSession): string | null {
+  const parts = [
+    session.runKind ? `${humanize(session.runKind)} run` : null,
+    typeof session.distanceKm === "number" && session.distanceKm > 0 ? `${round1(session.distanceKm)} km` : null,
+    typeof session.elevationMeters === "number" && session.elevationMeters > 0 ? `${Math.round(session.elevationMeters)} m climb` : null,
+    session.target ? plannedRunTarget(session.target) : null,
+    session.zone?.trim() ? session.zone.trim() : null
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function plannedRunTarget(target: NonNullable<PlannedSession["target"]>): string | null {
+  if (target.type === "pace" && target.low > 0 && target.high > 0) return `pace ${formatPace(target.low)}-${formatPace(target.high)} per km`;
+  if (target.type === "hr" && target.low > 0 && target.high > 0) return `heart rate ${target.low}-${target.high} bpm`;
+  return null;
+}
+
+function isPlannedRun(session: PlannedSession): boolean {
+  return session.discipline === "running" || (typeof session.runKind === "string" && session.runKind.length > 0);
 }
 
 function exercisesSummary(exercises: PlannedExercisePrescription[]): string | null {
