@@ -18,10 +18,11 @@ struct RootView: View {
             }
         }
         .foregroundStyle(AppTheme.text)
-        // Premium Flat Gold is a dark-only visual identity: forcing the
-        // scheme keeps system chrome (alerts, sheets, keyboard, glass tab
-        // bar) on the same canvas in every light setting.
-        .preferredColorScheme(.dark)
+        .font(.lockinBody)
+        // Trailhead is a light-only visual identity: forcing the scheme keeps
+        // system chrome (alerts, sheets, keyboard, glass tab bar) on the same
+        // snow ground when the phone is in dark mode.
+        .preferredColorScheme(.light)
         .task {
             #if DEBUG
             seedPreviewDataIfRequested()

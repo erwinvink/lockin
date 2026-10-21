@@ -1,86 +1,178 @@
+import CoreText
 import SwiftUI
+import UIKit
 
-/// Premium Flat Gold — the approved visual direction (Design/redesign-screens/
-/// style-guide.md). One dark canvas, hairlines over cards, gold reserved for
-/// the primary action and progress, monospaced digits for every metric.
+/// Trailhead — the approved visual direction (design canvas, Trailhead page).
+/// Swiss trail signage on a light snow ground: white cards on a 1pt line,
+/// granite for text and the one primary action, sign yellow only for signs,
+/// the active tab and "you are here". Effort is shown with trail marks.
 enum AppTheme {
-    // MARK: Palette (#111111 / #171717 / #f1eee8 / #928e86 / #c4a35c / #2a2926)
-    static let background = Color(red: 0.067, green: 0.067, blue: 0.067)
-    static let surface = Color(red: 0.090, green: 0.090, blue: 0.090)
-    static let surfaceRaised = Color(red: 0.114, green: 0.110, blue: 0.102)
-    static let text = Color(red: 0.945, green: 0.933, blue: 0.910)
-    static let muted = Color(red: 0.573, green: 0.557, blue: 0.525)
-    static let faint = Color(red: 0.420, green: 0.408, blue: 0.384)
-    static let accent = Color(red: 0.769, green: 0.639, blue: 0.361)
-    static let accentInk = Color(red: 0.086, green: 0.075, blue: 0.055)
-    static let divider = Color(red: 0.165, green: 0.161, blue: 0.149)
-    static let warning = Color(red: 0.886, green: 0.337, blue: 0.306)
+    // MARK: Palette
+    static let background = Color(trailHex: 0xF3F5F6)   // Snow: screen ground
+    static let surface = Color(trailHex: 0xFFFFFF)      // White: cards, inputs
+    static let surfaceRaised = Color(trailHex: 0xEEF1F3)
+    static let text = Color(trailHex: 0x1A2024)         // Granite
+    static let bodyText = Color(trailHex: 0x2E373D)     // Rock: long body copy
+    static let muted = Color(trailHex: 0x5F6A72)        // Slate: labels, meta
+    static let faint = Color(trailHex: 0x6E787F)
+    static let divider = Color(trailHex: 0xDCE1E4)      // Line: borders
+    static let dividerSoft = Color(trailHex: 0xE6EAEC)
+    static let post = Color(trailHex: 0x9AA3A8)         // Scree: sign posts, trail
+    static let sign = Color(trailHex: 0xF7C600)         // Sign yellow
+    static let markerRed = Color(trailHex: 0xD3262E)
+    static let markerRedText = Color(trailHex: 0xB81F27)
+    static let markerBlue = Color(trailHex: 0x1F5FA8)
 
-    // Legacy aliases — gold merged into the single accent; soft fills became
-    // translucent washes so any straggling call site stays on-palette.
+    /// The primary action is granite, not yellow: yellow belongs to signs.
+    static let accent = text
+    static let accentInk = Color.white
+    static let warning = markerRed
+
+    // Legacy aliases so screens not yet redrawn stay on-palette.
     static let gold = accent
-    static let goldSoft = accent.opacity(0.14)
-    static let accentSoft = accent.opacity(0.14)
-    static let warningSoft = warning.opacity(0.14)
+    static let goldSoft = accent.opacity(0.08)
+    static let accentSoft = accent.opacity(0.08)
+    static let warningSoft = markerRed.opacity(0.10)
 
     // MARK: Geometry
     static let screenMargin: CGFloat = 20
-    static let sectionSpacing: CGFloat = 28
+    static let sectionSpacing: CGFloat = 22
     static let rowSpacing: CGFloat = 12
-    static let cardRadius: CGFloat = 12
-    static let smallRadius: CGFloat = 10
-    static let buttonRadius: CGFloat = 16
+    static let cardRadius: CGFloat = 16
+    static let smallRadius: CGFloat = 12
+    static let buttonRadius: CGFloat = 14
 
-    /// Effort is the one place three hues are allowed: quiet, gold, red.
+    /// Text colour for an effort word. The trail mark next to it carries the
+    /// grade, so light and medium stay neutral.
     static func effortColor(_ label: PlannedEffortLabel) -> Color {
         switch label {
-        case .light: muted
-        case .medium: accent
-        case .hard, .veryHard, .maxOutput: warning
+        case .light, .medium: text
+        case .hard: markerRedText
+        case .veryHard, .maxOutput: markerBlue
         }
     }
 
     static func statusColor(_ status: SessionStatus) -> Color {
         switch status {
         case .planned: muted
-        case .completed, .partial, .deload: accent
-        case .missed: warning
+        case .completed, .partial, .deload: text
+        case .missed: markerRedText
         }
+    }
+}
+
+extension Color {
+    init(trailHex hex: UInt32) {
+        self.init(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255
+        )
+    }
+}
+
+// MARK: - Signika
+
+/// Signika, a typeface drawn for wayfinding. It ships as an asset-catalog
+/// data set (variable weight axis) and is registered at launch, so neither
+/// Info.plist nor the project file needs a font entry.
+enum TrailFont {
+    static let familyName = "Signika"
+
+    enum Weight: CGFloat {
+        case regular = 400
+        case medium = 500
+        case semibold = 600
+        case bold = 700
+
+        var systemWeight: UIFont.Weight {
+            switch self {
+            case .regular: .regular
+            case .medium: .medium
+            case .semibold: .semibold
+            case .bold: .bold
+            }
+        }
+    }
+
+    /// Call once at launch. Safe to call again.
+    static func registerIfNeeded() {
+        _ = isRegistered
+    }
+
+    static let isRegistered: Bool = {
+        guard let asset = NSDataAsset(name: "Signika"),
+              let provider = CGDataProvider(data: asset.data as CFData),
+              let font = CGFont(provider)
+        else { return false }
+        var error: Unmanaged<CFError>?
+        if CTFontManagerRegisterGraphicsFont(font, &error) { return true }
+        // Already registered in this process counts as success.
+        return UIFont.familyNames.contains(familyName)
+    }()
+
+    private static let weightAxis = 0x7767_6874 // 'wght'
+
+    static func uiFont(size: CGFloat, weight: Weight) -> UIFont {
+        guard isRegistered else {
+            return .systemFont(ofSize: size, weight: weight.systemWeight)
+        }
+        let variation = UIFontDescriptor.AttributeName(rawValue: kCTFontVariationAttribute as String)
+        let descriptor = UIFontDescriptor(fontAttributes: [
+            .family: familyName,
+            variation: [weightAxis: weight.rawValue]
+        ])
+        return UIFont(descriptor: descriptor, size: size)
     }
 }
 
 // MARK: - Type scale
 
 extension Font {
-    /// Display: the one big answer on a screen (Today's session title).
-    static var lockinDisplay: Font { .system(size: 34, weight: .semibold) }
+    /// Signika at a fixed design size that still follows Dynamic Type.
+    static func trail(
+        _ size: CGFloat,
+        _ weight: TrailFont.Weight = .regular,
+        relativeTo style: UIFont.TextStyle = .body
+    ) -> Font {
+        let base = TrailFont.uiFont(size: size, weight: weight)
+        let scaled = UIFontMetrics(forTextStyle: style).scaledFont(for: base)
+        return Font(scaled as CTFont)
+    }
+
+    /// Sign title: the one big answer on a screen (today's session).
+    static var lockinDisplay: Font { .trail(31, .bold, relativeTo: .largeTitle) }
     /// Screen titles rendered in content (Progress, Log, Profile).
-    static var lockinScreenTitle: Font { .system(size: 28, weight: .semibold) }
-    /// Section titles inside a screen ("This week", "Session history").
-    static var lockinSection: Font { .system(size: 17, weight: .semibold) }
-    /// Hero numerals (timer, readiness) — always pair with monospacedDigit.
+    static var lockinScreenTitle: Font { .trail(32, .bold, relativeTo: .largeTitle) }
+    /// Section titles inside a screen ("Route", "This week").
+    static var lockinSection: Font { .trail(22, .bold, relativeTo: .title2) }
+    /// Row titles: exercise names, list items.
+    static var lockinRowTitle: Font { .trail(17, .semibold, relativeTo: .headline) }
+    static var lockinBody: Font { .trail(16, .regular, relativeTo: .body) }
+    static var lockinMeta: Font { .trail(13, .regular, relativeTo: .footnote) }
+    /// Numerals (timer, reps, readiness) — tabular so values don't jump.
     static func lockinNumeral(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .semibold).monospacedDigit()
+        .trail(size, .bold, relativeTo: .title1).monospacedDigit()
     }
 }
 
-/// Tracked uppercase micro label ("TODAY", "OPEN ACTIVITIES"). Callers pass
-/// the final string — UI tests assert the uppercased text verbatim.
+/// Small label ("STREAK", "OPEN ACTIVITIES"). Callers pass the final string —
+/// UI tests assert the text verbatim.
 struct MicroLabel: View {
     var text: String
     var color: Color = AppTheme.muted
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold))
-            .tracking(1.4)
+            .font(.trail(12, .semibold, relativeTo: .caption1))
+            .tracking(0.6)
             .foregroundStyle(color)
     }
 }
 
 // MARK: - Hairlines and sections
 
-/// 1px rule — the only divider in the app. Replaces every card border.
+/// 1pt rule between rows and around ruled sections.
 struct Hairline: View {
     var body: some View {
         Rectangle()
@@ -109,9 +201,8 @@ struct SectionHeader<Trailing: View>: View {
     }
 }
 
-/// Flat framed surface — the rare card. One elevation language: a fill and a
-/// hairline, never a shadow. Reserved for content that genuinely needs a
-/// frame (coach read, pending-run confirm, sheet field groups).
+/// White card on a 1pt line. One elevation language: never a shadow, never
+/// a card inside a card.
 struct CardModifier: ViewModifier {
     var padding: CGFloat = 16
 
@@ -138,8 +229,7 @@ extension View {
         card()
     }
 
-    /// Ruled section: hairlines above and below, open background. The default
-    /// container of the design — use instead of cards wherever possible.
+    /// Ruled section: hairlines above and below, open background.
     func ruled(verticalPadding: CGFloat = 14) -> some View {
         VStack(spacing: 0) {
             Hairline()
@@ -148,64 +238,60 @@ extension View {
         }
     }
 
-    /// Flat input treatment shared by every free-text field.
+    /// Input treatment shared by every free-text field.
     func lockinField() -> some View {
         self
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(AppTheme.surfaceRaised)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(AppTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.smallRadius, style: .continuous)
-                    .strokeBorder(AppTheme.divider, lineWidth: 1)
+                    .strokeBorder(AppTheme.post.opacity(0.6), lineWidth: 1)
             )
     }
 }
 
 // MARK: - Buttons
 
-/// Gold primary — one per screen. Press: ink dims, scale settles on a snappy
-/// spring; reduce-motion drops the scale and keeps the dim.
+/// Granite primary — one per screen. Press: slight dim and settle; reduce
+/// motion drops the scale and keeps the dim.
 struct PrimaryActionButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(AppTheme.accentInk)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 15)
+            .font(.trail(18, .semibold, relativeTo: .headline))
+            .foregroundStyle(isEnabled ? AppTheme.accentInk : AppTheme.muted)
+            .frame(maxWidth: .infinity, minHeight: 56)
             .background(
                 RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
-                    .fill(AppTheme.accent)
+                    .fill(isEnabled ? AppTheme.accent : AppTheme.divider)
             )
-            .brightness(configuration.isPressed ? -0.07 : 0)
-            .saturation(isEnabled ? 1 : 0.55)
-            .opacity(isEnabled ? 1 : 0.45)
+            .opacity(configuration.isPressed ? 0.82 : 1)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
             .animation(.snappy(duration: 0.22), value: configuration.isPressed)
     }
 }
 
-/// Quiet secondary — hairline border, no fill until pressed. A destructive
-/// button role turns the label red on its own.
+/// Outlined secondary. A destructive role turns border and label red.
 struct SecondaryActionButtonStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
+        let isDestructive = configuration.role == .destructive
         configuration.label
-            .font(.system(size: 15, weight: .medium))
-            .foregroundStyle(configuration.role == .destructive ? AppTheme.warning : AppTheme.text)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .font(.trail(16, .semibold, relativeTo: .headline))
+            .foregroundStyle(isDestructive ? AppTheme.markerRedText : AppTheme.text)
+            .frame(maxWidth: .infinity, minHeight: 48)
             .background(
                 RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
-                    .fill(configuration.isPressed ? AppTheme.surfaceRaised : .clear)
+                    .fill(configuration.isPressed ? AppTheme.surfaceRaised : AppTheme.surface)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.buttonRadius, style: .continuous)
-                    .strokeBorder(AppTheme.divider, lineWidth: 1)
+                    .strokeBorder(isDestructive ? AppTheme.markerRed : AppTheme.text, lineWidth: 2)
             )
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
             .animation(.snappy(duration: 0.22), value: configuration.isPressed)
@@ -214,9 +300,9 @@ struct SecondaryActionButtonStyle: ButtonStyle {
 
 // MARK: - Screen scaffold
 
-/// Every screen and sheet draws on the same flat canvas. The optional title
-/// renders in content (not a navigation bar) — the UI tests assert which
-/// screens have real navigation bars and which don't.
+/// Every screen draws on the same snow ground. The optional title renders in
+/// content (not a navigation bar) — the UI tests assert which screens have
+/// real navigation bars and which don't.
 struct ScreenBackground<Content: View>: View {
     let title: String?
     @ViewBuilder var content: Content
@@ -239,7 +325,7 @@ struct ScreenBackground<Content: View>: View {
             }
             .padding(.horizontal, AppTheme.screenMargin)
             .padding(.top, 12)
-            // Clear the floating glass tab bar so rows never die under it.
+            // Clear the floating tab bar so rows never sit under it.
             .padding(.bottom, 48)
         }
         .scrollIndicators(.hidden)

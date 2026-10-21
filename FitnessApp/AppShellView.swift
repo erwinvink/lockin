@@ -1,6 +1,26 @@
 import SwiftData
 import SwiftUI
 
+enum AppTab: Hashable {
+    case today
+    case progress
+    case coach
+    case log
+    case profile
+}
+
+private struct OpenTabKey: EnvironmentKey {
+    static let defaultValue: (AppTab) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    /// Lets a screen send the user to another tab ("Plan my first week").
+    var openTab: (AppTab) -> Void {
+        get { self[OpenTabKey.self] }
+        set { self[OpenTabKey.self] = newValue }
+    }
+}
+
 struct AppShellView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
@@ -18,6 +38,7 @@ struct AppShellView: View {
     @AppStorage("autoPlanLastContextSyncAt") private var autoPlanLastContextSyncAt: Double = 0
     @State private var isSyncingGarmin = false
     @State private var isSyncingAutoPlan = false
+    @State private var selectedTab: AppTab = .today
 
     private static let garminSyncInterval: TimeInterval = 30 * 60
     private static let autoPlanContextInterval: TimeInterval = 30 * 60
@@ -25,23 +46,29 @@ struct AppShellView: View {
     var profile: UserProfile
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             TodayView(profile: profile)
-                .tabItem { Label("Today", systemImage: "house.fill") }
+                .tabItem { Label("Today", systemImage: "signpost.right.fill") }
+                .tag(AppTab.today)
 
             ProgressView(profile: profile)
-                .tabItem { Label("Progress", systemImage: "chart.bar.fill") }
+                .tabItem { Label("Progress", systemImage: "mountain.2.fill") }
+                .tag(AppTab.progress)
 
             CoachView(profile: profile)
-                .tabItem { Label("Coach", systemImage: "brain.head.profile") }
+                .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(AppTab.coach)
 
             CalendarView()
-                .tabItem { Label("Log", systemImage: "list.clipboard") }
+                .tabItem { Label("Log", systemImage: "list.bullet") }
+                .tag(AppTab.log)
 
             SettingsView(profile: profile)
-                .tabItem { Label("Profile", systemImage: "person.crop.circle") }
+                .tabItem { Label("Profile", systemImage: "person.crop.circle.fill") }
+                .tag(AppTab.profile)
         }
         .tint(AppTheme.accent)
+        .environment(\.openTab) { selectedTab = $0 }
         .onAppear {
             ensureCurrentUserProfile(profile, in: modelContext)
             refreshTrainingPlanState()

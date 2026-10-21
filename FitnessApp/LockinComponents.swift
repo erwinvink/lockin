@@ -252,7 +252,7 @@ struct StatusPill: View {
                     .font(.system(size: 10, weight: .semibold))
             }
             Text(text)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.trail(12, .semibold, relativeTo: .caption1))
                 .lineLimit(1)
         }
         .foregroundStyle(color)
@@ -262,8 +262,8 @@ struct StatusPill: View {
     }
 }
 
-/// Bare metadata label: icon + text, no container. Effort keeps the only
-/// three-hue mapping in the design.
+/// Effort as a trail mark plus words: "Medium, RPE 6". The mark carries the
+/// grade; the words make sure colour never carries meaning alone.
 struct EffortPill: View {
     var label: PlannedEffortLabel
     var prefix: String?
@@ -276,22 +276,22 @@ struct EffortPill: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 10, weight: .semibold))
+        HStack(spacing: 7) {
+            TrailMark(grade: TrailGrade(label))
             Text(displayText)
-                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .font(.lockinMeta.monospacedDigit())
+                .foregroundStyle(AppTheme.muted)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .foregroundStyle(AppTheme.effortColor(label))
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(displayText)
     }
 
     private var displayText: String {
         let base = prefix.map { "\($0): \(label.title)" } ?? label.title
         guard let targetRPE, targetRPE > 0 else { return base }
-        return "\(base) · RPE \(targetRPE)"
+        return "\(base), RPE \(targetRPE)"
     }
 }
 
@@ -304,7 +304,7 @@ struct DurationPill: View {
                 Image(systemName: "clock")
                     .font(.system(size: 10, weight: .semibold))
                 Text(displayText)
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .font(.lockinMeta.monospacedDigit())
                     .lineLimit(1)
             }
             .foregroundStyle(AppTheme.muted)
@@ -467,12 +467,11 @@ struct WeekPlanRow: View {
 struct WorkoutStatusIcon: View {
     var status: SessionStatus
 
-    private var iconName: String {
+    private var waypoint: WaypointState {
         switch status {
-        case .planned: "circle"
-        case .completed, .deload: "checkmark.circle.fill"
-        case .partial: "minus.circle.fill"
-        case .missed: "xmark.circle.fill"
+        case .planned: .planned
+        case .completed, .deload, .partial: .done
+        case .missed: .missed
         }
     }
 
@@ -487,9 +486,8 @@ struct WorkoutStatusIcon: View {
     }
 
     var body: some View {
-        Image(systemName: iconName)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(status == .planned ? AppTheme.faint : AppTheme.statusColor(status))
+        WaypointMarker(state: waypoint, size: 22)
+            .accessibilityElement()
             .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -521,8 +519,8 @@ struct WorkoutStatusPill: View {
     }
 }
 
-/// Animated check circle for prescription rows: gold fill on completion with
-/// a symbol bounce and light haptic.
+/// Waypoint check for prescription rows: an open trail waypoint that fills
+/// granite with a check, with a light haptic.
 struct CheckCircle: View {
     var isComplete: Bool
     var accessibilityName: String
@@ -530,11 +528,8 @@ struct CheckCircle: View {
 
     var body: some View {
         Button(action: onToggle) {
-            Image(systemName: isComplete ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(isComplete ? AppTheme.accent : AppTheme.faint)
-                .symbolEffect(.bounce, options: .speed(1.4), value: isComplete)
-                .frame(width: 34, height: 34)
+            WaypointMarker(state: isComplete ? .done : .planned, size: 28)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -554,11 +549,11 @@ struct InfoLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
-                .font(.footnote)
+                .font(.trail(15, .regular, relativeTo: .subheadline))
                 .foregroundStyle(AppTheme.muted)
             Spacer()
             Text(value)
-                .font(.footnote.weight(.semibold).monospacedDigit())
+                .font(.trail(15, .semibold, relativeTo: .subheadline).monospacedDigit())
                 .foregroundStyle(valueColor)
                 .multilineTextAlignment(.trailing)
         }
@@ -637,5 +632,276 @@ struct EmptyStateView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .ruled(verticalPadding: 20)
+    }
+}
+
+// MARK: - Trailhead: trail marks
+
+/// Effort as Swiss trail grades: the yellow hiking trail is light, the
+/// white-red-white mountain trail is medium to hard, the white-blue-white
+/// alpine route is very hard to max output.
+enum TrailGrade {
+    case hiking
+    case mountain
+    case alpine
+
+    init(_ label: PlannedEffortLabel) {
+        switch label {
+        case .light: self = .hiking
+        case .medium, .hard: self = .mountain
+        case .veryHard, .maxOutput: self = .alpine
+        }
+    }
+
+    /// The middle stripe of a painted mark; the hiking grade is plain yellow.
+    var stripe: Color? {
+        switch self {
+        case .hiking: nil
+        case .mountain: AppTheme.markerRed
+        case .alpine: AppTheme.markerBlue
+        }
+    }
+}
+
+/// White-stripe-white bands, as painted on rocks and sign tips.
+private struct TrailStripes: View {
+    var stripe: Color
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.white
+            stripe
+            Color.white
+        }
+    }
+}
+
+struct TrailMark: View {
+    var grade: TrailGrade
+    /// Nil stretches the mark to the available width (a grade band).
+    var width: CGFloat? = 20
+    var height: CGFloat = 13
+
+    var body: some View {
+        ZStack {
+            if let stripe = grade.stripe {
+                TrailStripes(stripe: stripe)
+            } else {
+                AppTheme.sign
+            }
+        }
+        .frame(width: width, height: height)
+        .frame(maxWidth: width == nil ? .infinity : nil)
+        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .strokeBorder(AppTheme.text.opacity(0.3), lineWidth: 1)
+        )
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Trailhead: signposts
+
+/// A Swiss trail sign: a plate with an arrow tip on the trailing edge.
+struct SignShape: Shape {
+    var tip: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - tip, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.maxX - tip, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Destination on the left, time on the right, like a trail sign. A
+/// mountain or alpine grade paints the tip. Signs are information, never
+/// buttons.
+struct Signpost: View {
+    enum Size {
+        case large
+        case small
+    }
+
+    enum Style {
+        /// The normal yellow sign.
+        case yellow
+        /// A white plate with a granite outline, for "nothing due" days.
+        case plain
+    }
+
+    var eyebrow: String
+    var title: String
+    var trailing: String
+    var grade: TrailGrade?
+    var size: Size = .large
+    var style: Style = .yellow
+
+    private var isLarge: Bool { size == .large }
+    private var tip: CGFloat { isLarge ? 34 : 28 }
+    private var stripeWidth: CGFloat { isLarge ? 64 : 58 }
+    private var stripe: Color? { grade?.stripe }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: isLarge ? 1 : 0) {
+                Text(eyebrow)
+                    .font(.trail(isLarge ? 14 : 13, .semibold, relativeTo: .subheadline))
+                Text(title)
+                    .font(isLarge ? .lockinDisplay : .trail(20, .bold, relativeTo: .title3))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+            }
+            Spacer(minLength: 8)
+            if !trailing.isEmpty {
+                Text(trailing)
+                    .font(.trail(isLarge ? 27 : 20, .bold, relativeTo: .title2).monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .foregroundStyle(AppTheme.text)
+        .padding(.leading, 20)
+        .padding(.trailing, (stripe == nil ? tip : stripeWidth) + 14)
+        .padding(.vertical, 10)
+        .frame(minHeight: isLarge ? 96 : 64)
+        .background {
+            ZStack(alignment: .trailing) {
+                style == .yellow ? AppTheme.sign : AppTheme.surface
+                if let stripe {
+                    TrailStripes(stripe: stripe)
+                        .frame(width: stripeWidth)
+                }
+            }
+            .clipShape(SignShape(tip: tip))
+        }
+        .overlay {
+            if style == .plain {
+                SignShape(tip: tip)
+                    .stroke(AppTheme.text, lineWidth: 2)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Signs mounted on one grey post. The first sign runs full width; later
+/// ones are inset so the stack reads as a real signpost.
+struct SignpostStack<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            content
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 22)
+        .background(alignment: .topLeading) {
+            UnevenRoundedRectangle(topLeadingRadius: 3, topTrailingRadius: 3)
+                .fill(AppTheme.post)
+                .frame(width: 12)
+                .padding(.leading, 28)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+/// "1 h 15" / "28 min": the time on a sign.
+func signDurationText(minutes: Int) -> String {
+    guard minutes > 0 else { return "" }
+    if minutes < 60 { return "\(minutes) min" }
+    let hours = minutes / 60
+    let rest = minutes % 60
+    return rest == 0 ? "\(hours) h" : "\(hours) h \(rest)"
+}
+
+// MARK: - Trailhead: waypoints
+
+enum WaypointState {
+    case done
+    case planned
+    /// "You are here": the current step or today.
+    case current
+    case missed
+    case rest
+    /// Nothing planned yet.
+    case unplanned
+}
+
+struct WaypointMarker: View {
+    var state: WaypointState
+    var size: CGFloat = 30
+
+    var body: some View {
+        ZStack {
+            switch state {
+            case .done:
+                Circle().fill(AppTheme.text)
+                Image(systemName: "checkmark")
+                    .font(.system(size: size * 0.42, weight: .heavy))
+                    .foregroundStyle(Color.white)
+            case .planned:
+                Circle().fill(AppTheme.surface)
+                Circle().strokeBorder(AppTheme.text, lineWidth: 3)
+            case .current:
+                Circle().fill(AppTheme.sign)
+                Circle().strokeBorder(AppTheme.text, lineWidth: 3)
+            case .missed:
+                Circle().fill(AppTheme.surface)
+                Circle().strokeBorder(AppTheme.markerRed, lineWidth: 3)
+                Image(systemName: "xmark")
+                    .font(.system(size: size * 0.34, weight: .heavy))
+                    .foregroundStyle(AppTheme.markerRed)
+            case .rest:
+                Circle()
+                    .fill(AppTheme.post.opacity(0.55))
+                    .frame(width: size * 0.4, height: size * 0.4)
+            case .unplanned:
+                Circle()
+                    .fill(AppTheme.surface)
+                Circle()
+                    .strokeBorder(AppTheme.post, style: StrokeStyle(lineWidth: 2, dash: [3, 3]))
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The dashed trail drawn between waypoints, vertical or horizontal.
+struct TrailLine: Shape {
+    var axis: Axis = .vertical
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        if axis == .vertical {
+            path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        } else {
+            path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        }
+        return path
+    }
+}
+
+extension View {
+    /// Draws the dashed trail behind a column of waypoint rows. `inset` is
+    /// the distance from the top of the first row (and the bottom of the
+    /// last) to its waypoint's centre; `leading` is the waypoint centre.
+    func trailBehind(leading: CGFloat = 22, inset: CGFloat = 29) -> some View {
+        background(alignment: .topLeading) {
+            TrailLine()
+                .stroke(AppTheme.post, style: StrokeStyle(lineWidth: 3, dash: [6, 6]))
+                .frame(width: 3)
+                .padding(.vertical, inset)
+                .padding(.leading, leading - 1.5)
+                .accessibilityHidden(true)
+        }
     }
 }
