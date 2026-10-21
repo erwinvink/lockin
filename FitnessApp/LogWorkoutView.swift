@@ -282,6 +282,7 @@ struct LogRunView: View {
             _distanceText = State(initialValue: "")
             _rpe = State(initialValue: log.rpe > 0 ? log.rpe : session.map(initialLoggedRPE(for:)) ?? 4)
             _howFelt = State(initialValue: log.rpe > 0 ? log.feelScore : 3)
+            _notes = State(initialValue: log.notes)
         }
     }
 
@@ -314,7 +315,11 @@ struct LogRunView: View {
     var body: some View {
         NavigationStack {
             ScreenBackground {
-                if let session {
+                if case .rate(let log, let session) = mode {
+                    RunSourceLine(log: log)
+                    MatchedPlanSign(session: session)
+                    RunStatsGrid(log: log)
+                } else if let session {
                     LogSessionHeader(
                         title: session.title,
                         meta: session.scheduledDate.formatted(.dateTime.weekday(.wide).day().month(.wide)),
@@ -339,22 +344,20 @@ struct LogRunView: View {
 
                 EffortSection(rpe: $rpe, plannedRPE: session.map(plannedRPE(for:)) ?? 0)
 
-                FeelSection(howFelt: $howFelt)
+                FeelSection(howFelt: $howFelt, title: "How did it feel?")
 
-                if isLogMode {
-                    NotesSection(notes: $notes)
-                }
+                NotesSection(notes: $notes, placeholder: "Fuel, terrain, anything that hurt…")
 
                 if let saveError {
                     SaveErrorText(text: saveError)
                 }
 
-                Button(isLogMode ? "Save run" : "Save rating", action: save)
+                Button(isLogMode ? "Save run" : "Confirm run", action: save)
                     .buttonStyle(PrimaryActionButtonStyle())
                     .disabled(isSaving || parsedDistanceKm == nil || parsedMinutes == nil)
                     .accessibilityIdentifier("save-run-log-button")
             }
-            .navigationTitle(isLogMode ? "Log run" : "Rate run")
+            .navigationTitle(isLogMode ? "Log run" : "Confirm run")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -417,7 +420,7 @@ struct LogRunView: View {
                 )
                 didTriggerDeload = status == .deload
             case .rate(let log, let session):
-                try rateRun(log, rpe: rpe, howFelt: howFelt, session: session, in: modelContext)
+                try rateRun(log, rpe: rpe, howFelt: howFelt, notes: notes, session: session, in: modelContext)
                 didTriggerDeload = ReadinessScale.fatigueLevel(fromHowFelt: howFelt) >= 9
             }
         } catch {
@@ -469,6 +472,123 @@ private struct LogSessionHeader: View {
                 .accessibilityElement(children: .combine)
             }
         }
+    }
+}
+
+/// Where a confirmed run came from: "From Garmin, Tuesday 9 June at 07:12".
+private struct RunSourceLine: View {
+    var log: RunLog
+
+    var body: some View {
+        let when = log.completedAt.formatted(.dateTime.weekday(.wide).day().month(.wide))
+        let time = log.completedAt.formatted(date: .omitted, time: .shortened)
+        Label {
+            Text("\(log.source == .garmin ? "From Garmin" : "Logged by hand"), \(when) at \(time)")
+        } icon: {
+            Image(systemName: log.source == .garmin ? "applewatch" : "pencil")
+                .foregroundStyle(AppTheme.text)
+        }
+        .font(.trail(14, .regular, relativeTo: .subheadline))
+        .foregroundStyle(AppTheme.muted)
+    }
+}
+
+/// The planned session the run was matched to, as its trail sign.
+private struct MatchedPlanSign: View {
+    var session: WorkoutSession?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let session {
+                Text("Matched to your plan")
+                    .font(.trail(14, .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+                Signpost(
+                    eyebrow: "",
+                    title: session.title,
+                    trailing: session.plannedDistanceKm > 0 ? runDistanceText(km: session.plannedDistanceKm) : "",
+                    grade: session.plannedEffortLabel.map(TrailGrade.init),
+                    size: .small
+                )
+            } else {
+                Text("Not matched to a planned session. It still counts as training.")
+                    .font(.trail(14, .regular, relativeTo: .subheadline))
+                    .foregroundStyle(AppTheme.muted)
+            }
+        }
+    }
+}
+
+/// What the watch recorded, three across. A metric Garmin didn't send
+/// shows a dash rather than a zero.
+private struct RunStatsGrid: View {
+    var log: RunLog
+
+    private var paceSeconds: Int {
+        if log.averagePaceSecPerKm > 0 { return log.averagePaceSecPerKm }
+        guard log.distanceKm > 0, log.movingSeconds > 0 else { return 0 }
+        return Int((Double(log.movingSeconds) / log.distanceKm).rounded())
+    }
+
+    private var stats: [(title: String, value: String)] {
+        [
+            ("Distance", log.distanceKm > 0 ? runDistanceText(km: log.distanceKm) : "–"),
+            ("Moving time", log.movingSeconds > 0 ? movingTimeText(log.movingSeconds) : "–"),
+            ("Pace", paceSeconds > 0 ? runPaceText(secondsPerKm: paceSeconds) : "–"),
+            ("Avg heart rate", log.averageHr > 0 ? "\(log.averageHr) bpm" : "–"),
+            ("Climb", log.elevationGainM > 0 ? "\(log.elevationGainM) m" : "–"),
+            ("Descent", log.elevationLossM > 0 ? "\(log.elevationLossM) m" : "–"),
+        ]
+    }
+
+    var body: some View {
+        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(0..<2, id: \.self) { row in
+                if row == 1 {
+                    Rectangle()
+                        .fill(AppTheme.dividerSoft)
+                        .frame(height: 1)
+                        .gridCellUnsizedAxes(.horizontal)
+                }
+                GridRow {
+                    ForEach(0..<3, id: \.self) { column in
+                        let stat = stats[row * 3 + column]
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stat.title)
+                                .font(.trail(12, .regular, relativeTo: .caption1))
+                                .foregroundStyle(AppTheme.muted)
+                            Text(stat.value)
+                                .font(.trail(20, .bold, relativeTo: .title3).monospacedDigit())
+                                .foregroundStyle(AppTheme.text)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .overlay(alignment: .trailing) {
+                            if column < 2 {
+                                Rectangle()
+                                    .fill(AppTheme.dividerSoft)
+                                    .frame(width: 1)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+            }
+        }
+        .card(padding: 0)
+    }
+
+    /// "1:48:00" past an hour, "33:00" under one.
+    private func movingTimeText(_ seconds: Int) -> String {
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let rest = seconds % 60
+        return hours > 0
+            ? "\(hours):" + String(format: "%02d:%02d", minutes, rest)
+            : "\(minutes):" + String(format: "%02d", rest)
     }
 }
 
@@ -791,10 +911,11 @@ private struct PainSection: View {
 
 private struct FeelSection: View {
     @Binding var howFelt: Int
+    var title = "How did you feel?"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ScaleHeading(title: "How did you feel?", valueText: "")
+            ScaleHeading(title: title, valueText: "")
 
             ScaleSelector(accessibilityName: "How did you feel", values: Array(1...5), selection: $howFelt, minHeight: 52) { value, _ in
                 Text(ReadinessScale.howIFelt(value).label)
@@ -814,13 +935,14 @@ private struct FeelSection: View {
 
 private struct NotesSection: View {
     @Binding var notes: String
+    var placeholder = "What changed? Grip, sleep, soreness…"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Notes")
                 .font(.trail(17, .semibold, relativeTo: .headline))
                 .foregroundStyle(AppTheme.text)
-            TextField("What changed? Grip, sleep, soreness…", text: $notes, axis: .vertical)
+            TextField(placeholder, text: $notes, axis: .vertical)
                 .font(.lockinBody)
                 .lineLimit(3...6)
                 .lockinField()

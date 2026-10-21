@@ -436,8 +436,10 @@ struct Signpost: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: isLarge ? 1 : 0) {
-                Text(eyebrow)
-                    .font(.trail(isLarge ? 14 : 13, .semibold, relativeTo: .subheadline))
+                if !eyebrow.isEmpty {
+                    Text(eyebrow)
+                        .font(.trail(isLarge ? 14 : 13, .semibold, relativeTo: .subheadline))
+                }
                 Text(title)
                     .font(isLarge ? .lockinDisplay : .trail(20, .bold, relativeTo: .title3))
                     .lineLimit(2)

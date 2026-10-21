@@ -517,10 +517,20 @@ func recordManualRun(
 /// Lets the athlete add RPE and feel to a run Garmin completed. A "very
 /// weak" feel turns the completed session into a deload; the score already
 /// counted the run, so it is not scored again.
-func rateRun(_ log: RunLog, rpe: Int, howFelt: Int, session: WorkoutSession?, in modelContext: ModelContext) throws {
+func rateRun(
+    _ log: RunLog,
+    rpe: Int,
+    howFelt: Int,
+    notes: String? = nil,
+    session: WorkoutSession?,
+    in modelContext: ModelContext
+) throws {
     do {
         log.rpe = min(10, max(1, rpe))
         log.feelScore = min(5, max(1, howFelt))
+        if let notes {
+            log.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         if let session, session.status == .completed,
            ReadinessScale.fatigueLevel(fromHowFelt: howFelt) >= 9 {
             session.status = .deload

@@ -2217,6 +2217,24 @@ extension PersistenceResetTests {
         XCTAssertEqual(run.status, .deload)
     }
 
+    func testRateRunStoresTrimmedNotesAndKeepsThemWhenNoneAreGiven() throws {
+        let container = try ModelContainerFactory.make(inMemory: true)
+        let modelContext = container.mainContext
+        let run = plannedRunFixture(scheduledDate: Date(), distanceKm: 16)
+        run.status = .completed
+        let log = RunLog(sessionId: run.id, distanceKm: 16.4, notes: "Old note", garminActivityId: "2", source: .garmin)
+        modelContext.insert(run)
+        modelContext.insert(log)
+        try modelContext.save()
+
+        try rateRun(log, rpe: 6, howFelt: 4, session: run, in: modelContext)
+        XCTAssertEqual(log.notes, "Old note")
+
+        try rateRun(log, rpe: 6, howFelt: 4, notes: "  Gel at 40 min, rocky descent.\n", session: run, in: modelContext)
+        XCTAssertEqual(log.notes, "Gel at 40 min, rocky descent.")
+        XCTAssertEqual(run.status, .completed)
+    }
+
     /// W1 review: a run cut short because the athlete felt terrible is a
     /// deload, not just a partial.
     func testShortManualRunWithVeryWeakFeelIsDeload() throws {
