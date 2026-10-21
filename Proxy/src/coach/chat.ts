@@ -15,16 +15,19 @@ export const COACH_CHAT_MAX_TEXT_LENGTH = 1200;
 // context); quote only its start so the answer stays under the text limit.
 const QUOTED_NOTE_MAX_LENGTH = 280;
 
-export type CoachChatIntent =
-  | "working"
-  | "schedule"
-  | "improvement"
-  | "motivation"
-  | "fatigue"
-  | "pain"
-  | "today"
-  | "unsupported"
-  | "general";
+export const COACH_CHAT_INTENTS = [
+  "working",
+  "schedule",
+  "improvement",
+  "motivation",
+  "fatigue",
+  "pain",
+  "today",
+  "unsupported",
+  "general"
+] as const;
+
+export type CoachChatIntent = (typeof COACH_CHAT_INTENTS)[number];
 
 export type CoachChatResponse = {
   answer: string;
@@ -33,11 +36,12 @@ export type CoachChatResponse = {
   memorySummary: string;
   contextState: CoachContext["readiness"]["state"];
   answerKind: CoachChatIntent;
-  usedModel: false;
+  /** True when the coach model wrote the answer; false for the built-in template fallback. */
+  usedModel: boolean;
   generatedAt: string;
 };
 
-type BuildCoachChatInput = {
+export type BuildCoachChatInput = {
   messages: CoachChatMessage[];
   context: CoachContext;
   signals: TrainingSignals | null;
@@ -105,8 +109,13 @@ export function buildCoachChatResponse(input: BuildCoachChatInput): CoachChatRes
     contextState: input.context.readiness.state,
     answerKind: intent,
     usedModel: false,
-    generatedAt: (input.generatedAt ?? new Date()).toISOString()
+    generatedAt: formatGeneratedAt(input.generatedAt ?? new Date())
   };
+}
+
+/** ISO-8601 without milliseconds: older iOS builds decode dates with plain `.iso8601`. */
+export function formatGeneratedAt(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 export function classifyCoachChatQuestion(question: string): CoachChatIntent {
@@ -364,11 +373,11 @@ function followUpsForIntent(intent: CoachChatIntent): string[] {
   }
 }
 
-function latestUserQuestion(messages: CoachChatMessage[]): string {
+export function latestUserQuestion(messages: CoachChatMessage[]): string {
   return [...messages].reverse().find((message) => message.role === "user")?.text.trim() ?? "";
 }
 
-function summarizeEarlierQuestions(messages: CoachChatMessage[]): string {
+export function summarizeEarlierQuestions(messages: CoachChatMessage[]): string {
   const userQuestions = messages
     .filter((message) => message.role === "user")
     .map((message) => message.text.trim())
@@ -439,7 +448,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function truncateText(text: string, maxLength: number): string {
+export function truncateText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   const cut = text.slice(0, maxLength - 1);
   const lastSpace = cut.lastIndexOf(" ");

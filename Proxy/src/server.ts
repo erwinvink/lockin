@@ -30,7 +30,7 @@ import {
   type AutoPlanSource,
   type AutoPlanTrigger
 } from "./coach/auto-plan";
-import { buildCoachChatResponse } from "./coach/chat";
+import { answerCoachChat, type CoachChatModelCall } from "./coach/chat-model";
 import { buildCoachContextFromClient, parseCoachChatPayload } from "./coach/chat-request";
 import { appTokenFromEnv, isAuthorizedAppRequest } from "./app-auth";
 import { createGarminEnricher } from "./garmin/garmin-enrichment";
@@ -144,15 +144,24 @@ createServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === "POST" && req.url === "/coach-chat") {
       const chatPayload = parseCoachChatPayload(parseJSONBody(await readBody(req)));
       const payload = chatPayload.request;
+      const model = resolveCoachModel(payload.model);
 
       const context = await enrichWithGarmin(buildCoachContextFromClient(payload), payload.userId);
       const trainingSignals = computeTrainingSignals(context);
       const evaluation = evaluateCoachRead(context, trainingSignals);
-      writeJSON(res, 200, buildCoachChatResponse({
+      writeJSON(res, 200, await answerCoachChat({
         messages: chatPayload.messages,
         context,
         signals: trainingSignals,
-        evaluation
+        evaluation,
+        request: payload,
+        model,
+        callModel: apiKey
+          ? coachChatModelCaller(apiKey, coachTelemetry(payload, model, "/coach-chat", "coach_chat", context))
+          : null,
+        onFallback: (reason, details) => {
+          console.warn(`coach_chat.fallback ${JSON.stringify({ reason, model, ...details })}`);
+        }
       }));
       return;
     }
@@ -1070,6 +1079,11 @@ function buildCoachPromptPayload(
 /** The request body, capped at MAX_REQUEST_BODY_BYTES (413 above it). */
 function readBody(req: IncomingMessage): Promise<string> {
   return readRequestBody(req);
+}
+
+/** The coach-chat model call: one Responses request through the telemetry wrapper. */
+function coachChatModelCaller(apiKey: string, telemetry: OpenAIRequestTelemetry): CoachChatModelCall {
+  return (body, { timeoutMs }) => fetchOpenAIResponse(apiKey, body, telemetry, { timeoutMs });
 }
 
 function writeJSON(res: ServerResponse, status: number, body: unknown) {
