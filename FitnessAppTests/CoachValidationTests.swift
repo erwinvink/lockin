@@ -2089,6 +2089,21 @@ extension CoachValidationTests {
         XCTAssertFalse(PlanRefreshRequest.shouldRetry(after: AutoPlanTriggerOutcome(message: "done", appliedNewPlan: true, reachedProxy: true)))
     }
 
+    /// A proxy error answer (e.g. a 422 or 500 from plan validation) counts as
+    /// reached, so New plan shows the proxy's message and the app doesn't
+    /// force a fresh generation on every open. Gateway errors and transport
+    /// failures still count as not reached and are retried.
+    func testProxyErrorAnswersCountAsReachedButGatewayErrorsDoNot() {
+        let url = URL(string: "http://127.0.0.1:8787/plan/trigger")!
+        XCTAssertTrue(AutoPlanTriggerOutcome.proxyAnswered(despite: CoachClientError.invalidStatus(422, "invalid week")))
+        XCTAssertTrue(AutoPlanTriggerOutcome.proxyAnswered(despite: CoachClientError.invalidStatus(500, nil)))
+        XCTAssertTrue(AutoPlanTriggerOutcome.proxyAnswered(despite: CoachClientError.validationFailed(["bad"])))
+        XCTAssertFalse(AutoPlanTriggerOutcome.proxyAnswered(despite: CoachClientError.invalidStatus(502, nil)))
+        XCTAssertFalse(AutoPlanTriggerOutcome.proxyAnswered(despite: CoachClientError.invalidStatus(503, nil)))
+        XCTAssertFalse(AutoPlanTriggerOutcome.proxyAnswered(despite: CoachClientError.proxyUnavailable(url, URLError(.cannotConnectToHost))))
+        XCTAssertFalse(AutoPlanTriggerOutcome.proxyAnswered(despite: URLError(.notConnectedToInternet)))
+    }
+
     /// S5: when the proxy is locked with LOCKIN_APP_TOKEN, every call carries it.
     func testCoachClientSendsAppTokenWhenConfigured() throws {
         var client = try LocalCoachClient(endpointString: "https://lockin.elevenfactor.com/generate-week-plan")

@@ -177,6 +177,21 @@ struct AutoPlanTriggerOutcome: Equatable {
     var appliedNewPlan: Bool
     /// False when the request never got an answer (offline, busy, bad URL).
     var reachedProxy: Bool = false
+
+    /// True when the error is the coach proxy's own answer (an HTTP error
+    /// status or a body that failed checks), so the screen shows the proxy's
+    /// message instead of "offline" and the app doesn't re-ask on every open.
+    /// Gateway errors (502-504) mean the proxy itself is down: not answered.
+    static func proxyAnswered(despite error: Error) -> Bool {
+        switch error as? CoachClientError {
+        case .invalidStatus(let status, _)?:
+            return ![502, 503, 504].contains(status)
+        case .invalidResponse?, .validationFailed?:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// A brand-new profile (no sessions at all) gets one forced first plan
@@ -222,6 +237,7 @@ enum AutoPlanCoordinator {
         isTriggering = true
         defer { isTriggering = false }
 
+        var proxyAnswered = false
         do {
             let response = try await client.triggerAutoPlan(AutoPlanTriggerRequest(
                 source: source,
@@ -230,13 +246,18 @@ enum AutoPlanCoordinator {
                 timeZone: TimeZone.current.identifier,
                 request: request
             ))
+            proxyAnswered = true
             if let generatedPlan = response.generatedPlan, response.generated {
                 let result = try await apply(generatedPlan: generatedPlan, endpoint: endpoint, profile: profile, in: modelContext)
                 return AutoPlanTriggerOutcome(message: result.message ?? response.message, appliedNewPlan: result.applied, reachedProxy: true)
             }
             return AutoPlanTriggerOutcome(message: response.message, appliedNewPlan: false, reachedProxy: true)
         } catch {
-            return AutoPlanTriggerOutcome(message: error.localizedDescription, appliedNewPlan: false)
+            return AutoPlanTriggerOutcome(
+                message: error.localizedDescription,
+                appliedNewPlan: false,
+                reachedProxy: proxyAnswered || AutoPlanTriggerOutcome.proxyAnswered(despite: error)
+            )
         }
     }
 
