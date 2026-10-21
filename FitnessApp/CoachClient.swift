@@ -388,6 +388,9 @@ struct CoachPlanRequest: Codable, Equatable {
     var targetDate: Date
     var trainingLogs: [CoachLog]
     var plannedSessions: [CoachPlannedSession]
+    /// Local midnight of the day the current plan block began, so the proxy
+    /// can tell which week of the block it plans.
+    var planBlockStartedAt: Date? = nil
     var running: CoachRunningRequest? = nil
     /// IANA zone of the athlete, so the proxy can find "today" and "due"
     /// with local midnights (DST-safe).
@@ -1853,7 +1856,7 @@ func makeCoachRequest(
             pushUps: profile.goalPushUps,
             plankSeconds: profile.goalPlankSeconds
         ),
-        profileNotes: profile.painNotes,
+        profileNotes: coachProfileNotes(for: profile),
         weekStart: weekStart,
         weeklySessions: selectedDays.count,
         trainingDays: selectedDays.map(\.rawValue),
@@ -1904,9 +1907,20 @@ func makeCoachRequest(
                     }
             )
         },
+        planBlockStartedAt: Calendar.current.startOfDay(for: profile.planBlockStartedAt),
         running: running,
         timeZone: timeZone.identifier
     )
+}
+
+/// The athlete's notes for the coach: pain notes, plus the session length
+/// cap when one is set. The request has no field for it; the planner reads
+/// these notes.
+func coachProfileNotes(for profile: UserProfile) -> String {
+    guard profile.sessionMinutes > 0 else { return profile.painNotes }
+    let cap = "Keep each strength session within \(profile.sessionMinutes) minutes."
+    let notes = profile.painNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+    return notes.isEmpty ? cap : "\(notes) \(cap)"
 }
 
 func coachHistoryLogs(from logs: [PerformanceLog], now: Date = Date()) -> [PerformanceLog] {

@@ -226,6 +226,43 @@ final class NewPlanTests: XCTestCase {
         )
     }
 
+    func testCoachRequestSendsPlanBlockStartAsLocalMidnight() throws {
+        let profile = profileFixture(createdAt: day(-40))
+        let blockStart = day(-9).addingTimeInterval(13 * 3_600)
+        profile.planBlockStartedAt = blockStart
+
+        let request = makeCoachRequest(profile: profile, modelID: "gpt-5-mini", logs: [], sessions: [], weekStart: calendar.startOfDay(for: now))
+        let data = try JSONEncoder.coachEncoder.encode(request)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        let midnight = calendar.startOfDay(for: blockStart)
+        XCTAssertEqual(request.planBlockStartedAt, midnight)
+        XCTAssertEqual(object["planBlockStartedAt"] as? String, ISO8601DateFormatter().string(from: midnight))
+
+        // A profile from before new plans existed counts from its creation.
+        let legacy = profileFixture(createdAt: day(-40))
+        let legacyRequest = makeCoachRequest(profile: legacy, modelID: "gpt-5-mini", logs: [], sessions: [])
+        XCTAssertEqual(legacyRequest.planBlockStartedAt, calendar.startOfDay(for: day(-40)))
+    }
+
+    func testCoachProfileNotesCarryTheSessionLength() {
+        let profile = profileFixture()
+        XCTAssertEqual(coachProfileNotes(for: profile), "Keep shoulders warm before pull work.")
+
+        profile.sessionMinutes = 45
+        XCTAssertEqual(
+            coachProfileNotes(for: profile),
+            "Keep shoulders warm before pull work. Keep each strength session within 45 minutes."
+        )
+        XCTAssertEqual(
+            makeCoachRequest(profile: profile, modelID: "gpt-5-mini", logs: [], sessions: []).profileNotes,
+            "Keep shoulders warm before pull work. Keep each strength session within 45 minutes."
+        )
+
+        profile.painNotes = ""
+        XCTAssertEqual(coachProfileNotes(for: profile), "Keep each strength session within 45 minutes.")
+    }
+
     // MARK: Fixtures
 
     private func day(_ offset: Int) -> Date {
