@@ -1,4 +1,5 @@
-import type { CoachContext, CoachEvaluation, CoachSnapshot, TrainingLog } from "./planner/types";
+import { contextSeason, POST_RACE_STRENGTH_TEXT, raceTimingText } from "./planner/season";
+import type { CoachContext, CoachEvaluation, CoachSnapshot, Season, TrainingLog } from "./planner/types";
 import type { TrainingSignals } from "./planner/compute-training-signals";
 
 export type CoachChatRole = "user" | "coach";
@@ -182,7 +183,7 @@ function answerForIntent(
       return [
         `${memoryPrefix}Fatigue is worth watching, but I would not call it a red-alert from this data alone.`,
         `Latest logged fatigue is ${facts.latestFatigue ?? "unknown"}/10 and the highest recent fatigue is ${facts.maxRecentFatigue}/10.`,
-        `${facts.readinessLine} If that tired feeling climbs or your session effort keeps landing above plan, cap intensity before adding volume.`
+        `${facts.readinessLine} If that tired feeling climbs, or sessions you do as planned keep feeling harder than planned, cap intensity before adding volume. Doing more than planned is not a warning sign: it shows you can take more.`
       ].join(" ");
     case "pain":
       return painAnswer(question, facts, evaluation, memoryPrefix);
@@ -296,9 +297,7 @@ function collectFacts(
   const readinessLine = `Readiness is ${humanize(evaluation.readiness.state)}. ${evaluation.readiness.rationale}`;
   const progressLine = `Progress is ${humanize(evaluation.progress.state)}. ${evaluation.progress.rationale}`;
   const planLine = `Plan decision: ${humanize(evaluation.planDecision.action)}. ${evaluation.planDecision.rationale}`;
-  const raceLine = context.running
-    ? `${context.running.raceGoal.name}: ${context.running.weeksToRace} weeks out for ${context.running.raceGoal.distanceKm} km and ${context.running.raceGoal.elevationGainM} m+.`
-    : null;
+  const raceLine = context.running ? raceLineFor(context.running, contextSeason(context)) : null;
   const runningLine = signals
     ? `Running: ${signals.running.last7DaysKm} km in the last 7 days, longest recent run ${signals.running.longestRunLast6WeeksKm} km.`
     : null;
@@ -322,6 +321,24 @@ function collectFacts(
     todayLine,
     profileNotes: context.profile.profileNotes
   };
+}
+
+/**
+ * The race as the season reads it: days in the final week, "N days ago"
+ * after the race, "your race" without a name, and no race without a
+ * readable date; never "0 weeks out".
+ */
+function raceLineFor(running: NonNullable<CoachContext["running"]>, season: Season): string {
+  const demand = `${running.raceGoal.distanceKm} km and ${running.raceGoal.elevationGainM} m+`;
+  const name = season.raceName;
+  if (season.daysSinceRace !== null) {
+    const ago = `${name ? `Your race, ${name},` : "Your race"} was ${raceTimingText(season)}`;
+    return season.raceState === "recent"
+      ? `${ago} (${demand}): running recovers first until day ${season.postRaceDays} after the race, while ${POST_RACE_STRENGTH_TEXT}.`
+      : `${ago}, and no next race is planned.`;
+  }
+  if (season.daysToRace === null) return "No race is planned.";
+  return `${name ?? "Your race"} is ${raceTimingText(season)}: ${demand}.`;
 }
 
 function evidenceForIntent(intent: CoachChatIntent, facts: CoachChatFacts): string[] {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { clampWeeklyPlan } from "./strength-guardrails";
 import { validateWeeklyPlan } from "./validate-week-plan";
 import type { CoachContext, WeeklyPlan } from "./types";
 
@@ -187,12 +188,13 @@ test("rejects oversized progression and increasing sets with reps", () => {
   assert.ok(result.messages.some((message) => message.includes("cannot increase sets")));
 });
 
-test("allows maintenance when deterministic fixed running load supports it", () => {
-  const result = validateWeeklyPlan(balancedPlan(), earnedProgressionContext(), {
-    allowProgressionHoldForRunning: true
-  });
+// Task 8: a heavy running week used to allow a maintenance hold of earned
+// progression; upper-body goal work has no maintenance week any more.
+test("a plan that holds earned progression is sent back whatever the running week", () => {
+  const result = validateWeeklyPlan(balancedPlan(), earnedProgressionContext(), { plannedRuns: [{ dayOffset: 1, kind: "tempo" }, { dayOffset: 3, kind: "hills" }, { dayOffset: 5, kind: "long" }] });
 
-  assert.deepEqual(result, { accepted: true, messages: [] });
+  assert.equal(result.accepted, false);
+  assert.ok(result.messages.some((message) => message.includes("earned") && message.includes("progression")), result.messages.join("\n"));
 });
 
 test("rejects max output unless it is a test", () => {
@@ -248,11 +250,14 @@ test("rejects sessions outside selected future training day offsets", () => {
   assert.ok(result.messages.some((message) => message.includes("selected future training days")));
 });
 
+// Training days are availability: fewer sessions than free days are fine, down
+// to the normal-week minimum of 3.
 test("accepts fewer strength sessions than selected future training day offsets", () => {
   const plan = balancedPlan();
   plan.sessions = [
     mixedSession("Monday work", 1),
-    mixedSession("Wednesday work", 3)
+    mixedSession("Wednesday work", 3),
+    mixedSession("Friday work", 5)
   ];
   const context: CoachContext = {
     ...baseContext,
@@ -453,3 +458,105 @@ function goalPerformance(options: {
     latestTestDate: null
   };
 }
+
+// Exposures per goal movement (14 Nov audit): a normal week trains each goal
+// exercise (pull-ups only with a pull-up bar) as useful work or a test in at
+// least 2 sessions, or in every session when fewer than 2 are planned.
+test("a normal week with push-ups in only one session is sent back", () => {
+  const plan = balancedPlan();
+  // Push-ups stay in the first mixed session only: the second one swaps them for pike push-ups.
+  plan.sessions[2] = {
+    ...plan.sessions[2],
+    exercises: plan.sessions[2].exercises.map((exercise) => exercise.exercise === "pushUp" ? { ...exercise, exercise: "pikePushUp" as const } : exercise)
+  };
+
+  const messages = validateWeeklyPlan(plan, baseContext).messages;
+
+  assert.ok(messages.some((message) => message.includes("Push-ups") && message.includes("1 of 4 sessions") && message.includes("at least 2")), messages.join("\n"));
+  assert.ok(!messages.some((message) => message.includes("Pull-ups") || message.includes("Plank appears")), messages.join("\n"));
+});
+
+// Final review item 2: an exposure is goal work that reaches the useful floor
+// (45% of the best) or a test. Push-ups at 3 x 9 for a best of 40 (22%) do
+// not count, whatever their effort label.
+test("push-up sessions far below the useful floor are no exposures; at the floor they count", () => {
+  const context: CoachContext = {
+    ...baseContext,
+    profile: { ...baseContext.profile, weeklySessions: 3 },
+    history: { ...baseContext.history, bestRecentTests: { pullUps: 8, pushUps: 40, plankSeconds: 90 } }
+  };
+  const week = (otherPushReps: number): WeeklyPlan => {
+    const plan = balancedPlan();
+    plan.sessions = [mixedSession("Upper-body strength", 1), mixedSession("Upper-body strength", 3), mixedSession("Upper-body volume", 5)];
+    plan.sessions.forEach((session, index) => {
+      for (const exercise of session.exercises) {
+        if (exercise.exercise === "pullUp") exercise.reps = 5;
+        if (exercise.exercise === "plank") exercise.seconds = 45;
+        if (exercise.exercise === "pushUp") exercise.reps = index === 0 ? 20 : otherPushReps;
+      }
+    });
+    return plan;
+  };
+
+  const messages = validateWeeklyPlan(week(9), context).messages;
+  assert.ok(
+    messages.some((message) => message.includes("Push-ups") && message.includes("1 of 3 sessions") && message.includes("18 reps or more")),
+    messages.join("\n")
+  );
+  assert.ok(!messages.some((message) => message.includes("Pull-ups") || message.includes("Plank appears")), messages.join("\n"));
+  assert.deepEqual(validateWeeklyPlan(week(18), context), { accepted: true, messages: [] });
+});
+
+// The last gap of the final review: with two push-up sessions at the useful
+// floor, a third at 3 x 9 labelled medium still passed. The label says useful
+// work, so the clamp raises the numbers to the floor. A week whose top block
+// is below the floor is no secondary block: the validator still names the floor.
+test("goal work at medium effort or harder below the useful floor is raised to it when the week's top block reaches it", () => {
+  const context: CoachContext = {
+    ...baseContext,
+    profile: { ...baseContext.profile, weeklySessions: 3 },
+    history: { ...baseContext.history, bestRecentTests: { pullUps: 8, pushUps: 40, plankSeconds: 90 } }
+  };
+  const week = (pushReps: number[]): WeeklyPlan => {
+    const plan = balancedPlan();
+    plan.sessions = [mixedSession("Upper-body strength", 1), mixedSession("Upper-body strength", 3), mixedSession("Upper-body volume", 5)];
+    plan.sessions.forEach((session, index) => {
+      for (const exercise of session.exercises) {
+        if (exercise.exercise === "pullUp") exercise.reps = 5;
+        if (exercise.exercise === "plank") exercise.seconds = 45;
+        if (exercise.exercise === "pushUp") exercise.reps = pushReps[index];
+      }
+    });
+    return plan;
+  };
+  const pushRepsOf = (plan: WeeklyPlan) => plan.sessions.map((session) => session.exercises.find((exercise) => exercise.exercise === "pushUp")?.reps);
+
+  const { plan: clamped, adjustments } = clampWeeklyPlan(week([20, 18, 9]), context);
+  assert.deepEqual(pushRepsOf(clamped), [20, 18, 18]);
+  assert.ok(adjustments.some((adjustment) => adjustment.includes("9 raised to the useful floor of 18 reps")), adjustments.join("\n"));
+  assert.match(clamped.sessions[2].safetyNotes.join(" ") + clamped.sessions[2].progressionRationale, /9 -> 18 reps/);
+  assert.deepEqual(validateWeeklyPlan(clamped, context), { accepted: true, messages: [] });
+
+  const low = clampWeeklyPlan(week([9, 9, 9]), context).plan;
+  assert.deepEqual(pushRepsOf(low), [9, 9, 9]);
+  assert.ok(validateWeeklyPlan(low, context).messages.some((message) => message.includes("below the useful stimulus floor (9 < 18)")));
+});
+
+test("with one session planned, it holds every goal exercise; light work does not count", () => {
+  const one = { ...balancedPlan(), sessions: [balancedPlan().sessions[3]] } as WeeklyPlan;
+  const context: CoachContext = { ...baseContext, profile: { ...baseContext.profile, weeklySessions: 1 } };
+
+  const messages = validateWeeklyPlan(one, context).messages;
+
+  assert.ok(messages.some((message) => message.includes("Pull-ups") && message.includes("the week's only session")), messages.join("\n"));
+  assert.ok(messages.some((message) => message.includes("Push-ups") && message.includes("the week's only session")), "the light technique push-ups do not count");
+  assert.ok(!messages.some((message) => message.includes("Plank")), messages.join("\n"));
+});
+
+test("without a pull-up bar a normal week needs no pull-ups", () => {
+  const plan = balancedPlan();
+  plan.sessions = plan.sessions.map((session) => ({ ...session, exercises: session.exercises.filter((exercise) => exercise.exercise !== "pullUp") }));
+  const noBar: CoachContext = { ...baseContext, profile: { ...baseContext.profile, equipment: ["yogaMat"] } };
+
+  assert.deepEqual(validateWeeklyPlan(plan, noBar), { accepted: true, messages: [] });
+});

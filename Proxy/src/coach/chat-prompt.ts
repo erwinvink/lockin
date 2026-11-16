@@ -1,7 +1,10 @@
 import { COACH_CHAT_MAX_MESSAGES, truncateText, type CoachChatMessage } from "./chat";
 import { localDateParts, validTimeZone } from "./local-time";
 import { disciplineCoachSystemPrompt, disciplineCoachTemperament } from "./planner/coach-temperament";
+import { deliveredVsPlanned, describeDeliveredVsPlan, didMoreThanPlanned } from "./planner/delivered-work";
 import { EXERCISE_CATALOG, isExerciseKind } from "./planner/exercise-catalog";
+import { round1 } from "./planner/numbers";
+import { contextSeason, weeksToGo } from "./planner/season";
 import type { TrainingSignals } from "./planner/compute-training-signals";
 import type {
   CoachContext,
@@ -30,7 +33,7 @@ const LOG_NOTE_MAX_LENGTH = 160;
  * about what the chat can and cannot do.
  */
 export const COACH_CHAT_SYSTEM_PROMPT = [
-  "You are the coach inside lockin, answering one athlete in the app's coach chat. lockin plans calisthenics strength work (pull-ups, push-ups, plank) and, when the athlete has a race goal, running toward that race. You only talk about this athlete's own training.",
+  "You are the coach inside lockin, answering one athlete in the app's coach chat. lockin plans calisthenics strength work (pull-ups, push-ups, plank) and, when the athlete runs, their running: toward the race while one is ahead, otherwise for the season that race.seasonNote describes. You only talk about this athlete's own training.",
   "",
   "Voice",
   `- ${disciplineCoachSystemPrompt}`,
@@ -51,7 +54,7 @@ export const COACH_CHAT_SYSTEM_PROMPT = [
   "The plan",
   "7. Only refer to sessions listed in todaySessions and upcomingSessions. Never invent a workout, distance, pace, or rest day that is not planned. If todaySessions is empty, there is no training planned today.",
   "8. You cannot change the plan from this chat. If the athlete asks to change, move, add, or skip training, say what you as their coach would change and why, then explain that lockin rebuilds the plan from their logs automatically every night and after they log training, and that they can rebuild it now with \"Create week schedule\" on the Coach screen. Logging how sessions really went (effort, pain, how it felt) is what moves the plan. Never claim you changed, moved, booked, or logged anything.",
-  "9. Do not add training beyond the plan. When readiness or pain says back off, say back off.",
+  "9. Never prescribe extra sessions beyond the plan. When the athlete does more than planned on a day they feel good, that is fine and it counts: their logs show it, and the coach plans from it. When readiness or pain says back off, say back off.",
   "",
   "Scope and format",
   "10. You only know the athlete's lockin training data. You have no live weather, news, or web lookup; say so in one sentence and steer back to training.",
@@ -115,6 +118,7 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
   const sessionsById = new Map((request.plannedSessions ?? []).map((session) => [session.id, session]));
   const todayStart = Date.parse(context.profile.weekStart);
   const todayDate = Number.isFinite(todayStart) ? new Date(todayStart) : now;
+  const season = contextSeason(context);
 
   return compact({
     today: dayLabel(todayDate, timeZone),
@@ -141,15 +145,18 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
       equipment: context.profile.equipment,
       profileNotes: context.profile.profileNotes ? truncateText(context.profile.profileNotes, PROFILE_NOTE_MAX_LENGTH) : null
     },
+    // The computed season: after the race, days since it, never "0 weeks out".
     race: context.running
       ? {
-          name: context.running.raceGoal.name,
+          name: season.raceName,
           date: dateOnly(context.running.raceGoal.raceDate, timeZone),
           distanceKm: context.running.raceGoal.distanceKm,
           elevationGainM: context.running.raceGoal.elevationGainM,
-          daysToRace: signals?.race?.daysToRace ?? null,
-          weeksToRace: signals?.race?.weeksToRace ?? context.running.weeksToRace,
-          phase: signals?.race ? humanize(signals.race.taperStatus) : null,
+          daysToRace: season.daysToRace,
+          daysSinceRace: season.daysSinceRace,
+          weeksToRace: weeksToGo(season),
+          phase: humanize(season.phase),
+          seasonNote: season.reason,
           runningDays: context.running.runningDays,
           longRunDay: context.running.longRunDay ?? null,
           startingWeeklyKm: context.running.baselineWeeklyKm,
@@ -191,10 +198,7 @@ export function buildCoachChatContextPayload(input: CoachChatPromptInput): Recor
       twoMonthTrend: humanize(context.history.twoFullMonthTrend.label),
       lastThreeWeeksVsThreeBefore: context.history.rollingTrend ? humanize(context.history.rollingTrend.label) : null,
       goalWorkVsPrescription: goalWorkVsPrescription(context),
-      effortVsPlan: {
-        averageRpeAbovePlanLast5: context.history.rpeCalibration.averageDeltaLast5,
-        sessionsTwoOrMoreAbovePlan: context.history.rpeCalibration.abovePlanBy2Count
-      },
+      effortVsPlan: effortVsPlan(context.history.last5Logs, sessionsById),
       recentLogs: [...context.history.last5Logs]
         .reverse()
         .map((log) => strengthLogSummary(log, sessionsById.get(log.sessionId), timeZone))
@@ -262,6 +266,24 @@ function goalWorkVsPrescription(context: CoachContext): Record<string, unknown> 
   return entries.length > 0 ? Object.fromEntries(entries) : null;
 }
 
+/**
+ * Effort against the plan, judged against the work delivered: sessions where
+ * the athlete did clearly more than planned explain their higher effort, so
+ * only work done as planned counts as harder than planned.
+ */
+function effortVsPlan(logs: TrainingLog[], sessionsById: Map<string, PlannedSession>): Record<string, unknown> {
+  const moreThanPlanned = (log: TrainingLog) => didMoreThanPlanned(deliveredVsPlanned(log, sessionsById.get(log.sessionId)?.exercises));
+  const asPlannedDeltas = logs
+    .filter((log) => !moreThanPlanned(log))
+    .map((log) => log.rpeDelta)
+    .filter((delta): delta is number => typeof delta === "number" && Number.isFinite(delta));
+  return {
+    averageRpeAbovePlanLast5: asPlannedDeltas.length > 0 ? round1(asPlannedDeltas.reduce((sum, delta) => sum + delta, 0) / asPlannedDeltas.length) : null,
+    sessionsTwoOrMoreAbovePlan: asPlannedDeltas.filter((delta) => delta >= 2).length,
+    sessionsWithMoreThanPlanned: logs.filter(moreThanPlanned).length
+  };
+}
+
 function strengthLogSummary(log: TrainingLog, session: PlannedSession | undefined, timeZone: string): Record<string, unknown> {
   const logged = [
     log.loggedPullUps ? `pull-ups ${log.pullUps}` : null,
@@ -275,6 +297,7 @@ function strengthLogSummary(log: TrainingLog, session: PlannedSession | undefine
     session: session?.title ?? null,
     prescribed: session ? exercisesSummary(session.exercises ?? []) : null,
     logged: logged.length > 0 ? logged.join(", ") : "no goal reps logged",
+    deliveredVsPlan: describeDeliveredVsPlan(deliveredVsPlanned(log, session?.exercises)),
     effort: plannedRPE === null ? `RPE ${log.rpe}` : `RPE ${log.rpe} (planned ${plannedRPE})`,
     pain: log.painLevel,
     fatigue: log.fatigueLevel,
@@ -416,10 +439,6 @@ function formatDuration(seconds: number): string | null {
 function formatPace(secondsPerKm: number): string {
   const total = Math.round(secondsPerKm);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10) / 10;
 }
 
 function humanize(value: string): string {

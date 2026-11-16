@@ -1,11 +1,15 @@
-import { recoveryFlagsAt } from "./readiness-flags";
+import { deliveredVsPlanned, describeDelivered, didMoreThanPlanned, type DeliveredVsPlanned } from "./delivered-work";
+import { highEffortOffPlan, testsAGoal } from "./effort-flags";
+import { GOAL_METRICS, hardestOf, isGoalTest, LOGGED_FLAG, METRIC_LABEL, METRIC_PLURAL, metricForExercise, prescriptionEffort, type GoalMetric } from "./goal-metrics";
+import { plural, round1 } from "./numbers";
+import { NORMAL_READINESS_STATES, readinessStateAt } from "./readiness-state";
+import { computeSeason, daysBetween, postRaceDaysFor, seasonPhaseText } from "./season";
 import type {
   CoachContext,
   CoachRequest,
   CurrentPlanContext,
   CurrentPlanRun,
   CurrentPlanStrengthSession,
-  EffortLabel,
   PlannedSession,
   RunningWeek,
   TrainingLog,
@@ -17,7 +21,8 @@ import type {
  * planners see the plan they made before for the coming days
  * (`coachContext.currentPlan`) and keep it unless a computed signal changed:
  * a new log with pain, very weak feedback or effort off plan, a result off
- * target, a missed session, a readiness change, new runs that move the load
+ * target, a missed session, a readiness change (readiness back to normal
+ * after overreaching or a recovery need included), new runs that move the load
  * (or a run rated feel 1-2 / RPE 9+), a phase change (recovery week, race
  * window), or changed training days. Wellness gates are added by the
  * pipeline (Garmin data arrives after the context is built).
@@ -35,10 +40,14 @@ export const CONTINUITY_LIMITS = {
 } as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HARD_ORDER: EffortLabel[] = ["light", "medium", "hard", "very_hard", "max_output"];
+
+const TOLERANCE_PCT = Math.round(CONTINUITY_LIMITS.runDistanceTolerance * 100);
+
+/** The exit signal: the state the plan was made in was reduced, and readiness is normal again. */
+export const READINESS_BACK_TO_NORMAL = "Readiness is back to normal: return to the full plan.";
 
 export const CONTINUITY_RULE =
-  "coachContext.currentPlan is the plan made earlier for these days. When keepUnlessChanged is true (no computed signal changed), keep each planned day's session: the same run kind with roughly the same distance (within 15%), and the same strength focus and goal targets. When changeSignals lists reasons, change only what they call for. Either way, say in the summary what changed and why, or that nothing changed.";
+  `coachContext.currentPlan is the plan made earlier for these days. When keepUnlessChanged is true (no computed signal changed), keep each planned day's session: the same run kind with roughly the same distance (within ${TOLERANCE_PCT}%), and the same strength focus and goal targets. When changeSignals lists reasons, change only what they call for. Either way, say in the summary what changed and why, or that nothing changed.`;
 
 /** The planned future sessions (tomorrow through offset 6) the app sent, as day offsets. */
 export function currentPlanFromRequest(request: CoachRequest): Pick<CurrentPlanContext, "runs" | "strengthSessions"> {
@@ -51,27 +60,21 @@ export function currentPlanFromRequest(request: CoachRequest): Pick<CurrentPlanC
     const dayOffset = Math.round((Date.parse(session.scheduledDate) - weekStart) / DAY_MS);
     if (!Number.isInteger(dayOffset) || dayOffset < 1 || dayOffset > 6) continue;
     if (isRunSession(session)) {
-      runs.push({
-        dayOffset,
-        title: session.title,
-        kind: session.runKind ?? null,
-        distanceKm: typeof session.distanceKm === "number" ? session.distanceKm : null,
-        elevationMeters: typeof session.elevationMeters === "number" ? session.elevationMeters : null,
-        target: session.target ?? null
-      });
+      runs.push(planRunFromSession(session, dayOffset));
     } else if ((session.exercises ?? []).length > 0) {
       strengthSessions.push({
         dayOffset,
         title: session.title,
         focus: session.focus,
-        hardestEffort: hardest((session.exercises ?? []).map((exercise) => exercise.plannedEffortLabel)),
+        hardestEffort: hardestOf((session.exercises ?? []).map((exercise) => exercise.plannedEffortLabel)),
         goalWork: (session.exercises ?? [])
-          .filter((exercise) => ["pullUp", "pushUp", "plank"].includes(exercise.exercise))
+          .filter((exercise) => metricForExercise(exercise.exercise) !== null)
           .map((exercise) => ({
             exercise: exercise.exercise,
             sets: exercise.sets,
             target: exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps,
-            effort: exercise.plannedEffortLabel ?? null
+            effort: exercise.plannedEffortLabel ?? null,
+            stimulus: exercise.plannedEffortStimulus ?? null
           }))
       });
     }
@@ -79,6 +82,30 @@ export function currentPlanFromRequest(request: CoachRequest): Pick<CurrentPlanC
   runs.sort((a, b) => a.dayOffset - b.dayOffset);
   strengthSessions.sort((a, b) => a.dayOffset - b.dayOffset);
   return { runs, strengthSessions };
+}
+
+/**
+ * Runs the app's plan has for today (offset 0, locked) and that are not done
+ * yet. They are not part of continuity (offsets 1-6), but they count toward
+ * the week's running floors.
+ */
+export function todayPlannedRunsFromRequest(request: CoachRequest): CurrentPlanRun[] {
+  const weekStart = Date.parse(request.weekStart);
+  if (!Number.isFinite(weekStart)) return [];
+  return request.plannedSessions
+    .filter((session) => session.status === "planned" && isRunSession(session) && Math.round((Date.parse(session.scheduledDate) - weekStart) / DAY_MS) === 0)
+    .map((session) => planRunFromSession(session, 0));
+}
+
+function planRunFromSession(session: PlannedSession, dayOffset: number): CurrentPlanRun {
+  return {
+    dayOffset,
+    title: session.title,
+    kind: session.runKind ?? null,
+    distanceKm: typeof session.distanceKm === "number" ? session.distanceKm : null,
+    elevationMeters: typeof session.elevationMeters === "number" ? session.elevationMeters : null,
+    target: session.target ?? null
+  };
 }
 
 export type StoredPlan = {
@@ -106,14 +133,15 @@ export function currentPlanFromStoredPlan(plan: StoredPlan, weekStart: string): 
       dayOffset,
       title: session.title,
       focus: session.focus,
-      hardestEffort: hardest([session.plannedEffort?.label, ...(session.exercises ?? []).map((exercise) => exercise.plannedEffort?.label)]),
+      hardestEffort: hardestOf([session.plannedEffort?.label, ...(session.exercises ?? []).map((exercise) => exercise.plannedEffort?.label)]),
       goalWork: (session.exercises ?? [])
-        .filter((exercise) => ["pullUp", "pushUp", "plank"].includes(exercise.exercise))
+        .filter((exercise) => metricForExercise(exercise.exercise) !== null)
         .map((exercise) => ({
           exercise: exercise.exercise,
           sets: exercise.sets,
           target: exercise.exercise === "plank" ? exercise.seconds : exercise.reps,
-          effort: exercise.plannedEffort?.label ?? null
+          effort: exercise.plannedEffort?.label ?? null,
+          stimulus: exercise.plannedEffort?.stimulus ?? null
         }))
     });
   }
@@ -126,7 +154,7 @@ export function currentPlanFromStoredPlan(plan: StoredPlan, weekStart: string): 
  */
 export function buildCurrentPlanContext(
   request: CoachRequest,
-  base: Pick<CoachContext, "plannedWork" | "periodization" | "profile">,
+  base: Pick<CoachContext, "plannedWork" | "periodization" | "profile" | "readiness" | "adherence">,
   now: Date,
   plan: Pick<CurrentPlanContext, "runs" | "strengthSessions"> = currentPlanFromRequest(request),
   generatedAt: string | null = validIso(request.currentPlanGeneratedAt),
@@ -145,20 +173,34 @@ export function buildCurrentPlanContext(
   };
 }
 
-/** Swap in a newer plan from the auto-plan store (the app may not have applied it yet). */
+/**
+ * Swap in a newer plan from the auto-plan store (the app may not have applied
+ * it yet), with its runs for today.
+ */
 export function withStoredCurrentPlan(context: CoachContext, request: CoachRequest, stored: StoredPlan | null | undefined, now: Date): CoachContext {
   if (!stored || !Number.isFinite(Date.parse(stored.generatedAt))) return context;
   const appPlanAt = Date.parse(request.currentPlanGeneratedAt ?? "");
   if (Number.isFinite(appPlanAt) && appPlanAt >= Date.parse(stored.generatedAt)) return context;
   const plan = currentPlanFromStoredPlan(stored, request.weekStart);
   const currentPlan = buildCurrentPlanContext(request, context, now, plan, stored.generatedAt, "auto_plan");
-  return { ...context, currentPlan };
+  const { todayPlannedRuns: _appToday, ...rest } = context;
+  const today = todayRunsFromStoredPlan(stored, request.weekStart);
+  return { ...rest, currentPlan, ...(today.length > 0 ? { todayPlannedRuns: today } : {}) };
+}
+
+/** The stored plan's runs for today (offset 0 after re-basing onto `weekStart`). */
+function todayRunsFromStoredPlan(plan: StoredPlan, weekStart: string): CurrentPlanRun[] {
+  const shift = Math.round((Date.parse(weekStart) - Date.parse(plan.weekStart)) / DAY_MS);
+  if (!Number.isFinite(shift)) return [];
+  return (plan.runningWeek?.sessions ?? [])
+    .filter((run) => run.dayOffset - shift === 0)
+    .map((run) => ({ dayOffset: 0, title: run.title, kind: run.kind, distanceKm: run.distanceKm, elevationMeters: run.elevationMeters, target: run.target }));
 }
 
 /** What changed since the current plan was made, in athlete-readable words. */
 export function planChangeSignals(
   request: CoachRequest,
-  base: Pick<CoachContext, "plannedWork" | "periodization" | "profile">,
+  base: Pick<CoachContext, "plannedWork" | "periodization" | "profile" | "readiness" | "adherence">,
   plan: Pick<CurrentPlanContext, "runs" | "strengthSessions">,
   generatedAt: string | null,
   now: Date
@@ -173,8 +215,10 @@ export function planChangeSignals(
   };
 
   const logs = [...request.trainingLogs].sort((a, b) => Date.parse(a.completedAt) - Date.parse(b.completedAt));
+  const sessionsById = new Map(request.plannedSessions.map((session) => [session.id, session]));
   for (const log of logs.filter((entry) => after(entry.completedAt))) {
-    const reason = logChangeReason(log);
+    const exercises = sessionsById.get(log.sessionId)?.exercises;
+    const reason = logChangeReason(log, deliveredVsPlanned(log, exercises), exercises);
     if (reason) signals.push(`New log on ${day(log.completedAt)}: ${reason}.`);
   }
   for (const [metric, performance] of Object.entries(base.plannedWork.recentGoalPerformance ?? {})) {
@@ -221,10 +265,17 @@ export function planChangeSignals(
     }
   }
 
-  const before = recoveryFlagsAt(logs, new Date(since)).length > 0;
-  const nowFlags = recoveryFlagsAt(logs, now).length > 0;
-  if (before !== nowFlags) {
-    signals.push(nowFlags ? "Readiness changed to recovery needed." : "Readiness is clear again (the pain or very weak flag has cleared).");
+  // Readiness changes, from the two computed states: when the plan was made
+  // (recomputed from the logs up to then) and now. Leaving a reduced state
+  // releases the plan made in it (it was eased for that state).
+  const then = readinessStateAt(request, new Date(since), base.adherence);
+  const current = base.readiness.state;
+  if (!NORMAL_READINESS_STATES.has(then) && NORMAL_READINESS_STATES.has(current)) {
+    signals.push(READINESS_BACK_TO_NORMAL);
+  } else if (current === "recovery_needed" && then !== "recovery_needed") {
+    signals.push("Readiness changed to recovery needed.");
+  } else if (then === "recovery_needed" && current === "overreaching") {
+    signals.push("Readiness changed from recovery needed to overreaching.");
   }
 
   const periodization = base.periodization;
@@ -232,16 +283,32 @@ export function planChangeSignals(
   if (periodization?.blockWeek && Number.isFinite(blockStart) && since >= blockStart) {
     const sinceWeek = Math.floor(Math.max(0, Math.round((since - blockStart) / DAY_MS)) / 7) + 1;
     if (sinceWeek !== periodization.blockWeek) {
+      // Only a planned recovery week ends: the post-race weeks or a low-volume week are no recovery week.
+      const previousWeek = periodization.blockWeek - 1;
+      const lastWeek = periodization.recentWeeks.find((week) => week.blockWeek === previousWeek);
       if (periodization.recoveryWeekDue) signals.push(`A planned recovery week starts (block week ${periodization.blockWeek}).`);
-      else if (periodization.lastUnloadingWeek?.blockWeek === periodization.blockWeek - 1) signals.push("The recovery week is over.");
+      else if (lastWeek?.plannedRecovery) signals.push("The recovery week is over.");
     }
   }
 
-  const raceDate = Date.parse(request.running?.raceGoal.raceDate ?? "");
-  if (Number.isFinite(raceDate) && Number.isFinite(weekStart)) {
-    const daysToRace = Math.round((raceDate - weekStart) / DAY_MS);
-    if (daysToRace <= 27 && daysToRace >= -14) {
-      signals.push(`Race window: ${daysToRace >= 0 ? `${daysToRace} day(s) to the race` : `${-daysToRace} day(s) after the race`}, so the limits move day by day.`);
+  const raceGoal = request.running?.raceGoal;
+  const raceDate = Date.parse(raceGoal?.raceDate ?? "");
+  if (raceGoal && Number.isFinite(raceDate) && Number.isFinite(weekStart)) {
+    // From the taper's first week to the end of the race's post-race window.
+    const daysToRace = daysBetween(weekStart, raceDate);
+    if (daysToRace <= 27 && daysToRace >= -postRaceDaysFor(raceGoal.distanceKm)) {
+      signals.push(`Race window: ${daysToRace >= 0 ? `${plural(daysToRace, "day")} to the race` : `${plural(-daysToRace, "day")} after the race`}, so the limits move day by day.`);
+    }
+    // A new season phase brings its own floors (the day after the post-race
+    // window, general preparation needs a quality run and the weekly-km
+    // floor), so the plan made in the old phase may change.
+    if (Number.isFinite(since)) {
+      const planDay = new Date(weekStart + Math.floor((since - weekStart) / DAY_MS) * DAY_MS).toISOString();
+      const then = computeSeason(raceGoal, planDay).phase;
+      const current = computeSeason(raceGoal, request.weekStart).phase;
+      if (then !== current) {
+        signals.push(`The season moved from ${seasonPhaseText(then)} to ${seasonPhaseText(current)} since the plan was made.`);
+      }
     }
   }
 
@@ -257,17 +324,50 @@ export function planChangeSignals(
   return [...new Set(signals)];
 }
 
-/** Why a new log should change the plan, or null. */
-export function logChangeReason(log: TrainingLog): string | null {
+/**
+ * Why a new log should change the plan, or null. Pain and very weak feedback
+ * come first; then a test result (a new level); then delivered work: clearly
+ * more than planned explains a higher effort and is a reason to plan more,
+ * not an effort warning. Effort is judged against the plan (effort-flags.ts):
+ * near-max ratings count only on work planned below very_hard.
+ */
+export function logChangeReason(
+  log: TrainingLog,
+  delivered: DeliveredVsPlanned[] = [],
+  exercises?: PlannedSession["exercises"]
+): string | null {
   if (log.painLevel >= 4) return `pain ${log.painLevel}/10`;
   if (log.fatigueLevel >= 9) return "very weak session feedback";
-  if (log.rpe >= 9) return `RPE ${log.rpe}`;
+  if (testsAGoal(exercises)) {
+    const results = testedResults(log, exercises);
+    if (results.length > 0) return `test result ${results.join(", ")}`;
+  }
+  if (didMoreThanPlanned(delivered)) {
+    const more = delivered.filter((entry) => entry.overDelivered).map(describeDelivered).join(", ");
+    const actual = log.actualRPE ?? log.rpe;
+    const effortAbovePlan = log.rpe >= 9 ||
+      (typeof log.rpeDelta === "number" && log.rpeDelta >= 2) ||
+      (typeof log.plannedRPE === "number" && actual > log.plannedRPE + 1);
+    return `did more than planned (${more})${effortAbovePlan ? "; the higher effort came from the extra work" : ""}`;
+  }
+  if (highEffortOffPlan(log, exercises)) return `RPE ${log.rpe}`;
+  if (testsAGoal(exercises)) return null;
   if (typeof log.rpeDelta === "number" && Math.abs(log.rpeDelta) >= 2) {
     return `effort ${Math.abs(log.rpeDelta)} ${log.rpeDelta > 0 ? "above" : "below"} plan`;
   }
   const actual = log.actualRPE ?? log.rpe;
   if (typeof log.plannedRPE === "number" && actual > log.plannedRPE + 1) return `RPE ${actual} against ${log.plannedRPE} planned`;
   return null;
+}
+
+/** The logged results of the goal exercises the session tested: "42 push-ups", "95 s plank". */
+function testedResults(log: TrainingLog, exercises: PlannedSession["exercises"]): string[] {
+  const tested = new Set((exercises ?? [])
+    .filter((exercise) => isGoalTest(prescriptionEffort(exercise)))
+    .map((exercise) => metricForExercise(exercise.exercise)));
+  return GOAL_METRICS
+    .filter((metric) => tested.has(metric) && log[LOGGED_FLAG[metric]])
+    .map((metric) => (metric === "plankSeconds" ? `${log[metric]} s plank` : `${log[metric]} ${METRIC_PLURAL[metric]}`));
 }
 
 export type ContinuityState = { keep: boolean; signals: string[] };
@@ -312,7 +412,7 @@ export function keepRunningContinuity(week: RunningWeek, plan: CurrentPlanContex
     next.elevationMeters = Math.max(0, Math.round(next.elevationMeters * ratio));
     next.distanceKm = keptKm;
     next.notes.push(`Kept close to the earlier plan (${previous.distanceKm} km): nothing in your training changed since.`);
-    adjustments.push(`${label}: ${before} km kept within 15% of the planned ${previous.distanceKm} km (${keptKm} km) because nothing changed.`);
+    adjustments.push(`${label}: ${before} km kept within ${TOLERANCE_PCT}% of the planned ${previous.distanceKm} km (${keptKm} km) because nothing changed.`);
   }
   const previousOffsets = new Set(plan.runs.map((run) => run.dayOffset));
   const lastPlannedOffset = Math.max(0, ...plan.runs.map((run) => run.dayOffset), ...plan.strengthSessions.map((session) => session.dayOffset));
@@ -353,17 +453,8 @@ function isRunSession(session: PlannedSession): boolean {
   return session.discipline === "running" || (typeof session.runKind === "string" && session.runKind.length > 0);
 }
 
-function hardest(labels: Array<string | undefined | null>): EffortLabel | null {
-  let best: EffortLabel | null = null;
-  for (const label of labels) {
-    const index = HARD_ORDER.indexOf(label as EffortLabel);
-    if (index >= 0 && (best === null || index > HARD_ORDER.indexOf(best))) best = label as EffortLabel;
-  }
-  return best;
-}
-
 function metricName(metric: string): string {
-  return metric === "pullUps" ? "pull-up" : metric === "pushUps" ? "push-up" : "plank";
+  return Object.hasOwn(METRIC_LABEL, metric) ? METRIC_LABEL[metric as GoalMetric] : metric;
 }
 
 function day(iso: string): string {
@@ -372,8 +463,4 @@ function day(iso: string): string {
 
 function validIso(value: string | undefined): string | null {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10 + 1e-9) / 10;
 }

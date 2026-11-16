@@ -1,13 +1,8 @@
+import { LOGGED_FLAG, type GoalMetric } from "./goal-metrics";
 import type { MetricSummary, MonthSummary, RollingTrendSummary, TrainingLog, TrendSummary } from "./types";
 
-type MetricName = "pullUps" | "pushUps" | "plankSeconds";
-type FlagName = "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds";
-
-const metricFlags: Record<MetricName, FlagName> = {
-  pullUps: "loggedPullUps",
-  pushUps: "loggedPushUps",
-  plankSeconds: "loggedPlankSeconds"
-};
+type MetricName = GoalMetric;
+const metricFlags = LOGGED_FLAG;
 
 export function summarizeMonth(logs: TrainingLog[], monthStart: Date, isPartial: boolean): MonthSummary {
   const monthEnd = addMonths(monthStart, 1);
@@ -65,7 +60,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const ROLLING_TREND = {
   windowDays: 21,
   /** Logs of a metric each window needs before that metric is compared. */
-  minLogsPerWindow: 2
+  minLogsPerWindow: 2,
+  /** A lower best is a decline only with this many results below plan in the recent window. */
+  minShortfalls: 2
 } as const;
 
 /**
@@ -75,9 +72,22 @@ export const ROLLING_TREND = {
  * of it, so one odd session never decides the label. `sinceMs` (the plan
  * block start) drops older logs, so a lower retest at a new block is not read
  * as a decline against the old block.
+ *
+ * Logged numbers in working sessions follow the plan. `metPlan` says whether a
+ * log met or beat its session's planned target for a metric: when every
+ * recent log did, lower numbers only followed a lighter plan (taper, recovery
+ * or post-race weeks) and are not a decline. `fellShort` says whether a log
+ * fell below its plan: a lower best is a decline only with at least two such
+ * results in the recent window (one off day, or logs without a plan, are not).
  */
-export function summarizeRollingTrend(logs: TrainingLog[], now: Date, sinceMs: number | null = null): RollingTrendSummary {
-  const { windowDays, minLogsPerWindow } = ROLLING_TREND;
+export function summarizeRollingTrend(
+  logs: TrainingLog[],
+  now: Date,
+  sinceMs: number | null = null,
+  metPlan: ((log: TrainingLog, metric: MetricName) => boolean) | null = null,
+  fellShort: ((log: TrainingLog, metric: MetricName) => boolean) | null = null
+): RollingTrendSummary {
+  const { windowDays, minLogsPerWindow, minShortfalls } = ROLLING_TREND;
   const end = now.getTime();
   const recentStart = end - windowDays * DAY_MS;
   const previousStart = recentStart - windowDays * DAY_MS;
@@ -95,11 +105,25 @@ export function summarizeRollingTrend(logs: TrainingLog[], now: Date, sinceMs: n
   const recent = windowSummary(recentLogs, recentStart, end);
   const previous = windowSummary(previousLogs, previousStart, recentStart);
 
+  const lowerNumbersFollowLighterPlan: MetricName[] = [];
+  const lowerNumbersWithoutRepeatedShortfall: MetricName[] = [];
   const metricDelta = (metric: MetricName): number | null => {
     const recentMetric = summarizeMetric(recentLogs, metric);
     const previousMetric = summarizeMetric(previousLogs, metric);
     if (recentMetric.count < minLogsPerWindow || previousMetric.count < minLogsPerWindow) return null;
-    return delta(recentMetric.best, previousMetric.best);
+    const value = delta(recentMetric.best, previousMetric.best);
+    if (value === null || value >= 0) return value;
+    const recentOfMetric = recentLogs.filter((log) => log[metricFlags[metric]]);
+    if (metPlan !== null && recentOfMetric.every((log) => metPlan(log, metric))) {
+      // Holding at the planned level: not a decline, and not missing history.
+      lowerNumbersFollowLighterPlan.push(metric);
+      return 0;
+    }
+    if (fellShort !== null && recentOfMetric.filter((log) => fellShort(log, metric)).length < minShortfalls) {
+      lowerNumbersWithoutRepeatedShortfall.push(metric);
+      return 0;
+    }
+    return value;
   };
   const pullUpsDelta = metricDelta("pullUps");
   const pushUpsDelta = metricDelta("pushUps");
@@ -123,7 +147,9 @@ export function summarizeRollingTrend(logs: TrainingLog[], now: Date, sinceMs: n
           ? "improving"
           : negative > positive
             ? "declining"
-            : "flat"
+            : "flat",
+    ...(lowerNumbersFollowLighterPlan.length > 0 ? { lowerNumbersFollowLighterPlan } : {}),
+    ...(lowerNumbersWithoutRepeatedShortfall.length > 0 ? { lowerNumbersWithoutRepeatedShortfall } : {})
   };
 }
 

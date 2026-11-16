@@ -1,8 +1,10 @@
+import { assessmentChangeSignals } from "./planner/assessment";
 import { computeTrainingSignals, type TrainingSignals } from "./planner/compute-training-signals";
+import { floorChangeSignals } from "./planner/continuity-floors";
 import { CONTINUITY_RULE, continuityState, keepRunningContinuity, strengthContinuityNotes, type ContinuityState } from "./planner/current-plan";
 import { clampRunningWeek, runningGuardrails, runningGuardrailsForPrompt, type RunningGuardrails } from "./planner/running-guardrails";
-import { clampWeeklyPlan, strengthGuardrailsForPrompt } from "./planner/strength-guardrails";
-import { strengthMaintenanceReason, validateCombinedWeek } from "./planner/validate-combined-week";
+import { clampWeeklyPlan, maxStrengthSessions, strengthGuardrailsForPrompt, strengthWeek, type StrengthWeek } from "./planner/strength-guardrails";
+import { validateCombinedWeek } from "./planner/validate-combined-week";
 import { validateRunningWeek } from "./planner/validate-running-week";
 import { validateWeeklyPlan } from "./planner/validate-week-plan";
 import type { CoachContext, RunningWeek, WeeklyPlan } from "./planner/types";
@@ -27,6 +29,8 @@ export type RunningPlannerGuidance = {
 export type StrengthPlannerGuidance = {
   trainingSignals: TrainingSignals | null;
   guardrails: Record<string, unknown>;
+  /** The most strength sessions this week (guardrails.maxSessionsThisWeek), typed for the payload builder. */
+  maxSessionsThisWeek: number;
   plannedRuns?: PlannedRunSummary[];
   continuity?: ContinuityGuidance | null;
 };
@@ -44,7 +48,6 @@ export type CombinedPipelineResult =
       runningWeek: RunningWeek;
       strengthWeek: WeeklyPlan;
       adjustments: string[];
-      maintenanceReason: string | null;
       repairs: number;
     }
   | PipelineFailure;
@@ -70,7 +73,7 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
   const now = deps.now ?? new Date();
   const signals = computeTrainingSignals(context, now);
   const guardrails = runningGuardrails(context, { now, signals });
-  const continuity = continuityState(context, wellnessChangeSignals(guardrails));
+  const continuity = continuityState(context, [...wellnessChangeSignals(guardrails), ...floorChangeSignals(context, guardrails)]);
   const continuityGuidance = toContinuityGuidance(continuity);
   const runningGuidance: RunningPlannerGuidance = {
     trainingSignals: signals,
@@ -101,25 +104,30 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
     distanceKm,
     elevationMeters
   }));
-  const maintenanceReason = strengthMaintenanceReason(runningWeek, context, signals);
-  const maintenance = maintenanceReason !== null;
+  // The week's strength facts, once: the fixed runs decide how many sessions
+  // fit around a full rest day and which days can take a due test, and the
+  // prompt, the clamp, the validator and continuity all read these. Running
+  // load never holds upper-body progression (no maintenance week).
+  const week = strengthWeek(context, { plannedRuns });
+  const strengthContinuity = withDueTests(continuity, context, week);
   const strengthGuidance: StrengthPlannerGuidance = {
     trainingSignals: signals,
-    guardrails: strengthGuardrailsForPrompt(context, { maintenance, maintenanceReason }),
+    guardrails: strengthGuardrailsForPrompt(context, week),
+    maxSessionsThisWeek: maxStrengthSessions(context, { runOffsets: week.runOffsets }),
     plannedRuns,
-    continuity: continuityGuidance
+    continuity: toContinuityGuidance(strengthContinuity)
   };
 
   const strength = await generateValidated<WeeklyPlan>({
     stage: "strength",
     generate: (repair) => deps.generateStrength(strengthGuidance, repair),
     prepare: (plan) => {
-      const clamped = clampWeeklyPlan(plan, context, { maintenance });
-      const notes = continuity?.keep && context.currentPlan ? strengthContinuityNotes(clamped.plan, context.currentPlan) : [];
+      const clamped = clampWeeklyPlan(plan, context, week);
+      const notes = strengthContinuity?.keep && context.currentPlan ? strengthContinuityNotes(clamped.plan, context.currentPlan) : [];
       return { value: clamped.plan, adjustments: [...clamped.adjustments, ...notes] };
     },
     validate: (plan) => [
-      ...validateWeeklyPlan(plan, context, { allowProgressionHoldForRunning: maintenance }).messages,
+      ...validateWeeklyPlan(plan, context, week).messages,
       ...validateCombinedWeek(runningWeek, plan, context)
     ],
     record: deps.recordValidationFailure
@@ -131,7 +139,6 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
     runningWeek,
     strengthWeek: strength.value,
     adjustments: [...running.adjustments, ...strength.adjustments],
-    maintenanceReason,
     repairs: running.repairs + strength.repairs
   };
 }
@@ -139,32 +146,42 @@ export async function runCombinedWeekPipeline(deps: CombinedPipelineDeps): Promi
 export async function runStrengthWeekPipeline(deps: StrengthPipelineDeps): Promise<StrengthPipelineResult> {
   const { context } = deps;
   const signals = computeTrainingSignals(context, deps.now ?? new Date());
-  const continuity = continuityState(context);
+  const week = strengthWeek(context);
+  const continuity = withDueTests(continuityState(context), context, week);
   const guidance: StrengthPlannerGuidance = {
     trainingSignals: signals,
-    guardrails: strengthGuardrailsForPrompt(context),
+    guardrails: strengthGuardrailsForPrompt(context, week),
+    maxSessionsThisWeek: maxStrengthSessions(context, { runOffsets: week.runOffsets }),
     continuity: toContinuityGuidance(continuity)
   };
   const strength = await generateValidated<WeeklyPlan>({
     stage: "strength",
     generate: (repair) => deps.generateStrength(guidance, repair),
     prepare: (plan) => {
-      const clamped = clampWeeklyPlan(plan, context);
+      const clamped = clampWeeklyPlan(plan, context, week);
       const notes = continuity?.keep && context.currentPlan ? strengthContinuityNotes(clamped.plan, context.currentPlan) : [];
       return { value: clamped.plan, adjustments: [...clamped.adjustments, ...notes] };
     },
-    validate: (plan) => validateWeeklyPlan(plan, context).messages,
+    validate: (plan) => validateWeeklyPlan(plan, context, week).messages,
     record: deps.recordValidationFailure
   });
   if (!strength.ok) return strength;
   return { ok: true, strengthWeek: strength.value, adjustments: strength.adjustments, repairs: strength.repairs };
 }
 
-/** Garmin and recent-run warnings count as change signals for continuity. */
+/** A due test the plan made earlier lacks is a change signal for the strength planner (assessment.ts). */
+function withDueTests(continuity: ContinuityState | null, context: CoachContext, week: StrengthWeek): ContinuityState | null {
+  if (!continuity) return null;
+  const extra = assessmentChangeSignals(context, week.assessment);
+  return extra.length === 0 ? continuity : { keep: false, signals: [...continuity.signals, ...extra] };
+}
+
+/** Recent-run warnings and a tripped Garmin wellness gate count as change signals for continuity. */
 function wellnessChangeSignals(guardrails: RunningGuardrails): string[] {
-  return guardrails.relaxations
-    .filter((relaxation) => relaxation.code === "wellness_gate" || relaxation.code === "recent_run_distress")
-    .map((relaxation) => relaxation.detail);
+  return [
+    ...guardrails.relaxations.filter((relaxation) => relaxation.code === "recent_run_distress").map((relaxation) => relaxation.detail),
+    ...(guardrails.wellnessGate ? [guardrails.wellnessGate.detail] : [])
+  ];
 }
 
 function toContinuityGuidance(continuity: ContinuityState | null): ContinuityGuidance | null {

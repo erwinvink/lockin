@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
+import { COACH_CHAT_SYSTEM_PROMPT } from "../chat-prompt";
 import {
+  DELIVERED_WORK_PRINCIPLE,
   disciplineCoachSystemPrompt,
   disciplineCoachTemperament,
   flatGoalMetricsRequiringProgression
@@ -183,3 +187,27 @@ function emptyMonth(month: string, isPartial: boolean): CoachContext["history"][
     maxFatigue: 0
   };
 }
+
+// Athlete instruction: the coach must reason like a normal coach and judge the
+// work actually delivered, not only the plan, in the skills and every prompt.
+test("every coach prompt judges the work the athlete actually delivered", () => {
+  assert.match(DELIVERED_WORK_PRINCIPLE, /actually delivered/);
+  assert.match(DELIVERED_WORK_PRINCIPLE, /more than planned/);
+  assert.ok(disciplineCoachSystemPrompt.includes(DELIVERED_WORK_PRINCIPLE), "coach read and planner voice");
+  assert.ok((disciplineCoachTemperament.standards as readonly string[]).includes(DELIVERED_WORK_PRINCIPLE), "planner standards");
+  assert.ok(COACH_CHAT_SYSTEM_PROMPT.includes(DELIVERED_WORK_PRINCIPLE), "coach chat");
+});
+
+test("the planner skills and the progression policy carry the delivered-work rule", () => {
+  // The same location the proxy loads the skills from (server.ts).
+  const skills = join(process.cwd(), "src", "coach", "skills");
+  for (const file of [
+    join(skills, "fitness-coach-planner", "SKILL.md"),
+    join(skills, "fitness-coach-planner", "references", "progression-policy.md"),
+    join(skills, "running-coach-planner", "SKILL.md")
+  ]) {
+    const text = readFileSync(file, "utf8");
+    assert.match(text, /work the athlete actually delivered/i, file);
+    assert.match(text, /more than planned/i, file);
+  }
+});

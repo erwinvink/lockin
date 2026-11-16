@@ -6,18 +6,18 @@
       { "currentMax": "0-2", "use": "negativePullUp (3-5 s lowering, 3-5 reps), bandAssistedPullUp when a resistance band is available, invertedRow for pulling volume, scapularPull and deadHang as support; full pullUp only as singles inside the working cap." },
       { "currentMax": "3-8", "use": "submaximal pullUp sets inside the working cap as the main work, negativePullUp as a finisher, invertedRow or bandAssistedPullUp for extra volume." },
       { "currentMax": "9-12", "use": "pullUp volume sets; archerPullUp or lSitPullUp in small doses for technique and strength." },
-      { "currentMax": "13+", "use": "keep one pullUp volume day for the goal and add strength work: weightedPullUp (with dumbbells or a loaded backpack), archerPullUp or lSitPullUp." }
+      { "currentMax": "13+", "use": "keep two pullUp volume days for the goal; add weighted or archer work: weightedPullUp (with dumbbells or a loaded backpack), archerPullUp or lSitPullUp." }
     ],
     "pushUps": [
       { "currentMax": "0-9", "use": "inclinePushUp and kneePushUp for volume; full pushUp in small sets inside the working cap." },
       { "currentMax": "10-25", "use": "full pushUp sets as the main work; inclinePushUp for extra volume." },
       { "currentMax": "26-40", "use": "full pushUp sets; diamondPushUp or declinePushUp for variation and triceps or shoulder strength; pikePushUp as support." },
-      { "currentMax": "41+", "use": "keep one high-rep pushUp day for the goal and add harder variants instead of ever more reps: declinePushUp, deficitPushUp, archerPushUp, or weightedPushUp with a loaded backpack." }
+      { "currentMax": "41+", "use": "keep two pushUp goal days (one high-rep or density day, one submaximal volume day); add harder variants on a third day: declinePushUp, deficitPushUp, archerPushUp, or weightedPushUp with a loaded backpack." }
     ],
     "plankSeconds": [
       { "currentMax": "0-29 s", "use": "short plank holds (15-20 s) and hollowHold regressions." },
       { "currentMax": "30-120 s", "use": "plank holds inside the working cap; sidePlank for lateral core." },
-      { "currentMax": "121 s+", "use": "harder variants instead of longer holds: longLeverPlank, rkcPlank, weightedPlank (loaded backpack); keep one plank hold a week for the goal." }
+      { "currentMax": "121 s+", "use": "keep two plank holds a week for the goal; add harder variants: longLeverPlank, rkcPlank, weightedPlank (loaded backpack)." }
     ]
   },
   "exercises": {

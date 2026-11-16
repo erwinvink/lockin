@@ -140,17 +140,32 @@ struct IntegerField: View {
     }
 }
 
-/// Countdown on a race sign: days in the last two weeks, weeks before that.
-func raceCountdownText(_ raceDate: Date) -> String {
-    let calendar = Calendar.current
-    let days = calendar.dateComponents(
-        [.day],
-        from: calendar.startOfDay(for: Date()),
-        to: calendar.startOfDay(for: raceDate)
-    ).day ?? 0
-    if days <= 0 { return "Today" }
+/// Countdown on a race sign: days in the last two weeks, weeks before that,
+/// and "Today" on race day. Empty once the race has passed: the fixed-size
+/// slot stays free and the eyebrow says how long ago (raceSignEyebrow).
+func raceCountdownText(_ raceDate: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+    let days = daysUntilRaceDay(raceDate, now: now, calendar: calendar)
+    if days < 0 { return "" }
+    if days == 0 { return "Today" }
     if days < 14 { return days == 1 ? "1 day" : "\(days) days" }
     return "\(days / 7) wk"
+}
+
+/// Eyebrow of a race sign: race day's date, or "Raced 14 days ago" once the race has passed.
+func raceSignEyebrow(_ raceDate: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+    let days = daysUntilRaceDay(raceDate, now: now, calendar: calendar)
+    if days < 0 { return racedDaysAgoText(-days) }
+    return "Race day, \(raceDate.formatted(.dateTime.day().month(.abbreviated)))"
+}
+
+/// Whole days from today to race day; negative once the race has passed.
+func daysUntilRaceDay(_ raceDate: Date, now: Date = Date(), calendar: Calendar = .current) -> Int {
+    calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: raceDate)).day ?? 0
+}
+
+/// "Raced 1 day ago", "Raced 14 days ago".
+func racedDaysAgoText(_ days: Int) -> String {
+    days == 1 ? "Raced 1 day ago" : "Raced \(days) days ago"
 }
 
 // MARK: - Forms

@@ -182,7 +182,7 @@ struct TodayView: View {
 
     private func raceSign(_ race: RaceGoal) -> some View {
         Signpost(
-            eyebrow: "Race day, \(race.raceDate.formatted(.dateTime.day().month(.abbreviated)))",
+            eyebrow: raceSignEyebrow(race.raceDate),
             title: race.name.isEmpty ? "Race" : race.name,
             trailing: raceCountdownText(race.raceDate),
             grade: .mountain,

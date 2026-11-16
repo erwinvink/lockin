@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runningGuardrails } from "./running-guardrails";
+import { RELAXATION_LABELS, runningGuardrails, runningGuardrailsForPrompt } from "./running-guardrails";
 import { runningDayAvailability, validateRunningWeek } from "./validate-running-week";
 import type { CoachContext, RunKind, RunningContext, RunningWeek } from "./types";
 
@@ -106,7 +106,9 @@ test("rejects a too-sparse established build week without safety flags", () => {
   const result = validateRunningWeek(week, baseContext);
 
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("too sparse")));
+  const sparse = result.messages.find((message) => message.includes("too sparse"));
+  // The repair names every computed reason that may lower the run count, in plain words.
+  for (const label of Object.values(RELAXATION_LABELS)) assert.ok(sparse?.includes(label), `${sparse} names ${label}`);
 });
 
 test("accepts a progressive subset of six available days for an established base", () => {
@@ -211,18 +213,20 @@ test("accepts a three-run starter week from six available days", () => {
   assert.deepEqual(result, { accepted: true, messages: [] });
 });
 
-test("rejects a long run jumping more than 40% past the recent longest run without safety flags", () => {
+// The cap was 1.4x the recent longest run; it is 1.15x now (Frandsen 2025).
+// No runs on record here, so the reference is the app's recent longest run (20 km).
+test("rejects a long run jumping more than 15% past the recent longest run without safety flags", () => {
   const week = validWeek();
   week.sessions[2] = { ...week.sessions[2], distanceKm: 30, durationMinutes: 195 };
 
   const result = validateRunningWeek(week, baseContext);
 
   assert.equal(result.accepted, false);
-  assert.ok(result.messages.some((message) => message.includes("40%")));
+  assert.ok(result.messages.some((message) => message.includes("more than 15% above")));
 });
 
 // Finding: any safety flag used to waive the long-run cap. Flags are notes now.
-test("a safety flag no longer waives the 1.4x long-run cap", () => {
+test("a safety flag no longer waives the long-run cap", () => {
   const week = validWeek();
   week.sessions[2] = { ...week.sessions[2], distanceKm: 30, durationMinutes: 195 };
   week.safetyFlags = ["Race distance demands a longer run; the rest of the week stays easy."];
@@ -230,9 +234,9 @@ test("a safety flag no longer waives the 1.4x long-run cap", () => {
   const result = validateRunningWeek(week, baseContext);
 
   assert.equal(result.accepted, false);
-  const message = result.messages.find((m) => m.includes("40%"));
+  const message = result.messages.find((m) => m.includes("more than 15% above"));
   assert.ok(message);
-  assert.ok(message.includes("30 km") && message.includes("cap 28 km") && message.includes("20 km"));
+  assert.ok(message.includes("30 km") && message.includes("cap 23 km") && message.includes("20 km"), message);
   assert.ok(message.includes("safety flags cannot waive"));
 });
 
@@ -413,11 +417,12 @@ test("places the long run correctly when the week starts mid-week (non-Monday)",
   // weekStart Wednesday: offsets are rolling (thursday=1, saturday=3, sunday=4, tuesday=6),
   // so runningDayOffsets are NOT index-parallel with the Monday-first runningDays list.
   const context = wednesdayContext();
+  // General preparation: the week carries its quality run (the floors).
   const week: RunningWeek = {
     summary: "Mid-week start with the long run on Saturday.",
     safetyFlags: [],
     sessions: [
-      run("Easy aerobic run", 1, "easy", 8),
+      run("Tempo blocks", 1, "tempo", 8),
       run("Long trail run", 3, "long", 22),
       run("Recovery jog", 4, "recovery", 6),
       run("Easy aerobic run", 6, "easy", 7)
@@ -468,7 +473,8 @@ test("accepts co-longest runs when one of them lands on the long-run day", () =>
 test("skips long-run placement when longRunDayOffset is absent", () => {
   const context = contextWith({ longRunDayOffset: undefined });
   const week = validWeek();
-  week.sessions[1] = { ...week.sessions[1], distanceKm: 24, durationMinutes: 150 };
+  // The longest run is off Saturday and inside the 23 km long-run cap.
+  week.sessions[1] = { ...week.sessions[1], distanceKm: 23, durationMinutes: 144 };
   // Keep the week inside the weekly volume cap (51.8 km from the 45 km baseline).
   week.sessions[2] = { ...week.sessions[2], distanceKm: 12, durationMinutes: 75 };
 
@@ -545,7 +551,7 @@ test("still applies ordering, target, negative, jump, and balance checks when no
   assert.ok(result.messages.some((message) => message.includes("strictly later than the previous run")));
   assert.ok(result.messages.some((message) => message.includes("target low")));
   assert.ok(result.messages.some((message) => message.includes("negative")));
-  assert.ok(result.messages.some((message) => message.includes("40%")));
+  assert.ok(result.messages.some((message) => message.includes("more than 15% above")));
   assert.ok(result.messages.some((message) => message.includes("hard running")));
   assert.ok(!result.messages.some((message) => message.includes("exactly")));
   assert.ok(!result.messages.some((message) => message.includes("non-running day")));
@@ -618,6 +624,40 @@ test("running-day availability distinguishes no selection from no days left (S6)
     runningDayAvailability(contextWith({ runningDays: ["tuesday", "thursday"], runningDayOffsets: [1, 3] })),
     { unconstrained: false, offsets: [1, 3] }
   );
+});
+
+// weeksToRace reads 0 for any past race; the message says how long ago it was.
+test("the back-to-back long-run message never calls a past race 0 weeks out", () => {
+  const week: RunningWeek = {
+    summary: "Two long runs at the weekend.",
+    safetyFlags: [],
+    sessions: [run("Easy aerobic run", 1, "easy", 8), run("Long trail run", 5, "long", 18), run("Second long run", 6, "long", 12)]
+  };
+  const context = contextWith({
+    raceGoal: { name: "Trail 54K", raceDate: "2026-04-26T00:00:00Z", distanceKm: 54, elevationGainM: 1400 },
+    weeksToRace: 0
+  });
+
+  const message = validateRunningWeek(week, context).messages.find((m) => m.includes("Back-to-back long runs"));
+  assert.ok(message);
+  assert.ok(message.includes("(this race: 54 km, 15 days ago)"), message);
+  assert.ok(!message.includes("weeks out)"), message);
+});
+
+test("the back-to-back long-run message says race day and a missing race date plainly", () => {
+  const week: RunningWeek = {
+    summary: "Two long runs at the weekend.",
+    safetyFlags: [],
+    sessions: [run("Easy aerobic run", 1, "easy", 8), run("Long trail run", 5, "long", 18), run("Second long run", 6, "long", 12)]
+  };
+  const message = (raceDate: string) => validateRunningWeek(week, contextWith({
+    raceGoal: { name: "Trail 54K", raceDate, distanceKm: 54, elevationGainM: 1400 },
+    weeksToRace: 0
+  })).messages.find((m) => m.includes("Back-to-back long runs")) ?? "";
+
+  assert.ok(message("2026-05-11T00:00:00Z").includes("(this race: 54 km, today)"), message("2026-05-11T00:00:00Z"));
+  assert.ok(message("not-a-date").includes("(this race: 54 km, no race date)"), message("not-a-date"));
+  assert.ok(message("2026-07-20T00:00:00Z").includes("(this race: 54 km, 10 weeks out)"), message("2026-07-20T00:00:00Z"));
 });
 
 function contextWith(overrides: Partial<RunningContext>): CoachContext {
@@ -731,12 +771,13 @@ test("accepts an all-easy week for a computed reason, in taper, or with few runs
     false
   );
 
-  const overreaching = raceExemptionWeek();
-  overreaching.sessions = overreaching.sessions.map((s) => ({ ...s, kind: "easy", distanceKm: 6 }));
+  // A computed recovery need (logged pain); strength-only overreaching no longer relaxes running (Task 8).
+  const recovery = raceExemptionWeek();
+  recovery.sessions = recovery.sessions.map((s) => ({ ...s, kind: "easy", distanceKm: 6 }));
   assert.equal(
-    validateRunningWeek(overreaching, {
+    validateRunningWeek(recovery, {
       ...baseContext,
-      readiness: { state: "overreaching", riskFlags: ["recent_effort_above_plan"] },
+      readiness: { state: "recovery_needed", riskFlags: ["recent_pain_level_4_or_higher"] },
       running: { ...baseRunning, weeksToRace: 10 }
     }).accepted,
     true
@@ -772,7 +813,12 @@ test("one short run in six weeks does not shrink the cap below the 20 km return 
     guardrails.weeklyVolume.kind === "capped" ? guardrails.weeklyVolume.capKm : null,
     20
   );
-  const week: RunningWeek = { summary: "Starter week.", safetyFlags: [], sessions: [run("Easy", 1, "easy", 3), run("Easy", 3, "easy", 3), run("Long", 5, "long", 5)] };
+  // 80 m a run keeps the week inside the 300 m minimum weekly climbing cap.
+  const week: RunningWeek = {
+    summary: "Starter week.",
+    safetyFlags: [],
+    sessions: [run("Easy", 1, "easy", 3), run("Easy", 3, "easy", 3), run("Long", 5, "long", 5)].map((session) => ({ ...session, elevationMeters: 80 }))
+  };
   assert.deepEqual(validateRunningWeek(week, sparse, guardrails), { accepted: true, messages: [] });
 
   const baselineOnly = runningGuardrails(contextWith({ baselineWeeklyKm: 1.3, longestRecentRunKm: 5, recentRuns: [] }));
@@ -796,7 +842,9 @@ test("the run floor never asks for more minimum-length runs than the weekly cap 
   assert.match(guardrails.frequency?.basis ?? "", /at most 1 runs of 3 km fit the 4 km cap/);
 });
 
-test("a profile pain note lowers the run floor only, not the quality-session rule", () => {
+// A profile pain note used to lower the run floor; free text now relaxes no
+// rule (the note is planner context), so the floors stay.
+test("a profile note lowers neither the run floor nor the quality-session rule", () => {
   const established = contextWith({
     baselineWeeklyKm: 40,
     longestRecentRunKm: 18,
@@ -812,11 +860,116 @@ test("a profile pain note lowers the run floor only, not the quality-session rul
   };
 
   const painNote = withNote("Left Achilles sore after long downhills. Keep each strength session within 45 minutes.");
-  assert.ok(runningGuardrails(painNote).relaxations.some((relaxation) => relaxation.code === "profile_pain_note" && relaxation.floorOnly));
-  assert.ok(!validateRunningWeek(twoRuns, painNote).messages.some((m) => m.includes("too sparse")), "fewer runs are fine");
-  assert.ok(validateRunningWeek(allEasy, painNote).messages.some((m) => m.includes("needs at least one quality session")), "still needs quality");
+  assert.deepEqual(runningGuardrails(painNote).relaxations, []);
+  assert.ok(validateRunningWeek(twoRuns, painNote).messages.some((m) => m.includes("too sparse")), "the run floor stays");
+  assert.ok(validateRunningWeek(allEasy, painNote).messages.some((m) => m.includes("needs at least one quality session")), "the quality floor stays");
+});
 
-  const sessionCapOnly = withNote("Keep each strength session within 45 minutes.");
-  assert.ok(!runningGuardrails(sessionCapOnly).relaxations.some((relaxation) => relaxation.code === "profile_pain_note"));
-  assert.ok(validateRunningWeek(twoRuns, sessionCapOnly).messages.some((m) => m.includes("too sparse")));
+// Running floors by phase (audit: nothing required a quality session or a
+// volume floor, so weeks drifted into easy-only maintenance). The race is 124
+// days out here: general preparation. Without logged runs there is no
+// weekly-km floor (it holds last week's training km at most).
+function sixDayContext(overrides: Partial<RunningContext> = {}): CoachContext {
+  return contextWith({
+    runningDays: ["tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+    runningDayOffsets: [1, 2, 3, 4, 5, 6],
+    ...overrides
+  });
+}
+
+function easyWeekWithLongRun(): RunningWeek {
+  return {
+    summary: "Easy aerobic week.",
+    safetyFlags: [],
+    sessions: [
+      run("Easy aerobic run", 1, "easy", 8),
+      run("Easy aerobic run", 2, "easy", 8),
+      run("Easy aerobic run", 3, "easy", 8),
+      run("Long trail run", 5, "long", 18),
+      run("Easy aerobic run", 6, "easy", 6)
+    ]
+  };
+}
+
+test("general preparation rejects an all-easy week with a long run", () => {
+  const result = validateRunningWeek(easyWeekWithLongRun(), sixDayContext());
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.messages.length, 1, result.messages.join("\n"));
+  assert.match(result.messages[0], /needs at least one quality session/);
+  assert.match(result.messages[0], /the long run does not count/);
+  assert.match(result.messages[0], /general preparation/);
+  // The repair text names every computed reason that lifts the floor, and what cannot.
+  for (const label of Object.values(RELAXATION_LABELS)) assert.ok(result.messages[0].includes(label), `names ${label}`);
+  assert.match(result.messages[0], /a profile note, a wellness gate and a safety flag cannot/);
+});
+
+test("a tempo run satisfies the quality floor", () => {
+  const week = easyWeekWithLongRun();
+  week.sessions[1] = { ...week.sessions[1], title: "Tempo blocks", kind: "tempo" };
+
+  assert.deepEqual(validateRunningWeek(week, sixDayContext()), { accepted: true, messages: [] });
+});
+
+test("transition accepts an all-easy week", () => {
+  // Day 10 after a 54 km race: the post-race transition lasts until day 14.
+  const context = contextWith({ raceGoal: { name: "Trail 54K", raceDate: "2026-05-01T00:00:00Z", distanceKm: 54, elevationGainM: 1400 }, weeksToRace: 0 });
+  const week: RunningWeek = {
+    summary: "Easy week after the race.",
+    safetyFlags: [],
+    sessions: [run("Recovery jog", 1, "recovery", 5), run("Easy run with strides", 3, "easy", 6), run("Easy long run", 5, "easy", 9), run("Easy run", 6, "easy", 5)]
+  };
+  const guardrails = runningGuardrails(context);
+
+  assert.equal(guardrails.floors.qualityRun.required, false);
+  assert.equal(guardrails.floors.weeklyKm.minKm, null);
+  assert.match(guardrails.floors.qualityRun.reason, /transition/);
+  assert.deepEqual(validateRunningWeek(week, context, guardrails), { accepted: true, messages: [] });
+});
+
+// Four logged 45 km weeks: 85% of the four-week training average (38.3 km)
+// is under last week's 45 km, so the weekly-km floor is 38.3 km.
+function steadyHistory(): RunningContext["recentRuns"] {
+  const parts: Array<[number, number, string]> = [[1, 7, "recovery"], [2, 20, "long"], [4, 10, "tempo"], [6, 8, "easy"]];
+  return [0, 1, 2, 3].flatMap((week) => parts.map(([day, distanceKm, kind]) => ({
+    completedAt: new Date(Date.parse(baseContext.profile.weekStart) - (week * 7 + day) * 24 * 60 * 60 * 1000 + 8 * 60 * 60 * 1000).toISOString(),
+    distanceKm,
+    movingSeconds: distanceKm * 360,
+    elevationGainM: 150,
+    kind
+  })));
+}
+
+test("general preparation rejects a week under 85% of the reference km and accepts one at 90%", () => {
+  const context = sixDayContext({ recentRuns: steadyHistory() });
+  const guardrails = runningGuardrails(context);
+  assert.equal(guardrails.floors.weeklyKm.minKm, 38.3);
+
+  const short: RunningWeek = {
+    summary: "Short week.",
+    safetyFlags: [],
+    sessions: [run("Easy", 1, "easy", 6), run("Tempo blocks", 2, "tempo", 8), run("Easy", 3, "easy", 6), run("Long trail run", 5, "long", 12), run("Easy", 6, "easy", 4)]
+  };
+  const result = validateRunningWeek(short, context, guardrails);
+  assert.equal(result.accepted, false);
+  const message = result.messages.find((m) => m.includes("below this week's floor"));
+  assert.ok(message?.includes("36 km") && message.includes("38.3 km") && message.includes("85%") && message.includes("45 km"), result.messages.join("\n"));
+  assert.ok(message?.includes("a recent run rated feel 1-2 or missing run history; a profile note, a wellness gate and a safety flag cannot"), message);
+
+  const enough: RunningWeek = {
+    ...short,
+    sessions: [run("Easy", 1, "easy", 7), run("Tempo blocks", 2, "tempo", 8), run("Easy", 3, "easy", 7), run("Long trail run", 5, "long", 14), run("Easy", 6, "easy", 4.5)]
+  };
+  assert.deepEqual(validateRunningWeek(enough, context, guardrails), { accepted: true, messages: [] });
+});
+
+test("the planner is told the floors it must meet", () => {
+  const prompt = runningGuardrailsForPrompt(runningGuardrails(sixDayContext({ recentRuns: steadyHistory() }))) as {
+    floors: { qualityRun: { required: boolean }; weeklyKm: { minKm: number | null }; rule: string };
+  };
+
+  assert.equal(prompt.floors.qualityRun.required, true);
+  assert.equal(prompt.floors.weeklyKm.minKm, 38.3);
+  assert.match(prompt.floors.rule, /3 or more runs/);
+  assert.match(prompt.floors.rule, /the long run does not count/);
 });

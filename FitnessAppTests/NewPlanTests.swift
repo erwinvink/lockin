@@ -181,20 +181,65 @@ final class NewPlanTests: XCTestCase {
         XCTAssertEqual(profile.planBlockStartedAt, now)
     }
 
-    func testCurrentNumbersPreferRecentBestThenLatestThenProfile() {
+    func testCurrentNumbersAreTheBaselineRaisedByTheBestSetSinceTheBlockStart() {
+        // The block started when the profile was made, 30 days ago.
         let profile = profileFixture()
         let logs = [
-            // Recent: the best counts, not the latest.
-            logFixture(day: -3, pullUps: 7, pushUps: 0, plankSeconds: 0, logged: (true, false, false)),
+            // The best counts, not the latest.
+            logFixture(day: -3, pullUps: 7, pushUps: 12, plankSeconds: 0, logged: (true, true, false)),
             logFixture(day: -10, pullUps: 9, pushUps: 0, plankSeconds: 0, logged: (true, false, false)),
-            // Older than four weeks: only the latest counts.
-            logFixture(day: -40, pullUps: 20, pushUps: 31, plankSeconds: 0, logged: (true, true, false)),
-            logFixture(day: -60, pullUps: 20, pushUps: 40, plankSeconds: 0, logged: (true, true, false))
+            // Older than four weeks but in the block: it still counts.
+            logFixture(day: -29, pullUps: 0, pushUps: 31, plankSeconds: 0, logged: (false, true, false))
         ]
 
         let numbers = currentStrengthNumbers(profile: profile, logs: logs, now: now)
 
+        // Nothing logged for the plank: the baseline.
         XCTAssertEqual(numbers, StrengthNumbers(pullUps: 9, pushUps: 31, plankSeconds: 60))
+    }
+
+    /// A working set is only the reps the plan asked for, so a taper or an
+    /// easy week logs less than the athlete can do. That never lowers him.
+    func testEasySessionsBelowTheBaselineNeverLowerTheCurrentNumbers() {
+        let profile = profileFixture()
+        profile.baselinePushUps = 40
+        let logs = [
+            logFixture(day: -2, pullUps: 3, pushUps: 12, plankSeconds: 30, logged: (true, true, true)),
+            logFixture(day: -5, pullUps: 4, pushUps: 9, plankSeconds: 40, logged: (true, true, true))
+        ]
+
+        let numbers = currentStrengthNumbers(profile: profile, logs: logs, now: now)
+
+        XCTAssertEqual(numbers, StrengthNumbers(pullUps: 5, pushUps: 40, plankSeconds: 60))
+    }
+
+    /// A new plan with a lower retest: the retest is the new baseline, and
+    /// the higher sets logged before it no longer count.
+    func testCurrentNumbersIgnoreLogsFromBeforeThePlanBlockStart() {
+        let profile = profileFixture(createdAt: day(-60))
+        profile.planBlockStartedAt = day(-10)
+        let logs = [
+            logFixture(day: -12, pullUps: 12, pushUps: 45, plankSeconds: 120, logged: (true, true, true)),
+            logFixture(day: -4, pullUps: 6, pushUps: 18, plankSeconds: 0, logged: (true, true, false))
+        ]
+
+        let numbers = currentStrengthNumbers(profile: profile, logs: logs, now: now)
+
+        XCTAssertEqual(numbers, StrengthNumbers(pullUps: 6, pushUps: 20, plankSeconds: 60))
+    }
+
+    /// A block that started long ago counts three months of logs, the same
+    /// logs the coach gets.
+    func testCurrentNumbersCountOnlyTheLastThreeMonthsOfLogs() {
+        let profile = profileFixture(createdAt: day(-200))
+        let logs = [
+            logFixture(day: -100, pullUps: 12, pushUps: 45, plankSeconds: 120, logged: (true, true, true)),
+            logFixture(day: -80, pullUps: 7, pushUps: 0, plankSeconds: 0, logged: (true, false, false))
+        ]
+
+        let numbers = currentStrengthNumbers(profile: profile, logs: logs, now: now)
+
+        XCTAssertEqual(numbers, StrengthNumbers(pullUps: 7, pushUps: 20, plankSeconds: 60))
     }
 
     func testPlanInputsPrefillFromProfileAndRaceGoal() {

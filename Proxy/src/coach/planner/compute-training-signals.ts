@@ -1,4 +1,8 @@
-import type { CoachContext, CoachWellnessDay, RunSummary } from "./types";
+import { round1 } from "./numbers";
+import { contextSeason, FLOOR_PHASES, SEASON_LIMITS } from "./season";
+import type { CoachContext, CoachWellnessDay, RunSummary, Season } from "./types";
+import { RUNNING_LIMITS } from "./running-limits";
+import { hrvVersusBaseline, latestDayWith, latestHrvDay, WELLNESS_GATE_LIMITS } from "./wellness-gate";
 
 /**
  * Pre-computed numbers for the coach read. LLMs are unreliable at arithmetic
@@ -22,25 +26,58 @@ export type TrainingSignals = {
      * Share of running time in the last 4 weeks at low intensity, 0-1: easy,
      * recovery and long runs (long runs are mostly Zone 2). This is the
      * 80/20 split by time: a normal build week reads about 0.8; well below
-     * 0.75 means too much hard running. Runs without a kind are left out.
+     * 0.75 means too much hard running. Runs without a kind and races are
+     * left out.
      */
     lowIntensityTimeShareLast4Weeks: number | null;
+    /** The same share over the last 3 weeks of training runs (races left out). */
+    lowIntensityTimeShareLast3Weeks: number | null;
+    /**
+     * No speed stimulus in 3 weeks: that share is at least 0.95 in general
+     * preparation, base, build or peak (taper and post-race weeks are easy
+     * on purpose). The running planner adds the structured session.
+     */
+    noSpeedStimulusLast3Weeks: boolean;
     runCountLast7Days: number;
   };
   race: {
-    daysToRace: number;
+    /** Days to the race, 0 on race day; null once the race is past (copied from the season). */
+    daysToRace: number | null;
+    /** Days since the race once it is past, else null (copied from the season). */
+    daysSinceRace: number | null;
+    /** Kept for older readers: 0 on race day and after the race. */
     weeksToRace: number;
-    /** "in-taper" ≤14 days out, "approaching" 15-21, else "training". */
-    taperStatus: "in-taper" | "approaching" | "training";
+    /**
+     * Before the race: "in-taper" 0-14 days out (race day included),
+     * "approaching" 15-21 (the first taper week), else "training". After
+     * it: "post-race" inside the race's post-race window, then "none"; also
+     * "none" without a readable race date.
+     */
+    taperStatus: "in-taper" | "approaching" | "training" | "post-race" | "none";
   } | null;
+  /**
+   * Each value comes from the latest day that has it, at most 2 days old,
+   * with that day: at the 01:30 nightly plan today's row is still empty, so
+   * the values are usually yesterday's.
+   */
   wellness: {
+    /** The newest wellness row, with or without values. */
     latestDate: string;
     hrvStatus: string | null;
-    /** Daily HRV decision rule: hard work only when HRV is not suppressed. */
+    hrvDate: string | null;
+    /**
+     * Daily HRV decision rule (wellness-gate.ts): "favor-easy" only when HRV
+     * is below the athlete's baseline (LOW, POOR, or a 7-day average below
+     * the baseline range); null when unknown, such as UNBALANCED without the
+     * numbers (it can sit above the baseline).
+     */
     hrvGate: "ok-for-hard" | "favor-easy" | null;
     sleepScore: number | null;
+    sleepScoreDate: string | null;
     trainingReadiness: number | null;
+    trainingReadinessDate: string | null;
     restingHr: number | null;
+    restingHrDate: string | null;
   } | null;
   lastRun: {
     completedAt: string;
@@ -56,7 +93,8 @@ export type TrainingSignals = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LOW_INTENSITY_KINDS = new Set(["easy", "recovery", "long"]);
-const SUPPRESSED_HRV = new Set(["UNBALANCED", "LOW", "POOR"]);
+/** An easy share at or above this over 3 weeks means no speed stimulus. */
+const NO_SPEED_STIMULUS_SHARE = 0.95;
 
 export function computeTrainingSignals(context: CoachContext, now = new Date()): TrainingSignals | null {
   const running = context.running;
@@ -80,11 +118,10 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
     .map((run) => run.elevationLossM)
     .filter((value): value is number => typeof value === "number" && value > 0);
 
-  const runsWithKind = last28.filter((run) => typeof run.kind === "string" && run.kind.length > 0);
-  const kindTime = runsWithKind.reduce((total, run) => total + runSeconds(run), 0);
-  const lowIntensityTime = runsWithKind
-    .filter((run) => LOW_INTENSITY_KINDS.has(run.kind as string))
-    .reduce((total, run) => total + runSeconds(run), 0);
+  // A race is not training: it stays out of both easy shares.
+  const training = (window: RunSummary[]) => window.filter((run) => !isRaceRun(run, running.raceGoal.raceDate));
+  const lowIntensityShare4 = lowIntensityShare(training(last28));
+  const lowIntensityShare3 = lowIntensityShare(training(runsBetween(runs, now, 21, 0)));
 
   const lastRun = runs.at(-1) ?? null;
 
@@ -99,11 +136,14 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
       last7DaysDescentM: descentValues.length > 0 ? descentValues.reduce((a, b) => a + b, 0) : null,
       longestRunLast6WeeksKm: round1(Math.max(0, ...last42.map((run) => run.distanceKm))),
       recentLongRunsKm: weeklyLongRuns(last28, now).map(round1),
-      lowIntensityTimeShareLast4Weeks: kindTime > 0 ? round2(lowIntensityTime / kindTime) : null,
+      lowIntensityTimeShareLast4Weeks: lowIntensityShare4 === null ? null : round2(lowIntensityShare4),
+      lowIntensityTimeShareLast3Weeks: lowIntensityShare3 === null ? null : round2(lowIntensityShare3),
+      noSpeedStimulusLast3Weeks:
+        lowIntensityShare3 !== null && lowIntensityShare3 >= NO_SPEED_STIMULUS_SHARE && FLOOR_PHASES.has(contextSeason(context).phase),
       runCountLast7Days: last7.length
     },
-    race: raceSignals(running.raceGoal.raceDate, running.weeksToRace, now),
-    wellness: wellnessSignals(context.garmin?.wellness ?? []),
+    race: raceSignals(context, running.weeksToRace),
+    wellness: wellnessSignals(context.garmin?.wellness ?? [], context.profile.weekStart),
     lastRun: lastRun
       ? {
           completedAt: lastRun.completedAt,
@@ -124,15 +164,34 @@ export function computeTrainingSignals(context: CoachContext, now = new Date()):
 
 /** Evidence summaries paired with the athlete's numbers in the verdict
  * prompt — retrieved domain knowledge measurably improves response quality
- * (PHIA), and each entry encodes the hedges the literature demands. */
-export const coachReferencePoints = [
-  "Volume jumps: week-over-week load ratios are weak, contested evidence (acute:chronic ratios predict injury no better than chance in some cohorts) — treat a sharp rise vs the 4-week average as a hedged caution, never as an injury verdict.",
-  "HRV gate: when overnight HRV is suppressed, favor easy work or rest that day; when balanced or rising, hard sessions are fine. Use it to gate intensity, not to rewrite the plan.",
-  "Taper: 15-21 days out run at most 80% of the pre-taper volume, 8-14 days out about 50-70% with one short quality session, and in race week only short shakeouts around the race — do not add fitness in the final two weeks.",
-  "Downhill conditioning: trail runners who train downhill repeats show markedly less muscle damage and better strength retention; descent exposure matters for ultra prep, not just ascent.",
-  "Strength serves the race: heavy (≥80% 1RM) strength work and plyometrics improve running economy — frame strength sessions as part of the ultra build, not a separate hobby.",
-  "Long-run progression: grow the weekly long run gradually and respect recovery weeks; the longest recent run versus race distance is the key readiness gap to narrate."
-] as const;
+ * (PHIA), and each entry encodes the hedges the literature demands. The
+ * race-centred ones only apply while a race is ahead. No running-economy
+ * claim for strength: the planner prescribes no heavy leg strength or
+ * plyometrics yet (Part 2 adds them, and an accurate line with them). */
+const COACH_REFERENCE_POINTS: ReadonlyArray<{ text: string; raceAhead?: true }> = [
+  { text: "Volume jumps: week-over-week load ratios are weak, contested evidence (acute:chronic ratios predict injury no better than chance in some cohorts) — treat a sharp rise vs the 4-week average as a hedged caution, never as an injury verdict." },
+  { text: `HRV gate: when HRV is below the athlete's baseline (Garmin LOW or POOR), favor easy work for the next ${WELLNESS_GATE_LIMITS.gateHours} hours; when balanced or above the baseline, hard sessions are fine. Unbalanced alone can mean above the baseline. Use it to move the next hard session, not to rewrite the plan.` },
+  { text: "Taper: 15-21 days out run at most 80% of the pre-taper volume, 8-14 days out about 50-70% with one short quality session, and in race week only short shakeouts around the race — do not add fitness in the final two weeks.", raceAhead: true },
+  { text: "Downhill conditioning: one hard downhill bout protects the legs against damage from the next one for up to about 6 weeks (the repeated-bout effect, shown in recreational runners); descent exposure matters for ultra prep, not just ascent." },
+  { text: `Long-run progression: grow the weekly long run gradually, at most ${Math.round((RUNNING_LIMITS.longRunCapRatio - 1) * 100)}% past the longest training run of the last ${RUNNING_LIMITS.longRunWindowDays} days (a race is not a training run), and respect recovery weeks.` },
+  { text: "Race readiness: the longest recent run versus the race distance is the key readiness gap to narrate.", raceAhead: true }
+];
+
+/** The reference points for this season: the race-centred ones only while a race is ahead. */
+export function coachReferencePointsFor(season: Season): string[] {
+  return COACH_REFERENCE_POINTS.filter((point) => !point.raceAhead || season.raceState === "upcoming").map((point) => point.text);
+}
+
+/**
+ * A race, not training: a run of kind "race" or any run on the stored race
+ * date (the app logs the race as the planned race session, kind "long").
+ */
+export function isRaceRun(run: RunSummary, raceDate: string | undefined): boolean {
+  if (run.kind === "race") return true;
+  const race = Date.parse(raceDate ?? "");
+  const at = Date.parse(run.completedAt);
+  return Number.isFinite(race) && Number.isFinite(at) && at >= race && at < race + DAY_MS;
+}
 
 function runsBetween(runs: RunSummary[], now: Date, daysBackStart: number, daysBackEnd: number): RunSummary[] {
   const windowStart = now.getTime() - daysBackStart * DAY_MS;
@@ -141,6 +200,15 @@ function runsBetween(runs: RunSummary[], now: Date, daysBackStart: number, daysB
     const at = new Date(run.completedAt).getTime();
     return at > windowStart && at <= windowEnd;
   });
+}
+
+/** Share of running time in easy, recovery and long runs; runs without a kind are left out (null when none has one). */
+function lowIntensityShare(runs: RunSummary[]): number | null {
+  const withKind = runs.filter((run) => typeof run.kind === "string" && run.kind.length > 0);
+  const total = withKind.reduce((sum, run) => sum + runSeconds(run), 0);
+  if (total <= 0) return null;
+  const low = withKind.filter((run) => LOW_INTENSITY_KINDS.has(run.kind as string)).reduce((sum, run) => sum + runSeconds(run), 0);
+  return low / total;
 }
 
 /** Moving time, or 6 min/km when a manual log has none. */
@@ -164,18 +232,23 @@ function weeklyLongRuns(last28: RunSummary[], now: Date): number[] {
   return longest;
 }
 
-function raceSignals(raceDate: string, weeksToRace: number, now: Date): TrainingSignals["race"] {
-  const days = Math.max(0, Math.ceil((new Date(raceDate).getTime() - now.getTime()) / DAY_MS));
-  let taperStatus: "in-taper" | "approaching" | "training" = "training";
-  if (days <= 14) {
-    taperStatus = "in-taper";
-  } else if (days <= 21) {
-    taperStatus = "approaching";
-  }
-  return { daysToRace: days, weeksToRace, taperStatus };
+/** The race as the season counts it (one day count, from the week start). */
+function raceSignals(context: CoachContext, weeksToRace: number): TrainingSignals["race"] {
+  const season = contextSeason(context);
+  return { daysToRace: season.daysToRace, daysSinceRace: season.daysSinceRace, weeksToRace, taperStatus: taperStatusFor(season) };
 }
 
-function wellnessSignals(wellness: CoachWellnessDay[]): TrainingSignals["wellness"] {
+const IN_TAPER_DAYS = 14;
+
+function taperStatusFor(season: Season): NonNullable<TrainingSignals["race"]>["taperStatus"] {
+  if (season.daysToRace !== null) {
+    if (season.daysToRace <= IN_TAPER_DAYS) return "in-taper";
+    return season.daysToRace <= SEASON_LIMITS.phaseUntilDays.taper ? "approaching" : "training";
+  }
+  return season.raceState === "recent" ? "post-race" : "none";
+}
+
+function wellnessSignals(wellness: CoachWellnessDay[], weekStart: string): TrainingSignals["wellness"] {
   const latest = [...wellness]
     .sort((a, b) => a.date.localeCompare(b.date))
     .at(-1);
@@ -183,31 +256,37 @@ function wellnessSignals(wellness: CoachWellnessDay[]): TrainingSignals["wellnes
     return null;
   }
 
-  const status = latest.hrvStatus?.trim().toUpperCase() ?? "";
-  let hrvGate: "ok-for-hard" | "favor-easy" | null = null;
-  if (status === "BALANCED") {
-    hrvGate = "ok-for-hard";
-  } else if (SUPPRESSED_HRV.has(status)) {
-    hrvGate = "favor-easy";
-  }
+  // Each value from the latest day that has it, as in the gate: at the 01:30
+  // plan today's row has none yet.
+  const hrvDay = latestHrvDay(wellness, weekStart);
+  const status = hrvDay?.hrvStatus?.trim().toUpperCase() ?? "";
+  const versusBaseline = hrvDay ? hrvVersusBaseline(hrvDay) : "unknown";
+  const hrvGate = versusBaseline === "below" ? "favor-easy" : versusBaseline === "not_below" ? "ok-for-hard" : null;
+  const reading = (field: "sleepScore" | "trainingReadiness" | "restingHr") => {
+    const day = latestDayWith(wellness, weekStart, (entry) => positiveOrNull(entry[field]) !== null);
+    return { value: day ? positiveOrNull(day[field]) : null, date: day?.date ?? null };
+  };
+  const sleep = reading("sleepScore");
+  const readiness = reading("trainingReadiness");
+  const restingHr = reading("restingHr");
 
   return {
     latestDate: latest.date,
     hrvStatus: status.length > 0 ? status : null,
+    hrvDate: hrvDay?.date ?? null,
     hrvGate,
-    sleepScore: positiveOrNull(latest.sleepScore),
-    trainingReadiness: positiveOrNull(latest.trainingReadiness),
-    restingHr: positiveOrNull(latest.restingHr)
+    sleepScore: sleep.value,
+    sleepScoreDate: sleep.date,
+    trainingReadiness: readiness.value,
+    trainingReadinessDate: readiness.date,
+    restingHr: restingHr.value,
+    restingHrDate: restingHr.date
   };
 }
 
 // 0 (or null) means Garmin had no value: never a real low score.
 function positiveOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && value > 0 ? value : null;
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10) / 10;
 }
 
 function round2(value: number): number {

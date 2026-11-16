@@ -84,6 +84,30 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testRejectsAIPlanWithInvalidTechnicalShape`
   - Verifies malformed schedules, logging fields, and exercise values are rejected.
 
+- `testRejectsStaticPlanAfterHardRatedSessionsThatDidMoreThanPlanned`
+  - Hard ratings (RPE 9, two above plan) on sessions where the athlete did clearly more than planned (38 push-ups against 10) do not hold progression back: a flat repeated prescription is still rejected.
+
+- `testAcceptsStaticPlanAfterHardRatedSessionsOnThePlannedWork`
+  - Ratings two above plan on exactly the planned work still hold progression back.
+
+- `testCoachRaceCountdownSaysHowLongAgoAPastRaceWas`
+  - The Coach screen's race countdown says "Raced 14 days ago" (or "1 day ago") once the race has passed, "Race day" on race day, and weeks before it.
+
+- `testCoachRaceRowIsTitledRaceOnceTheRaceHasPassed`
+  - The Coach screen's countdown row is titled "Race" after the race and "Weeks to race" until race day.
+
+- `testCoachRaceLensSaysHowLongAgoAPastRaceWas`
+  - The coach read's race lens reads "Raced 14 days ago: Trail 54K" after the race and "Race day: Trail 54K" on race day, never "Race week".
+
+- `testRaceSignSaysHowLongAgoInTheEyebrowOnceTheRaceHasPassed`
+  - Settings' race sign (Today hides past races) says "Raced 14 days ago" in its eyebrow once the race has passed and leaves the fixed-size countdown slot empty, instead of "Today".
+
+- `testRaceSignCountsDownUntilRaceDay`
+  - Before the race the sign's eyebrow names race day and the countdown reads "Today" on race day, then days in the last two weeks and weeks before.
+
+- `testDidMoreThanPlannedNeedsAClearMarginAndNoShortfall`
+  - "Did more than planned" needs one logged goal metric at least 2 reps (5 s on a plank) or 10% above the session's highest non-test target of that exercise (light work included), and no metric below it; same rule as the proxy.
+
 - `testRejectsAIPlanForToday`
   - Verifies AI generation cannot create a refreshed session for today.
 
@@ -315,8 +339,17 @@ This file is the durable human-readable test list for the lockin app. It records
 - `testPlanBlockStartReadsAsCreationDateUntilANewPlanStarts`
   - Profiles from before new plans existed read `planBlockStartedAt` as `createdAt`.
 
-- `testCurrentNumbersPreferRecentBestThenLatestThenProfile`
-  - Current numbers use the best logged set of the last four weeks, else the latest logged set, else the profile baseline.
+- `testCurrentNumbersAreTheBaselineRaisedByTheBestSetSinceTheBlockStart`
+  - Current numbers are the coach's current level: the profile baseline, raised by the best set logged since the plan block start (the best, not the latest; older than four weeks still counts); nothing logged keeps the baseline.
+
+- `testEasySessionsBelowTheBaselineNeverLowerTheCurrentNumbers`
+  - Easy or taper sessions logged below the baseline never lower the current numbers; only a retest does.
+
+- `testCurrentNumbersIgnoreLogsFromBeforeThePlanBlockStart`
+  - After a new plan with a lower retest, higher sets logged before the block start no longer count.
+
+- `testCurrentNumbersCountOnlyTheLastThreeMonthsOfLogs`
+  - A block that started long ago counts only the last three months of logs, the same logs the coach gets.
 
 - `testPlanInputsPrefillFromProfileAndRaceGoal`
   - The new-plan form starts from the profile, race goal and current numbers.

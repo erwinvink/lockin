@@ -113,12 +113,23 @@ test("unavailable and zero wellness metrics become missing, never real low value
   });
 });
 
+// The HRV gate needs the 7-day average against the baseline range when the
+// sidecar sends them (Garmin's hrvSummary weeklyAvg and baseline balancedLow).
+test("the 7-day HRV average and the baseline's lower bound pass through when present", () => {
+  const withBaseline = sanitizeWellnessForCoach(wellnessDay("2026-06-10", { hrvWeeklyAvgMs: 48, hrvBaselineLowMs: 51 }));
+  assert.equal(withBaseline.hrvWeeklyAvgMs, 48);
+  assert.equal(withBaseline.hrvBaselineLowMs, 51);
+
+  const placeholders = sanitizeWellnessForCoach(wellnessDay("2026-06-10", { hrvWeeklyAvgMs: 0, hrvBaselineLowMs: 51, unavailableMetrics: ["hrvBaselineLowMs"] }));
+  assert.ok(!("hrvWeeklyAvgMs" in placeholders) && !("hrvBaselineLowMs" in placeholders), JSON.stringify(placeholders));
+});
+
 test("enrichment puts sanitized wellness into the coach context (S2)", async () => {
   const calls: string[] = [];
   const enrich = createGarminEnricher({
     fetchImpl: sidecarFetch([
       wellnessDay("2026-06-10", { trainingReadiness: 0, sleepScore: 0, unavailableMetrics: ["sleepScore", "trainingReadiness"] }),
-      wellnessDay("2026-06-09", { trainingReadiness: 20 })
+      wellnessDay("2026-06-09", { trainingReadiness: 70 })
     ], calls),
     log: () => undefined
   });
@@ -128,10 +139,23 @@ test("enrichment puts sanitized wellness into the coach context (S2)", async () 
 
   assert.equal(enriched.garmin?.wellness[0]?.sleepScore, null);
   assert.equal(enriched.garmin?.wellness[0]?.trainingReadiness, null);
-  assert.equal(signals?.wellness?.trainingReadiness, null);
-  assert.equal(signals?.wellness?.sleepScore, null);
+  // The failed metrics are no data: the signals read the day before, with its date.
+  assert.deepEqual([signals?.wellness?.trainingReadiness, signals?.wellness?.trainingReadinessDate], [70, "2026-06-09"]);
+  assert.deepEqual([signals?.wellness?.sleepScore, signals?.wellness?.sleepScoreDate], [80, "2026-06-09"]);
   // A failed readiness fetch must not raise the low-readiness flag.
   assert.deepEqual(enriched.readiness.riskFlags, []);
+});
+
+// At 01:30 today's row has no readiness yet: the flag reads the latest day
+// that has one, while it is at most 2 days old.
+test("enrichment flags a low training readiness from yesterday while today's row is empty", async () => {
+  const enrichWith = (older: string) => createGarminEnricher({
+    fetchImpl: sidecarFetch([wellnessDay("2026-06-10", { trainingReadiness: 0, unavailableMetrics: ["trainingReadiness"] }), wellnessDay(older, { trainingReadiness: 20 })], []),
+    log: () => undefined
+  });
+
+  assert.deepEqual((await enrichWith("2026-06-09")(context(), "user-1")).readiness.riskFlags, ["garmin: training readiness low on 2026-06-09"]);
+  assert.deepEqual((await enrichWith("2026-06-07")(context(), "user-1")).readiness.riskFlags, [], "3 days old");
 });
 
 test("enrichment flags a real low training readiness", async () => {
@@ -142,7 +166,7 @@ test("enrichment flags a real low training readiness", async () => {
 
   const enriched = await enrich(context(), "user-1");
 
-  assert.deepEqual(enriched.readiness.riskFlags, ["garmin: training readiness low"]);
+  assert.deepEqual(enriched.readiness.riskFlags, ["garmin: training readiness low on 2026-06-10"]);
 });
 
 test("enrichment never falls back to the default Garmin user (S5)", async () => {
@@ -157,7 +181,7 @@ test("enrichment never falls back to the default Garmin user (S5)", async () => 
   assert.equal(logged.length, 1);
 });
 
-test("enrichment asks for two days only and caches per user (S12)", async () => {
+test("enrichment asks for four days only and caches per user (S12)", async () => {
   const calls: string[] = [];
   let now = 1_000_000;
   const enrich = createGarminEnricher({
@@ -170,7 +194,9 @@ test("enrichment asks for two days only and caches per user (S12)", async () => 
   await enrich(context(), "user-1");
   await enrich(context(), "user-1");
   const wellnessCalls = () => calls.filter((url) => url.includes("/wellness"));
-  assert.deepEqual(wellnessCalls(), ["http://127.0.0.1:8788/wellness?days=2&userId=user-1"]);
+  // Four days: at the 01:30 plan today has no sleep score or HRV reading yet,
+  // and the sleep gate reads the last 3 nights that have a score.
+  assert.deepEqual(wellnessCalls(), ["http://127.0.0.1:8788/wellness?days=4&userId=user-1"]);
 
   await enrich(context(), "user-2");
   assert.equal(wellnessCalls().length, 2);
