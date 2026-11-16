@@ -1412,24 +1412,22 @@ struct StrengthNumbers: Equatable {
     var plankSeconds: Int
 }
 
-/// Where the athlete stands now, per movement: the best strict value logged
-/// in the last four weeks; with nothing that recent, the latest logged
-/// value; with nothing logged, the profile's baseline.
+/// Where the athlete stands now, per movement: the coach's current level.
+/// That is the baseline set at the plan block start, raised by any better
+/// set logged since (last 3 months, the logs the coach gets). Easy or
+/// reduced sessions never lower it; to lower it, retest.
 func currentStrengthNumbers(
     profile: UserProfile,
     logs: [PerformanceLog],
     now: Date = Date(),
     calendar: Calendar = .current
 ) -> StrengthNumbers {
-    let recentStart = calendar.date(byAdding: .day, value: -28, to: calendar.startOfDay(for: now)) ?? now
-    let newestFirst = logs.filter { $0.completedAt <= now }.sorted { $0.completedAt > $1.completedAt }
+    let threeMonthsAgo = calendar.date(byAdding: .month, value: -3, to: now) ?? .distantPast
+    let windowStart = max(profile.planBlockStartedAt, threeMonthsAgo)
+    let blockLogs = logs.filter { $0.completedAt >= windowStart && $0.completedAt <= now }
 
     func current(_ value: (PerformanceLog) -> Int, logged: (PerformanceLog) -> Bool, baseline: Int) -> Int {
-        let loggedValues = newestFirst.filter(logged)
-        if let recentBest = loggedValues.filter({ $0.completedAt >= recentStart }).map(value).max() {
-            return recentBest
-        }
-        return loggedValues.first.map(value) ?? baseline
+        max(baseline, blockLogs.filter(logged).map(value).max() ?? baseline)
     }
 
     return StrengthNumbers(

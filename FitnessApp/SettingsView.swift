@@ -413,7 +413,7 @@ private struct RaceGoalEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Signpost(
-                eyebrow: "Race day, \(goal.raceDate.formatted(.dateTime.day().month(.abbreviated)))",
+                eyebrow: raceSignEyebrow(goal.raceDate),
                 title: goal.name.isEmpty ? "Race" : goal.name,
                 trailing: raceCountdownText(goal.raceDate),
                 grade: .mountain,

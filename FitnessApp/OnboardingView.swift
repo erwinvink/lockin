@@ -150,7 +150,7 @@ struct NowAndGoalSection: View {
     private var note: String {
         switch baselineChoice?.wrappedValue {
         case nil: "Your best strict set today, and where you want to get."
-        case .keepCurrent: "Now is your best strict set from recent logs. Pick Retest to type new numbers."
+        case .keepCurrent: "Now is your current level: your baseline, raised by any better set you logged. Pick Retest to type new numbers."
         case .retest: "Do one strict max set of each, then type what you got."
         }
     }

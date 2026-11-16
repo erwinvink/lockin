@@ -368,7 +368,7 @@ final class FitnessAppUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["Pull-ups now"].value as? String, "8")
         XCTAssertEqual(app.staticTexts["Push-ups now"].value as? String, "28")
         XCTAssertEqual(app.staticTexts["Plank now"].value as? String, "1:35")
-        XCTAssertTrue(app.staticTexts["Now is your best strict set from recent logs. Pick Retest to type new numbers."].exists)
+        XCTAssertTrue(app.staticTexts["Now is your current level: your baseline, raised by any better set you logged. Pick Retest to type new numbers."].exists)
 
         tapWhenReady(app.buttons["45 min"], in: app)
         XCTAssertTrue(app.buttons["45 min"].isSelected)

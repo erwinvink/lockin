@@ -220,16 +220,12 @@ private struct CoachReadSectionView: View {
     var raceGoal: RaceGoal?
     var historyCount: Int
 
-    /// "14 weeks to Eiger Ultra 51K": the lens every read is written through.
+    /// The lens every read is written through: "14 weeks to Eiger Ultra 51K",
+    /// "Race day: Eiger Ultra 51K", or "Raced 14 days ago: Eiger Ultra 51K".
     private var raceLensText: String? {
         guard let raceGoal else { return nil }
-        let calendar = Calendar.current
-        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: raceGoal.raceDate).day ?? 0)
-        let weeks = (days + 6) / 7
         let trimmedName = raceGoal.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = trimmedName.isEmpty ? "Race" : trimmedName
-        if weeks == 0 { return "Race week: \(name)" }
-        return "\(weeks) \(weeks == 1 ? "week" : "weeks") to \(name)"
+        return coachRaceLensText(raceName: trimmedName.isEmpty ? "Race" : trimmedName, raceDate: raceGoal.raceDate)
     }
 
     var body: some View {
@@ -637,6 +633,28 @@ private struct AskCoachBar: View {
     }
 }
 
+// MARK: - Race countdown
+
+/// "3 weeks", "1 week", "Race day", or "Raced 14 days ago" once the race has passed.
+func coachRaceCountdownText(raceDate: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+    let days = daysUntilRaceDay(raceDate, now: now, calendar: calendar)
+    if days < 0 { return racedDaysAgoText(-days) }
+    if days == 0 { return "Race day" }
+    let weeks = (days + 6) / 7
+    return weeks == 1 ? "1 week" : "\(weeks) weeks"
+}
+
+/// Title of the countdown row in the Coach inputs: "Race" once the race has passed.
+func coachRaceCountdownTitle(raceDate: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+    daysUntilRaceDay(raceDate, now: now, calendar: calendar) < 0 ? "Race" : "Weeks to race"
+}
+
+/// The coach read's lens: "14 weeks to NAME", "Race day: NAME", "Raced 14 days ago: NAME".
+func coachRaceLensText(raceName: String, raceDate: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+    let countdown = coachRaceCountdownText(raceDate: raceDate, now: now, calendar: calendar)
+    return daysUntilRaceDay(raceDate, now: now, calendar: calendar) > 0 ? "\(countdown) to \(raceName)" : "\(countdown): \(raceName)"
+}
+
 // MARK: - Advanced
 
 private struct CoachInputsCard: View {
@@ -658,7 +676,7 @@ private struct CoachInputsCard: View {
                     .accessibilityIdentifier("coach-week-shape")
                 if let raceGoal {
                     InfoLine(title: "Race goal", value: raceGoalSummary(raceGoal))
-                    InfoLine(title: "Weeks to race", value: weeksToRaceText(raceGoal))
+                    InfoLine(title: coachRaceCountdownTitle(raceDate: raceGoal.raceDate), value: coachRaceCountdownText(raceDate: raceGoal.raceDate))
                     InfoLine(title: "Running days", value: runningDaysText)
                 }
                 InfoLine(title: "Recent training", value: historyCount == 0 ? "No logged sessions yet" : "\(historyCount) logged sessions with readiness and notes")
@@ -677,14 +695,6 @@ private struct CoachInputsCard: View {
         let distance = goal.distanceKm.formatted(.number.precision(.fractionLength(0...1)))
         let raceDate = goal.raceDate.formatted(date: .abbreviated, time: .omitted)
         return "\(name), \(distance) km, \(goal.elevationGainM) m climb, \(raceDate)"
-    }
-
-    private func weeksToRaceText(_ goal: RaceGoal) -> String {
-        let calendar = Calendar.current
-        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: Date()), to: goal.raceDate).day ?? 0)
-        let weeks = (days + 6) / 7
-        if weeks == 0 { return "Race week" }
-        return weeks == 1 ? "1 week" : "\(weeks) weeks"
     }
 
     private var runningDaysText: String {

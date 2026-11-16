@@ -1512,7 +1512,7 @@ struct CoachPlanValidator {
         weekStart: Date,
         messages: inout [String]
     ) {
-        guard hasCleanProgressionSignal(trainingLogs: trainingLogs) else { return }
+        guard hasCleanProgressionSignal(trainingLogs: trainingLogs, plannedSessions: plannedSessions) else { return }
 
         let trends = recentGoalTrends(plannedSessions: plannedSessions, before: weekStart)
         let checks = [
@@ -1536,7 +1536,7 @@ struct CoachPlanValidator {
         }
     }
 
-    private func hasCleanProgressionSignal(trainingLogs: [CoachLog]) -> Bool {
+    private func hasCleanProgressionSignal(trainingLogs: [CoachLog], plannedSessions: [CoachPlannedSession]) -> Bool {
         let recentLogs = trainingLogs
             .sorted { $0.completedAt > $1.completedAt }
             .prefix(5)
@@ -1544,8 +1544,12 @@ struct CoachPlanValidator {
 
         guard recentLogs.count >= 2 else { return false }
         if recentLogs.contains(where: { $0.painLevel >= 4 || $0.fatigueLevel >= 9 }) { return false }
-        if recentLogs.filter({ $0.rpe >= 9 }).count >= 2 { return false }
-        if recentLogs.compactMap(\.rpeDelta).filter({ $0 >= 2 }).count >= 2 { return false }
+        // Effort above the plan after doing clearly more than planned comes
+        // from the extra work: a sign the athlete can do more, not a warning.
+        let plannedExercises = Dictionary(plannedSessions.map { ($0.id, $0.exercises) }, uniquingKeysWith: { first, _ in first })
+        let effortLogs = recentLogs.filter { !$0.didMoreThanPlanned(plannedExercises[$0.sessionId] ?? []) }
+        if effortLogs.filter({ $0.rpe >= 9 }).count >= 2 { return false }
+        if effortLogs.compactMap(\.rpeDelta).filter({ $0 >= 2 }).count >= 2 { return false }
         return true
     }
 
@@ -1610,6 +1614,39 @@ struct CoachPlanValidator {
         }
 
         return GoalTrend(latestTarget: latest.target, latestVolume: latest.volume, flatCount: flatCount)
+    }
+}
+
+extension CoachLog {
+    /// The athlete did clearly more than the session planned: one logged
+    /// goal metric at least 2 reps (5 seconds on a plank) and at least 10%
+    /// above the plan, and none below it. The plan for a metric is the session's
+    /// highest target of that exercise at any effort, light and technique
+    /// work included; a metric the session did not plan, or tests, is not
+    /// compared. The proxy judges delivered work by the same rule.
+    func didMoreThanPlanned(_ plannedExercises: [CoachPlannedExercisePrescription]) -> Bool {
+        let metrics: [(exercise: ExerciseKind, logged: Bool, delivered: Int, minimumExtra: Int)] = [
+            (.pullUp, loggedPullUps, pullUps, 2),
+            (.pushUp, loggedPushUps, pushUps, 2),
+            (.plank, loggedPlankSeconds, plankSeconds, 5)
+        ]
+        var overDelivered = false
+        for metric in metrics where metric.logged {
+            let ofExercise = plannedExercises.filter { $0.exercise == metric.exercise.rawValue }
+            // A session that tests the exercise logs the test result, not extra work.
+            let testsExercise = ofExercise.contains {
+                $0.plannedEffortStimulus == EffortStimulus.test.rawValue || $0.plannedEffortLabel == PlannedEffortLabel.maxOutput.rawValue
+            }
+            if testsExercise { continue }
+            let planned = ofExercise
+                .map { metric.exercise == .plank ? $0.targetSeconds : $0.targetReps }
+                .max() ?? 0
+            guard planned > 0 else { continue }
+            if metric.delivered < planned { return false }
+            let margin = max(metric.minimumExtra, Int(ceil(Double(planned) * 0.1)))
+            if metric.delivered >= planned + margin { overDelivered = true }
+        }
+        return overDelivered
     }
 }
 

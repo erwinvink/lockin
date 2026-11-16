@@ -111,7 +111,7 @@ private struct RaceHeader: View {
         ).day ?? 0
     }
 
-    // Same weeks math as CoachView's weeksToRaceText: ceil of remaining days / 7.
+    // Same weeks math as CoachView's coachRaceCountdownText: ceil of remaining days / 7.
     private var weeksOut: Int {
         (max(0, daysToRace) + 6) / 7
     }

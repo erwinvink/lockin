@@ -391,6 +391,66 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertFalse(coachVerdictNeedsRefresh(latestLog: latestLog, latestVerdict: currentLegacyVerdict))
     }
 
+    // The Coach screen read every past race as "Race week" (audit, 14 Nov 2026).
+    func testCoachRaceCountdownSaysHowLongAgoAPastRaceWas() throws {
+        let (calendar, race, day) = try raceOn31October()
+
+        XCTAssertEqual(coachRaceCountdownText(raceDate: race, now: day(14), calendar: calendar), "Raced 14 days ago")
+        XCTAssertEqual(coachRaceCountdownText(raceDate: race, now: day(1), calendar: calendar), "Raced 1 day ago")
+        XCTAssertEqual(coachRaceCountdownText(raceDate: race, now: day(0), calendar: calendar), "Race day")
+        XCTAssertEqual(coachRaceCountdownText(raceDate: race, now: day(-3), calendar: calendar), "1 week")
+        XCTAssertEqual(coachRaceCountdownText(raceDate: race, now: day(-15), calendar: calendar), "3 weeks")
+    }
+
+    func testCoachRaceRowIsTitledRaceOnceTheRaceHasPassed() throws {
+        let (calendar, race, day) = try raceOn31October()
+
+        XCTAssertEqual(coachRaceCountdownTitle(raceDate: race, now: day(14), calendar: calendar), "Race")
+        XCTAssertEqual(coachRaceCountdownTitle(raceDate: race, now: day(1), calendar: calendar), "Race")
+        XCTAssertEqual(coachRaceCountdownTitle(raceDate: race, now: day(0), calendar: calendar), "Weeks to race")
+        XCTAssertEqual(coachRaceCountdownTitle(raceDate: race, now: day(-15), calendar: calendar), "Weeks to race")
+    }
+
+    func testCoachRaceLensSaysHowLongAgoAPastRaceWas() throws {
+        let (calendar, race, day) = try raceOn31October()
+
+        XCTAssertEqual(coachRaceLensText(raceName: "Trail 54K", raceDate: race, now: day(14), calendar: calendar), "Raced 14 days ago: Trail 54K")
+        XCTAssertEqual(coachRaceLensText(raceName: "Trail 54K", raceDate: race, now: day(0), calendar: calendar), "Race day: Trail 54K")
+        XCTAssertEqual(coachRaceLensText(raceName: "Trail 54K", raceDate: race, now: day(-98), calendar: calendar), "14 weeks to Trail 54K")
+    }
+
+    // Settings' race sign read "Today" for a past race (Today hides past races).
+    // The trailing slot is a fixed 20pt countdown, so a past race says how
+    // long ago in the eyebrow line and leaves the slot empty.
+    func testRaceSignSaysHowLongAgoInTheEyebrowOnceTheRaceHasPassed() throws {
+        let (calendar, race, day) = try raceOn31October()
+
+        XCTAssertEqual(raceSignEyebrow(race, now: day(14), calendar: calendar), "Raced 14 days ago")
+        XCTAssertEqual(raceSignEyebrow(race, now: day(1), calendar: calendar), "Raced 1 day ago")
+        XCTAssertEqual(raceCountdownText(race, now: day(14), calendar: calendar), "")
+        XCTAssertEqual(raceCountdownText(race, now: day(1), calendar: calendar), "")
+    }
+
+    func testRaceSignCountsDownUntilRaceDay() throws {
+        let (calendar, race, day) = try raceOn31October()
+
+        XCTAssertTrue(raceSignEyebrow(race, now: day(0), calendar: calendar).hasPrefix("Race day, "))
+        XCTAssertTrue(raceSignEyebrow(race, now: day(-21), calendar: calendar).hasPrefix("Race day, "))
+        XCTAssertEqual(raceCountdownText(race, now: day(0), calendar: calendar), "Today")
+        XCTAssertEqual(raceCountdownText(race, now: day(-1), calendar: calendar), "1 day")
+        XCTAssertEqual(raceCountdownText(race, now: day(-13), calendar: calendar), "13 days")
+        XCTAssertEqual(raceCountdownText(race, now: day(-21), calendar: calendar), "3 wk")
+    }
+
+    /// The athlete's 54 km race on 31 Oct 2026 (local midnight, Amsterdam), and 15:00 on the day `offset` days later.
+    private func raceOn31October() throws -> (Calendar, Date, (Int) -> Date) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Amsterdam"))
+        let race = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 31)))
+        let day = { (offset: Int) in calendar.date(byAdding: DateComponents(day: offset, hour: 15), to: race)! }
+        return (calendar, race, day)
+    }
+
     func testCoachVerdictHumanizesWatchItemsAndUsesDomainReads() {
         let verdict = CoachVerdict(
             sourceLogId: nil,
@@ -744,6 +804,109 @@ final class CoachValidationTests: XCTestCase {
         XCTAssertEqual(result.status, .rejected)
         XCTAssertTrue(result.messages.contains { $0.contains("pull-up work repeats") })
         XCTAssertTrue(result.messages.contains { $0.contains("push-up work repeats") })
+    }
+
+    /// The athlete's complaint: a day asked for 10 push-ups, he did 38 and
+    /// honestly rated it hard. Effort above the plan after clearly more work
+    /// than planned is a sign he can do more, not a warning, so the flat
+    /// prescription still has to progress.
+    func testRejectsStaticPlanAfterHardRatedSessionsThatDidMoreThanPlanned() {
+        let weekStart = Date(timeIntervalSince1970: 14 * 24 * 60 * 60)
+        let sessions = [
+            previousCoachSession(scheduledDate: Date(timeIntervalSince1970: 0)),
+            previousCoachSession(scheduledDate: Date(timeIntervalSince1970: 7 * 24 * 60 * 60))
+        ]
+        // Each session planned 3 pull-ups and 10 push-ups at RPE 7; he did
+        // the 3 pull-ups and 38 push-ups at RPE 9.
+        let logs = sessions.map { deliveredCoachLog(for: $0, pullUps: 3, pushUps: 38, rpe: 9, plannedRPE: 7) }
+        let result = CoachPlanValidator().validate(
+            response: .balancedFixture(),
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: weekStart,
+            plannedSessions: sessions,
+            trainingLogs: logs
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.messages.contains { $0.contains("pull-up work repeats") })
+        XCTAssertTrue(result.messages.contains { $0.contains("push-up work repeats") })
+    }
+
+    /// Effort above the plan on the plan's own numbers is still a warning:
+    /// the flat prescription may stay.
+    func testAcceptsStaticPlanAfterHardRatedSessionsOnThePlannedWork() {
+        let weekStart = Date(timeIntervalSince1970: 14 * 24 * 60 * 60)
+        let sessions = [
+            previousCoachSession(scheduledDate: Date(timeIntervalSince1970: 0)),
+            previousCoachSession(scheduledDate: Date(timeIntervalSince1970: 7 * 24 * 60 * 60))
+        ]
+        // Exactly the planned 3 pull-ups and 10 push-ups, two points harder
+        // than planned.
+        let logs = sessions.map { deliveredCoachLog(for: $0, pullUps: 3, pushUps: 10, rpe: 8, plannedRPE: 6) }
+        let result = CoachPlanValidator().validate(
+            response: .balancedFixture(),
+            baseline: Baseline(pullUps: 5, pushUps: 20, plankSeconds: 60),
+            preferences: TrainingPreferences(
+                weeklySessions: 4,
+                equipment: [.pullUpBar],
+                targetDate: Date(timeIntervalSinceNow: 365 * 24 * 60 * 60)
+            ),
+            weekStart: weekStart,
+            plannedSessions: sessions,
+            trainingLogs: logs
+        )
+
+        XCTAssertFalse(result.messages.contains { $0.contains("work repeats") })
+    }
+
+    /// Did more than planned: a logged goal metric at least 2 reps (5 s on a
+    /// plank) or 10% above the session's plan, and none below it. The plan is
+    /// the session's highest target of that exercise, light work included,
+    /// tests excluded. The proxy uses the same rule.
+    func testDidMoreThanPlannedNeedsAClearMarginAndNoShortfall() {
+        let planned = [
+            CoachPlannedExercisePrescription(exercise: "pullUp", sets: 2, targetReps: 5, targetSeconds: 0, plannedEffortLabel: "light", plannedEffortStimulus: "technique"),
+            CoachPlannedExercisePrescription(exercise: "pushUp", sets: 3, targetReps: 12, targetSeconds: 0, plannedEffortLabel: "medium", plannedEffortStimulus: "volume"),
+            CoachPlannedExercisePrescription(exercise: "pushUp", sets: 2, targetReps: 20, targetSeconds: 0, plannedEffortLabel: "hard", plannedEffortStimulus: "strength"),
+            CoachPlannedExercisePrescription(exercise: "plank", sets: 3, targetReps: 0, targetSeconds: 60, plannedEffortLabel: "medium", plannedEffortStimulus: "volume")
+        ]
+        // Only the metrics passed in are logged.
+        func log(pullUps: Int? = nil, pushUps: Int? = nil, plankSeconds: Int? = nil) -> CoachLog {
+            var coachLog = cleanCoachLog(completedAt: Date(timeIntervalSince1970: 0))
+            coachLog.pullUps = pullUps ?? 0
+            coachLog.pushUps = pushUps ?? 0
+            coachLog.plankSeconds = plankSeconds ?? 0
+            coachLog.loggedPullUps = pullUps != nil
+            coachLog.loggedPushUps = pushUps != nil
+            coachLog.loggedPlankSeconds = plankSeconds != nil
+            return coachLog
+        }
+
+        // Push-ups: the plan is the session's highest target, the hard 20.
+        XCTAssertTrue(log(pushUps: 22).didMoreThanPlanned(planned))
+        XCTAssertFalse(log(pushUps: 21).didMoreThanPlanned(planned))
+        // Light technique work is a plan too.
+        XCTAssertTrue(log(pullUps: 7).didMoreThanPlanned(planned))
+        // Plank: 10% of 60 s is more than 5 s.
+        XCTAssertTrue(log(plankSeconds: 66).didMoreThanPlanned(planned))
+        XCTAssertFalse(log(plankSeconds: 65).didMoreThanPlanned(planned))
+        // Another metric on the plan is fine; one below it is not.
+        XCTAssertTrue(log(pullUps: 5, pushUps: 38).didMoreThanPlanned(planned))
+        XCTAssertFalse(log(pullUps: 4, pushUps: 38).didMoreThanPlanned(planned))
+        // Nothing planned to compare with.
+        XCTAssertFalse(log(pushUps: 38).didMoreThanPlanned([]))
+        // A session that tests push-ups logs the test result, not extra work:
+        // it is not compared with the back-off sets (as in the proxy).
+        let testSession = [
+            CoachPlannedExercisePrescription(exercise: "pushUp", sets: 1, targetReps: 40, targetSeconds: 0, plannedEffortLabel: "max_output", plannedEffortStimulus: "test"),
+            CoachPlannedExercisePrescription(exercise: "pushUp", sets: 2, targetReps: 10, targetSeconds: 0, plannedEffortLabel: "light", plannedEffortStimulus: "technique")
+        ]
+        XCTAssertFalse(log(pushUps: 42).didMoreThanPlanned(testSession))
     }
 
     func testRejectsAIPlanWithInvalidTechnicalShape() {
@@ -1868,6 +2031,22 @@ private func cleanCoachLog(completedAt: Date) -> CoachLog {
         plannedEffortLabel: "hard",
         plannedEffortReason: "Clean build work."
     )
+}
+
+/// The log of `session` that evening: what the athlete did and how hard it
+/// felt against the planned effort.
+private func deliveredCoachLog(for session: CoachPlannedSession, pullUps: Int, pushUps: Int, rpe: Int, plannedRPE: Int) -> CoachLog {
+    var log = cleanCoachLog(completedAt: session.scheduledDate.addingTimeInterval(18 * 60 * 60))
+    log.sessionId = session.id
+    log.pullUps = pullUps
+    log.pushUps = pushUps
+    log.loggedPlankSeconds = false
+    log.rpe = rpe
+    log.plannedRPE = plannedRPE
+    log.actualRPE = rpe
+    log.rpeDelta = rpe - plannedRPE
+    log.rpeSummary = "RPE - Planned \(plannedRPE) | Actual \(rpe)"
+    return log
 }
 
 private func runningProfileFixture(runningDays: Set<TrainingWeekday>, longRunDay: TrainingWeekday?) -> UserProfile {
