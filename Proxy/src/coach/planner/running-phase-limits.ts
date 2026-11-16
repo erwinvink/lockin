@@ -1,9 +1,11 @@
-import type { CoachContext, RunningWeek, RunSummary } from "./types";
+import { plural, round1 } from "./numbers";
+import { contextSeason, daysBetween, postRaceDaysFor, raceNameText, SEASON_LIMITS } from "./season";
+import type { CoachContext, RunSummary } from "./types";
 
 /**
  * Phase limits for the running week: a planned recovery week (from
- * context.periodization) and the race window (taper, race week and the two
- * weeks after the race). The rolling week can straddle phases, so the
+ * context.periodization) and the race window (taper, race week and the
+ * race's post-race window). The rolling week can straddle phases, so the
  * weekly cap averages a ratio over the seven days of the window and the
  * per-run rules look at each run's own day.
  *
@@ -16,15 +18,18 @@ import type { CoachContext, RunningWeek, RunSummary } from "./types";
  * - One short quality session at most from 21 days out, none inside 7 days.
  * - No hill session and no new hill load inside 10 days: climbing at most
  *   1.5x the athlete's usual m/km (and never capped below 150 m).
- * - First week after the race: easy or recovery runs only; the weekly cap
- *   ratio is 40% the first week and 70% the second.
+ * - First week after the race: easy or recovery runs only; from day 8 to the
+ *   end of the race's post-race window (one day per 4 race km, 7-28 days;
+ *   season.ts) easy runs, recovery runs and an easy long run, no tempo,
+ *   interval or hill session. The weekly cap ratio is 40% the first week
+ *   and 70% from day 8.
  * - Recovery week: weekly km at most 75% of the four block weeks before
  *   (aim 60-75%), long run at most 70% of the recent longest, one quality
  *   session at most.
  */
 export const TAPER_LIMITS = {
   weeklyRatio: {
-    build: 1.15,
+    normal: 1.15,
     taper_3w: 0.8,
     taper_2w: 0.7,
     race_week: 0.4,
@@ -38,7 +43,7 @@ export const TAPER_LIMITS = {
   shortRunMinKm: 3,
   /** Shakeout cap when the athlete has no normal easy run to measure. */
   shortRunDefaultKm: 5,
-  taperDays: 21,
+  taperDays: SEASON_LIMITS.phaseUntilDays.taper,
   lastQualityDaysOut: 8,
   maxQualityRunsInTaper: 1,
   noHillsWithinDays: 10,
@@ -47,8 +52,7 @@ export const TAPER_LIMITS = {
   /** Inside 10 days a run may climb at most this multiple of the usual m/km... */
   newHillLoadFactor: 1.5,
   /** ...and is never capped below this many meters. */
-  minElevationAllowanceM: 150,
-  postRaceDays: 14
+  minElevationAllowanceM: 150
 } as const;
 
 export const RECOVERY_RUN_LIMITS = {
@@ -57,10 +61,14 @@ export const RECOVERY_RUN_LIMITS = {
   maxQualityRuns: 1
 } as const;
 
-export type RaceDayPhase = "build" | "taper_3w" | "taper_2w" | "race_week" | "race_day" | "post_race_1w" | "post_race_2w";
+/** One day's place in the race window; "normal" is outside it (not the season's "build" phase). */
+export type RaceDayPhase = "normal" | "taper_3w" | "taper_2w" | "race_week" | "race_day" | "post_race_1w" | "post_race_2w";
 
+export const HARD_RUN_KINDS: ReadonlySet<string> = new Set(["long", "tempo", "intervals", "hills"]);
 export const QUALITY_RUN_KINDS: ReadonlySet<string> = new Set(["tempo", "intervals", "hills"]);
 const EASY_KINDS: ReadonlySet<string> = new Set(["easy", "recovery"]);
+/** From day 8 to the end of the post-race window: easy running and an easy long run, no quality session. */
+const POST_RACE_LATE_KINDS: ReadonlySet<string> = new Set(["easy", "recovery", "long"]);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export type RecoveryWeekRunLimits = {
@@ -74,6 +82,8 @@ export type RecoveryWeekRunLimits = {
 export type RaceWindow = {
   raceName: string;
   daysToRaceAtWeekStart: number;
+  /** Days after the race its post-race rules last (postRaceDaysFor). */
+  postRaceDays: number;
   /** Pre-taper 4-week average: the base the taper ratios apply to. */
   referenceKm: number | null;
   referenceBasis: string;
@@ -90,6 +100,9 @@ export type RunningPhaseLimits = {
   recoveryWeek: RecoveryWeekRunLimits | null;
   race: RaceWindow | null;
 };
+
+/** What the per-run rules read of a run: its day, kind and distance (planned or kept). */
+export type RunRuleInput = { dayOffset: number; kind: string; distanceKm: number };
 
 export type RunRule = {
   phase: RaceDayPhase;
@@ -129,15 +142,16 @@ function recoveryWeekLimits(context: CoachContext, recentLongestKm: number | nul
   };
 }
 
-export function phaseForDaysToRace(daysToRace: number): RaceDayPhase {
-  if (daysToRace > TAPER_LIMITS.taperDays) return "build";
+/** The phase of one day; `postRaceDays` is the race's post-race window (postRaceDaysFor). */
+export function phaseForDaysToRace(daysToRace: number, postRaceDays: number): RaceDayPhase {
+  if (daysToRace > TAPER_LIMITS.taperDays) return "normal";
   if (daysToRace >= 15) return "taper_3w";
   if (daysToRace >= 8) return "taper_2w";
   if (daysToRace >= 1) return "race_week";
   if (daysToRace === 0) return "race_day";
   if (daysToRace >= -7) return "post_race_1w";
-  if (daysToRace >= -TAPER_LIMITS.postRaceDays) return "post_race_2w";
-  return "build";
+  if (daysToRace >= -postRaceDays) return "post_race_2w";
+  return "normal";
 }
 
 function raceWindow(context: CoachContext, recentLongestKm: number | null, fallbackWeeklyKm: number | null): RaceWindow | null {
@@ -146,13 +160,14 @@ function raceWindow(context: CoachContext, recentLongestKm: number | null, fallb
   const raceMs = Date.parse(running.raceGoal.raceDate);
   const weekStartMs = Date.parse(context.profile.weekStart);
   if (!Number.isFinite(raceMs) || !Number.isFinite(weekStartMs)) return null;
-  const daysToRace = Math.round((raceMs - weekStartMs) / DAY_MS);
+  const daysToRace = daysBetween(weekStartMs, raceMs);
+  const postRaceDays = postRaceDaysFor(running.raceGoal.distanceKm);
   const days = [0, 1, 2, 3, 4, 5, 6].map((dayOffset) => ({
     dayOffset,
     daysToRace: daysToRace - dayOffset,
-    phase: phaseForDaysToRace(daysToRace - dayOffset)
+    phase: phaseForDaysToRace(daysToRace - dayOffset, postRaceDays)
   }));
-  if (days.every((day) => day.phase === "build")) return null;
+  if (days.every((day) => day.phase === "normal")) return null;
 
   const runs = running.recentRuns.filter((run) => Number.isFinite(Date.parse(run.completedAt)));
   const reference = preTaperReference(runs, raceMs, weekStartMs, fallbackWeeklyKm);
@@ -169,8 +184,9 @@ function raceWindow(context: CoachContext, recentLongestKm: number | null, fallb
   }
 
   return {
-    raceName: running.raceGoal.name,
+    raceName: raceNameText(contextSeason(context)),
     daysToRaceAtWeekStart: daysToRace,
+    postRaceDays,
     referenceKm: reference.km,
     referenceBasis: reference.basis,
     weeklyKmCap: reference.km === null ? null : round1(reference.km * meanRatio),
@@ -235,10 +251,10 @@ function usualElevationPerKm(runs: RunSummary[]): number {
 }
 
 /** The race-window and recovery-week rules for one run, by its own day. */
-export function runRuleFor(session: RunningWeek["sessions"][number], limits: RunningPhaseLimits): RunRule {
+export function runRuleFor(session: RunRuleInput, limits: RunningPhaseLimits): RunRule {
   const race = limits.race;
   const day = race?.days.find((entry) => entry.dayOffset === session.dayOffset) ?? null;
-  const phase = day?.phase ?? "build";
+  const phase = day?.phase ?? "normal";
   const rule: RunRule = {
     phase,
     daysToRace: day?.daysToRace ?? null,
@@ -259,14 +275,17 @@ export function runRuleFor(session: RunningWeek["sessions"][number], limits: Run
 
   if (phase === "race_week") {
     rule.allowedKinds = EASY_KINDS;
-    rule.kindReason = `${days} day(s) before ${race.raceName}: only short easy runs or shakeouts (strides inside an easy run are fine)`;
+    rule.kindReason = `${plural(days, "day")} before ${race.raceName}: only short easy runs or shakeouts (strides inside an easy run are fine)`;
     rule.maxKm = race.shortRunCapKm;
     rule.maxKmReason = race.normalEasyRunKm === null
       ? `race week shakeouts stay at or below ${race.shortRunCapKm} km`
       : `race week shakeouts stay at or below ${Math.round(TAPER_LIMITS.shortRunRatio * 100)}% of a normal ${race.normalEasyRunKm} km easy run (max ${TAPER_LIMITS.shortRunMaxKm} km)`;
   } else if (phase === "post_race_1w") {
     rule.allowedKinds = EASY_KINDS;
-    rule.kindReason = `${-days} day(s) after ${race.raceName}: easy or recovery runs only`;
+    rule.kindReason = `${plural(-days, "day")} after ${race.raceName}: easy or recovery runs only`;
+  } else if (phase === "post_race_2w") {
+    rule.allowedKinds = POST_RACE_LATE_KINDS;
+    rule.kindReason = `${plural(-days, "day")} after ${race.raceName}: easy runs (strides inside them are fine), recovery runs and an easy long run only, no tempo, interval or hill session until day ${race.postRaceDays} after the race`;
   } else if (phase === "taper_3w" || phase === "taper_2w") {
     const cap = race.longRunCapKm[phase];
     if (session.kind === "long" && cap !== undefined) {
@@ -278,7 +297,7 @@ export function runRuleFor(session: RunningWeek["sessions"][number], limits: Run
   if (days >= 1 && days <= TAPER_LIMITS.noHillsWithinDays) {
     if (!rule.allowedKinds) {
       rule.allowedKinds = new Set(["easy", "recovery", "long", "tempo", "intervals"]);
-      rule.kindReason = `${days} day(s) before the race: no new hill or downhill session inside ${TAPER_LIMITS.noHillsWithinDays} days`;
+      rule.kindReason = `${plural(days, "day")} before the race: no new hill or downhill session inside ${TAPER_LIMITS.noHillsWithinDays} days`;
     }
     rule.maxElevationM = Math.max(
       TAPER_LIMITS.minElevationAllowanceM,
@@ -290,7 +309,7 @@ export function runRuleFor(session: RunningWeek["sessions"][number], limits: Run
   return rule;
 }
 
-function applyRecoveryLongRun(rule: RunRule, session: RunningWeek["sessions"][number], limits: RunningPhaseLimits) {
+function applyRecoveryLongRun(rule: RunRule, session: RunRuleInput, limits: RunningPhaseLimits) {
   const recovery = limits.recoveryWeek;
   if (!recovery || recovery.longRunCapKm === null || session.kind !== "long") return;
   if (rule.maxKm === null || recovery.longRunCapKm < rule.maxKm) {
@@ -330,23 +349,30 @@ export function phaseWeeklyCap(limits: RunningPhaseLimits): { capKm: number; bas
   return candidates.reduce((lowest, candidate) => (candidate.capKm < lowest.capKm ? candidate : lowest));
 }
 
+/**
+ * "6 days (days 20-25 after the race) at 70%, 1 day normal". After the
+ * race the label names the actual days, since the window's length varies
+ * with the race (postRaceDays).
+ */
 export function describeRaceDays(race: RaceWindow): string {
-  const counts = new Map<RaceDayPhase, number>();
-  for (const day of race.days) counts.set(day.phase, (counts.get(day.phase) ?? 0) + 1);
-  const label: Record<RaceDayPhase, string> = {
-    build: "normal",
-    taper_3w: "15-21 days out at 80%",
-    taper_2w: "8-14 days out at 70%",
-    race_week: "race week at 40%",
-    race_day: "race day",
-    post_race_1w: "first week after the race at 40%",
-    post_race_2w: "second week after the race at 70%"
+  const byPhase = new Map<RaceDayPhase, number[]>();
+  for (const day of race.days) byPhase.set(day.phase, [...(byPhase.get(day.phase) ?? []), day.daysToRace]);
+  const label: Record<RaceDayPhase, (daysAfter: string) => string> = {
+    normal: () => "normal",
+    taper_3w: () => "15-21 days out at 80%",
+    taper_2w: () => "8-14 days out at 70%",
+    race_week: () => "race week at 40%",
+    race_day: () => "race day",
+    post_race_1w: (daysAfter) => `(${daysAfter} after the race) at 40%`,
+    post_race_2w: (daysAfter) => `(${daysAfter} after the race) at 70%`
   };
-  return [...counts.entries()].map(([phase, count]) => `${count} day(s) ${label[phase]}`).join(", ");
-}
-
-export function isEasyKind(kind: string): boolean {
-  return EASY_KINDS.has(kind);
+  return [...byPhase.entries()]
+    .map(([phase, daysToRace]) => {
+      const after = daysToRace.map((days) => -days);
+      const [first, last] = [Math.min(...after), Math.max(...after)];
+      return `${plural(daysToRace.length, "day")} ${label[phase](first === last ? `day ${first}` : `days ${first}-${last}`)}`;
+    })
+    .join(", ");
 }
 
 function median(values: number[]): number {
@@ -361,8 +387,4 @@ function roundHalf(value: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10 + 1e-9) / 10;
 }

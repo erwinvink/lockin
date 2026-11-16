@@ -33,10 +33,11 @@ function athleteFacingText(text: string | undefined): string {
     .replaceAll("averageDeltaLast5", "recent effort trend")
     .replaceAll("abovePlanBy2Count", "sessions harder than planned")
     .replaceAll("maxPain", "highest pain")
-    .replaceAll("rpe", "RPE")
+    // The word only: "sharpen" stays "sharpen" ("rpe_delta" and "rpeDelta" still read RPE).
+    .replace(/(?<![A-Za-z])rpe(?![a-z])/g, "RPE")
     .replaceAll("RPE RPE", "RPE")
     .replaceAll("recent_pain_level_4_or_higher", "pain reached 4/10 recently")
-    .replaceAll("recent_effort_above_plan", "effort has been higher than planned")
+    .replaceAll("recent_effort_above_plan", "sessions done as planned felt harder than planned")
     .replaceAll("_", " ")
     .trim();
 }
@@ -60,7 +61,7 @@ function humanizeReadinessFlag(flag: string): string {
     case "repeated_high_perceived_effort":
       return "Several recent sessions were very hard";
     case "recent_effort_above_plan":
-      return "Effort has been higher than planned";
+      return "Sessions done as planned felt harder than planned";
     case "last_full_month_pain_flag":
       return "Pain has shown up across the month";
     case "last_full_month_how_you_felt_very_weak":

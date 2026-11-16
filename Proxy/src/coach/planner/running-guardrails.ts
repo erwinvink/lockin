@@ -1,5 +1,7 @@
-import { computeTrainingSignals, type TrainingSignals } from "./compute-training-signals";
+import { computeTrainingSignals, isRaceRun, type TrainingSignals } from "./compute-training-signals";
+import { plural, round1 } from "./numbers";
 import {
+  HARD_RUN_KINDS,
   phaseWeeklyCap,
   QUALITY_RUN_KINDS,
   qualityRunLimit,
@@ -7,68 +9,86 @@ import {
   runRuleFor,
   type RunningPhaseLimits
 } from "./running-phase-limits";
+import {
+  HARD_EFFORT_KINDS,
+  isStarterBase,
+  loadBeforeToday,
+  QUALITY_FLOOR_KINDS,
+  RUNNING_FLOOR_LIMITS,
+  runningFloors,
+  todayCountsAsRun,
+  todayHardKind,
+  todayRun,
+  type RunningFloors,
+  type TodayRun
+} from "./running-floors";
+import { RUNNING_LIMITS } from "./running-limits";
+import { daysBetween, postRaceDaysFor, SEASON_LIMITS } from "./season";
 import type { CoachContext, RunningWeek, RunSummary, RunTarget } from "./types";
+import { wellnessGate, WELLNESS_GATE_LIMITS } from "./wellness-gate";
+
+export { RUNNING_FLOOR_LIMITS, type RunningFloors, type TodayRun } from "./running-floors";
+export { HARD_RUN_KINDS } from "./running-phase-limits";
+export { RUNNING_LIMITS } from "./running-limits";
 
 /**
  * Computed running limits. The planner prompt, the clamp step and the
  * validator all read these, so the model is told exactly what is enforced.
- * Only computed facts relax a limit (readiness state, race or taper window,
- * a tripped wellness gate, a recent distressed run, missing run history);
- * a model-written safety flag never does.
+ * Only computed facts relax a limit (a computed recovery need, race or taper
+ * window, a planned recovery week, a recent distressed run, missing run
+ * history); readiness overreaching does not: it comes from strength logs
+ * only (effort flags, goal results below plan) and stays on the strength side;
+ * a model-written safety flag and the free-text profile note never do (the
+ * note is planner context; logged pain lowers the plan through readiness).
+ * A tripped wellness gate is not a relaxation: it keeps quality runs out of
+ * the next 48 hours, and the quality floor yields only when no later day is
+ * left for the quality run.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export const HARD_RUN_KINDS: ReadonlySet<string> = new Set(["long", "tempo", "intervals", "hills"]);
 export const EASY_RUN_KINDS: ReadonlySet<string> = new Set(["easy", "recovery"]);
-const SUPPRESSED_HRV = new Set(["UNBALANCED", "LOW", "POOR"]);
 const ALL_FUTURE_OFFSETS = [1, 2, 3, 4, 5, 6];
-
-export const RUNNING_LIMITS = {
-  /** Planned weekly km may be at most 15% above the reference... */
-  weeklyJumpRatio: 0.15,
-  /** ...or reference + 3 km, whichever is larger (small bases need room). */
-  weeklyMinimumStepKm: 3,
-  /**
-   * First week back after 4+ weeks without a run, and the floor of the cap
-   * while there are fewer than 3 runs in the last 6 weeks (one short run
-   * must not shrink the cap below what no runs at all would allow).
-   */
-  returningFromBreakCapKm: 20,
-  sparseHistoryRunCount: 3,
-  longRunCapRatio: 1.4,
-  paceSecPerKm: { min: 150, max: 720 },
-  hrBpm: { min: 80, max: 210 },
-  /** Volume clamping never shortens an easy run below this (or half its length). */
-  easyRunMinimumKm: 3,
-  backToBackMinRaceKm: 80,
-  /** Build and peak: more than 3 and at most 12 weeks to the race. */
-  backToBackWeeksToRace: { min: 4, max: 12 },
-  recentRunWindowDays: 42,
-  wellnessMaxAgeDays: 3
-} as const;
+const POST_RACE = SEASON_LIMITS.postRace;
 
 export type RunningRelaxationCode =
-  | "readiness_overreaching"
   | "readiness_recovery_needed"
   | "race_this_week"
   | "taper_window"
   | "post_race_recovery"
-  | "wellness_gate"
   | "recent_run_distress"
   | "missing_run_history"
-  | "profile_pain_note"
   | "planned_recovery_week";
 
+/** Each computed reason in plain words: the planner names it, and the repair messages list them. */
+export const RELAXATION_LABELS: Record<RunningRelaxationCode, string> = {
+  readiness_recovery_needed: "readiness (recovery needed)",
+  race_this_week: "the race this week",
+  taper_window: "the taper",
+  post_race_recovery: "the post-race window",
+  planned_recovery_week: "a planned recovery week",
+  recent_run_distress: "a recent run rated feel 1-2",
+  missing_run_history: "missing run history"
+};
+
 /**
- * A computed reason that lowers the run-count floor. `floorOnly` reasons (a
- * profile pain note) allow fewer runs but never an all-easy build week.
+ * A computed reason that lifts the week's floors: the run-count floor, the
+ * quality-run floor and the weekly-km floor. A tripped wellness gate is not
+ * one of them (`RunningGuardrails.wellnessGate`), and free text (the profile
+ * note) never is.
  */
-export type RunningRelaxation = { code: RunningRelaxationCode; detail: string; floorOnly?: boolean };
+export type RunningRelaxation = { code: RunningRelaxationCode; label: string; detail: string };
+
+function relaxation(code: RunningRelaxationCode, detail: string): RunningRelaxation {
+  return { code, label: RELAXATION_LABELS[code], detail };
+}
 
 export type WeeklyVolumeLimit =
-  /** `phase`: a recovery-week or race-window cap is the binding one. */
-  | { kind: "capped"; referenceKm: number; capKm: number; basis: string; phase?: boolean }
+  /**
+   * `phase`: a recovery-week or race-window cap is the binding one.
+   * `returnWeek`: the first week back after 4+ weeks without runs.
+   */
+  | { kind: "capped"; referenceKm: number; capKm: number; basis: string; phase?: boolean; returnWeek?: boolean }
   | { kind: "waived"; reason: string };
 
 export type EasyRunReference = {
@@ -79,13 +99,24 @@ export type EasyRunReference = {
   method: "labelled_easy_runs" | "slower_half_of_flat_runs";
 };
 
+/**
+ * The long-run cap: 1.15x `referenceKm`, the longest training run of the last
+ * 30 days, else of the last 42 days (races left out). With run history but no
+ * training run in 42 days the cap is the return-week cap (`referenceKm`
+ * null); with no runs on record, 1.15x the app's recent longest run. A race
+ * is demonstrated capacity: text only, never a reference.
+ */
+export type LongRunLimit = { referenceKm: number | null; capKm: number; basis: string; demonstratedCapacity: string | null };
+
 export type RunFrequencyPolicy = { minRuns: number; maxRuns: number; maxReason: string; basis: string };
 
 export type RunningGuardrails = {
   anchor: string;
   relaxations: RunningRelaxation[];
   weeklyVolume: WeeklyVolumeLimit;
-  longRun: { recentLongestKm: number; capKm: number } | null;
+  longRun: LongRunLimit | null;
+  /** Weekly climbing cap; null without run history (no climbing reference). */
+  weeklyClimb: { fourWeekAvgM: number; capM: number; basis: string } | null;
   frequency: RunFrequencyPolicy | null;
   availability: { unconstrained: boolean; offsets: number[] };
   backToBackLongRunsAllowed: boolean;
@@ -96,6 +127,19 @@ export type RunningGuardrails = {
   phase: RunningPhaseLimits;
   /** Most tempo, interval and hill runs this window allows (recovery week, taper), or null. */
   qualityLimit: { max: number; reason: string } | null;
+  /**
+   * A tripped wellness gate: no tempo, interval or hill run on these offsets
+   * (the next 48 hours). It lifts no floor; the week's quality run goes on a
+   * later day. `detail` names the signal (a continuity change signal too).
+   */
+  wellnessGate: { offsets: number[]; reason: string; detail: string } | null;
+  /**
+   * Today's run (offset 0, locked): the runs done today, else the runs the
+   * current plan has for today. The floors count it: the plan covers offsets
+   * 1-6 while the floors are weekly.
+   */
+  today: TodayRun | null;
+  floors: RunningFloors;
 };
 
 export type RunningGuardrailOptions = {
@@ -115,29 +159,42 @@ export function runningGuardrails(context: CoachContext, options: RunningGuardra
     ? running.recentRuns.filter((run) => withinDaysBefore(run, anchorMs, RUNNING_LIMITS.recentRunWindowDays)).length
     : 0;
 
-  const longRun = longRunLimit(context, signals);
+  // The taper and recovery-week long-run ratios read the longest training run
+  // of the last 6 weeks (races left out).
+  const recentLongest = recentLongestTrainingRunKm(context, anchorMs);
+  const longRun = longRunLimit(context, anchorMs);
   const fallbackWeeklyKm = signals && running && running.recentRuns.length > 0 ? signals.running.fourWeekAvgKm : running?.baselineWeeklyKm ?? null;
-  const phase = runningPhaseLimits(context, longRun?.recentLongestKm ?? null, fallbackWeeklyKm);
-  const weeklyVolume = withPhaseCap(weeklyVolumeLimit(context, signals, recentRunCountLast6Weeks), phase);
+  const phase = runningPhaseLimits(context, recentLongest > 0 ? round1(recentLongest) : null, fallbackWeeklyKm);
+  const weeklyVolume = withPhaseCap(weeklyVolumeLimit(context, recentRunCountLast6Weeks), phase);
+  const gate = wellnessGate(context.garmin?.wellness ?? [], context.profile.weekStart);
+  const gateLimits = gate
+    ? { offsets: gate.offsets, reason: `${gate.why} ${gate.reasons.length > 1 ? "keep" : "keeps"} the next ${WELLNESS_GATE_LIMITS.gateHours} hours easy`, detail: gate.reasons.join(" ") }
+    : null;
   const relaxations = computedRelaxations(context, anchorMs, raceDayOffset);
   if (phase.recoveryWeek) {
-    relaxations.push({ code: "planned_recovery_week", detail: phase.recoveryWeek.reason });
+    relaxations.push(relaxation("planned_recovery_week", phase.recoveryWeek.reason));
   }
+  const today = todayRun(context);
+  const frequency = running
+    ? feasibleFrequency(runFrequencyPolicy(context, availability.offsets.length, recentRunCountLast6Weeks), weeklyVolume, today)
+    : null;
   return {
     anchor: now.toISOString(),
     relaxations,
     weeklyVolume,
     longRun,
-    frequency: running
-      ? feasibleFrequency(runFrequencyPolicy(context, availability.offsets.length, recentRunCountLast6Weeks), weeklyVolume)
-      : null,
+    weeklyClimb: weeklyClimbLimit(context),
+    frequency,
     availability,
     backToBackLongRunsAllowed: backToBackLongRunsAllowed(context),
     raceDayOffset,
     recentRunCountLast6Weeks,
     easyReference: running ? easyRunReference(running.recentRuns, anchorMs) : null,
     phase,
-    qualityLimit: qualityRunLimit(phase)
+    qualityLimit: qualityRunLimit(phase),
+    wellnessGate: gateLimits,
+    today,
+    floors: runningFloors(context, { relaxations, weeklyVolume, phase, availability, frequency, longRun, wellnessGate: gateLimits, today, recentRunCount: recentRunCountLast6Weeks })
   };
 }
 
@@ -151,12 +208,16 @@ function withPhaseCap(limit: WeeklyVolumeLimit, phase: RunningPhaseLimits): Week
     referenceKm: limit.kind === "capped" ? limit.referenceKm : 0,
     capKm: phaseCap.capKm,
     basis: phaseCap.basis,
-    phase: true
+    phase: true,
+    ...(limit.kind === "capped" && limit.returnWeek ? { returnWeek: true } : {})
   };
 }
 
 /** Planner-facing view of the guardrails (plain JSON, no functions). */
 export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Record<string, unknown> {
+  const { longRunCapRatio, longRunWindowDays, recentRunWindowDays, returningFromBreakCapKm } = RUNNING_LIMITS;
+  const gateHours = WELLNESS_GATE_LIMITS.gateHours;
+  const labels = Object.values(RELAXATION_LABELS);
   return {
     weeklyVolume:
       guardrails.weeklyVolume.kind === "capped"
@@ -165,31 +226,54 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
             capKm: guardrails.weeklyVolume.capKm,
             basis: guardrails.weeklyVolume.basis,
             rule: guardrails.weeklyVolume.phase
-              ? "Sum of planned distances (race-day session excluded) must be at most capKm. Over the cap, the proxy shortens easy and recovery runs first, then the long run and the quality session."
-              : "Sum of planned distances (race-day session excluded) must be at most capKm. Over the cap, the proxy shortens easy and recovery runs."
+              ? "Today's run (floors.todayRun, locked) plus the sum of planned distances (race-day session excluded) must be at most capKm: the cap covers the same 7 days as the floors. Over the cap, the proxy shortens easy and recovery runs first, then the long run and the quality session."
+              : "Today's run (floors.todayRun, locked) plus the sum of planned distances (race-day session excluded) must be at most capKm: the cap covers the same 7 days as the floors. Over the cap, the proxy shortens easy and recovery runs."
           }
         : { waived: true, reason: guardrails.weeklyVolume.reason },
     longRun: guardrails.longRun
       ? {
-          recentLongestKm: guardrails.longRun.recentLongestKm,
+          referenceKm: guardrails.longRun.referenceKm,
+          basis: guardrails.longRun.basis,
           capKm: guardrails.longRun.capKm,
-          rule: "No run except the race itself may exceed capKm (1.4x the recent longest run)."
+          demonstratedCapacity: guardrails.longRun.demonstratedCapacity,
+          rule: `No run except the race itself may exceed capKm: ${longRunCapRatio}x the longest training run of the last ${longRunWindowDays} days (races left out; with none in ${longRunWindowDays} days, of the last ${recentRunWindowDays} days; with none in ${recentRunWindowDays} days, the ${returningFromBreakCapKm} km return-week cap; with no runs on record, ${longRunCapRatio}x the athlete's recent longest run). A race is demonstrated capacity, never the long-run reference.`
+        }
+      : null,
+    weeklyClimb: guardrails.weeklyClimb
+      ? {
+          fourWeekAvgM: guardrails.weeklyClimb.fourWeekAvgM,
+          capM: guardrails.weeklyClimb.capM,
+          basis: guardrails.weeklyClimb.basis,
+          rule: "Today's climbing (floors.todayRun.elevationM, locked) plus the sum of planned elevationMeters (race-day session excluded) must be at most capM: the cap covers the same 7 days as the floors, and its 4-week average ends at local midnight. Over the cap, the proxy takes the climbing off the easy and recovery runs first, then the long run, and the hill and quality runs last."
         }
       : null,
     frequency: guardrails.frequency
       ? { minRuns: guardrails.frequency.minRuns, maxRuns: guardrails.frequency.maxRuns, basis: guardrails.frequency.basis }
       : null,
     hardRuns: {
-      maxHardRuns: { "1-2 runs": "all", "3-4 runs": 2, "5 runs": 3 },
+      maxHardRuns: { "1-2 runs": "all", "3-4 runs": 2, "5 or more runs": 3 },
+      counted: `Over the 7 days: today's run (floors.todayRun, locked) is one of the runs from ${RUNNING_LIMITS.easyRunMinimumKm} km, and then a hard run when it is long, tempo, intervals, hills or a race.`,
       backToBackLongRunsCountAsOne: guardrails.backToBackLongRunsAllowed,
       hardKinds: [...HARD_RUN_KINDS],
       consecutiveDays: guardrails.backToBackLongRunsAllowed
-        ? "Never two hard runs on consecutive days, except two long runs back to back (allowed for this race and phase)."
-        : "Never two hard runs on consecutive days."
+        ? "Never two hard runs on consecutive days, today's run included (after a hard run today, offset 1 is no hard run), except two long runs back to back (allowed for this race and phase)."
+        : "Never two hard runs on consecutive days, today's run included: after a hard run today, offset 1 is no hard run."
+    },
+    floors: {
+      qualityRun: guardrails.floors.qualityRun,
+      weeklyKm: guardrails.floors.weeklyKm,
+      todayRun: guardrails.today,
+      rule: `Enforced with ${RUNNING_FLOOR_LIMITS.minRuns} or more runs planned, over the 7 days of today's run (todayRun, locked: done or planned) plus the planned runs: when qualityRun.required is true, at least one tempo, interval or hill run (the long run does not count; a quality run or a race today already counts, a race being the quality stimulus of its week); when weeklyKm.minKm is a number, todayRun.distanceKm plus the planned km (race-day session excluded) at least minKm (weeklyKm.reason gives its numbers). Each reason says why the floor applies or is lifted.`
     },
     computedRelaxations: guardrails.relaxations,
-    computedRelaxationRule:
-      "Only these computed reasons allow fewer runs than frequency.minRuns; all of them except floorOnly ones (a profile pain note) also allow an all-easy week. Safety flags never waive a limit.",
+    computedRelaxationRule: `These computed reasons (computedRelaxations) allow fewer runs than frequency.minRuns and lift the quality-run and weekly-km floors: ${labels.slice(0, -1).join(", ")} or ${labels.at(-1)}. The floors also lift on their own, and floors.*.reason says so: both in the taper and the post-race transition, for a starter base and in the first week back after 4+ weeks without runs; the quality run when no running day is left away from the long run, the day after a hard run today and a wellness gate's next ${gateHours} hours; the weekly km when the race window reaches into the week or the free days cannot hold it under the long-run cap. Nothing else lifts a floor: a wellness gate (wellnessGate) only as above, and never a safety flag or the profile note (coachContext.profile.profileNotes), which shapes which runs you choose within the limits; logged pain lowers the plan through readiness.`,
+    wellnessGate: guardrails.wellnessGate
+      ? {
+          dayOffsets: guardrails.wellnessGate.offsets,
+          reason: guardrails.wellnessGate.reason,
+          rule: `No tempo, interval or hill run on these day offsets (the next ${gateHours} hours); the proxy turns one there into an easy run. The gate lifts no floor: the run count, the weekly km and the quality run stay, so put the quality run on a later day that is not next to the long run (floors.qualityRun says when no such day is left).`
+        }
+      : null,
     raceDayOffset: guardrails.raceDayOffset,
     recentRunCountLast6Weeks: guardrails.recentRunCountLast6Weeks,
     easyReference: guardrails.easyReference,
@@ -208,6 +292,7 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
       ? {
           raceName: guardrails.phase.race.raceName,
           daysToRaceAtWeekStart: guardrails.phase.race.daysToRaceAtWeekStart,
+          postRaceDays: guardrails.phase.race.postRaceDays,
           days: guardrails.phase.race.days.filter((day) => day.dayOffset >= 1),
           preTaperReferenceKm: guardrails.phase.race.referenceKm,
           weeklyKmCap: guardrails.phase.race.weeklyKmCap,
@@ -220,7 +305,8 @@ export function runningGuardrailsForPrompt(guardrails: RunningGuardrails): Recor
             "taper_2w (8-14 days out): weekly km 50-70% of the pre-taper average; long run at most longRunCapKm.taper_2w; keep one short quality session (the last one at least 8 days out).",
             "race_week (1-7 days out): besides the race, only short easy runs or shakeouts of at most raceWeekRunCapKm each (50% of a normal easy run, max 8 km); strides inside an easy run are fine; no tempo, intervals, hills or long runs.",
             "Inside 10 days: no hill session and no new hill or downhill load (climbing at most 1.5x usualClimbMPerKm, never capped below 150 m).",
-            "post_race_1w: easy or recovery runs only, short; post_race_2w: back to easy volume at most 70% of the pre-taper average.",
+            `post_race_1w (days 1-7 after the race): easy or recovery runs only, short; post_race_2w (day 8 to day postRaceDays after the race): easy runs (strides inside them are fine), recovery runs and an easy long run only, no tempo, intervals or hills; weekly km at most 70% of the pre-taper average. postRaceDays grows with the race distance (one day per ${POST_RACE.kmPerDay} km, ${POST_RACE.minDays}-${POST_RACE.maxDays} days).`,
+            "normal: outside the race window; the normal weekly and long-run caps apply. This is a day value, not the season phase (coachContext.season.phase).",
             "Days in one window can sit in different phases: each run follows the rule of its own day."
           ]
         }
@@ -240,23 +326,24 @@ export function maxHardRunsFor(runCount: number): number {
 }
 
 /**
- * Hard runs as counted against maxHardRunsFor. When back-to-back long runs
- * are allowed, a long run on the day after another long run belongs to the
- * same long-run block and is not counted a second time.
+ * Hard runs as counted against maxHardRunsFor, over the 7 days: a hard run
+ * today (locked, a race included) counts when today's run counts as a run.
+ * Runs are read by their day, in any order. When back-to-back long runs are
+ * allowed, a long run on the day after another long run belongs to the same
+ * long-run block and is not counted a second time.
  */
 export function countedHardRuns(week: RunningWeek, guardrails: RunningGuardrails): number {
-  let count = 0;
-  week.sessions.forEach((session, index) => {
-    if (!HARD_RUN_KINDS.has(session.kind)) return;
-    const previous = week.sessions[index - 1];
-    const secondOfBackToBack =
-      guardrails.backToBackLongRunsAllowed &&
-      session.kind === "long" &&
-      previous?.kind === "long" &&
-      session.dayOffset === previous.dayOffset + 1;
-    if (!secondOfBackToBack) count += 1;
-  });
-  return count;
+  const todayHard = todayCountsAsRun(guardrails.today) ? todayHardKind(guardrails.today) : null;
+  const runs: Array<{ dayOffset: number; kind: string; today: boolean }> = [
+    ...(todayHard ? [{ dayOffset: 0, kind: todayHard, today: true }] : []),
+    ...week.sessions.map((session) => ({ dayOffset: session.dayOffset, kind: session.kind, today: false }))
+  ];
+  return runs.filter((entry) => {
+    // Today's entry is only there for a hard run; a planned run is hard by its kind.
+    if (!entry.today && !HARD_EFFORT_KINDS.has(entry.kind)) return false;
+    const dayBefore = runs.find((other) => other.dayOffset === entry.dayOffset - 1);
+    return !(guardrails.backToBackLongRunsAllowed && entry.kind === "long" && dayBefore?.kind === "long");
+  }).length;
 }
 
 /**
@@ -309,14 +396,19 @@ export function clampRunningWeek(
   });
 
   clampPhaseRules(sessions, guardrails, adjustments);
+  clampWellnessGate(sessions, guardrails, adjustments);
 
   if (guardrails.longRun) {
-    const cap = guardrails.longRun.capKm;
+    const { capKm: cap, referenceKm, basis } = guardrails.longRun;
     sessions.forEach((session, index) => {
       if (isRaceDaySession(session, guardrails) || session.distanceKm <= cap) return;
       const before = session.distanceKm;
       scaleSession(session, floorHalf(cap));
-      session.notes.push(`Shortened to ${session.distanceKm} km: 1.4x your recent longest run (${guardrails.longRun!.recentLongestKm} km) is the cap.`);
+      session.notes.push(
+        referenceKm === null
+          ? `Shortened to ${session.distanceKm} km: with no training run in the last ${RUNNING_LIMITS.recentRunWindowDays} days, one run stays within the ${cap} km return-week cap.`
+          : `Shortened to ${session.distanceKm} km: one run goes at most ${Math.round((RUNNING_LIMITS.longRunCapRatio - 1) * 100)}% past ${basis} (${referenceKm} km).`
+      );
       adjustments.push(
         `Run ${index + 1} (${session.title}): shortened from ${before} km to ${session.distanceKm} km (long-run cap ${cap} km).`
       );
@@ -324,7 +416,9 @@ export function clampRunningWeek(
   }
 
   if (guardrails.weeklyVolume.kind === "capped") {
-    const cap = guardrails.weeklyVolume.capKm;
+    // The cap covers the 7 days: today's run (locked) uses part of it.
+    const todayKm = guardrails.today?.distanceKm ?? 0;
+    const cap = kmLeftAfterToday(guardrails.weeklyVolume, guardrails.today);
     const counted = sessions.filter((session) => !isRaceDaySession(session, guardrails));
     const total = counted.reduce((sum, session) => sum + Math.max(0, session.distanceKm), 0);
     const excess = total - cap;
@@ -346,14 +440,82 @@ export function clampRunningWeek(
           shortenProportionally(others, Math.min(rest, otherReducible), otherReducible, phaseFloor, "Shortened to keep this lighter week inside its volume cap.");
         }
         const after = counted.reduce((sum, session) => sum + Math.max(0, session.distanceKm), 0);
+        const capText = todayKm > 0 ? `${cap} km left after today's ${todayKm} km run (cap ${guardrails.weeklyVolume.capKm} km)` : `${cap} km cap`;
         adjustments.push(
-          `Weekly volume ${round1(total)} km was above the ${cap} km cap; ${others.length > 0 && rest > 0.05 ? "easy runs, then the long run and quality session," : "easy and recovery runs"} were shortened to ${round1(after)} km total.`
+          `Weekly volume ${round1(total)} km was above the ${capText}; ${others.length > 0 && rest > 0.05 ? "easy runs, then the long run and quality session," : "easy and recovery runs"} were shortened to ${round1(after)} km total.`
         );
       }
     }
   }
 
+  clampWeeklyClimb(sessions, guardrails, adjustments);
+
   return { week: { ...week, sessions }, adjustments };
+}
+
+/**
+ * The order in which runs give up climbing over the weekly cap: easy and
+ * recovery runs first, then the long run, the quality and hill runs last (a
+ * hill session's climbs are its stimulus).
+ */
+const CLIMB_CUT_ORDER: ReadonlyArray<{ label: string; holds: (kind: string) => boolean }> = [
+  { label: "the easy and recovery runs", holds: (kind) => kind !== "long" && !QUALITY_FLOOR_KINDS.has(kind) },
+  { label: "the long run", holds: (kind) => kind === "long" },
+  { label: "the hill and quality runs", holds: (kind) => QUALITY_FLOOR_KINDS.has(kind) }
+];
+
+/**
+ * Over the weekly climbing cap the climbing comes off the runs in
+ * CLIMB_CUT_ORDER (race day excluded): each group is lowered in proportion,
+ * down to flat, before the next one gives way. The cap covers the 7 days:
+ * today's climbing (locked) uses part of it.
+ */
+function clampWeeklyClimb(sessions: RunningWeek["sessions"], guardrails: RunningGuardrails, adjustments: string[]) {
+  if (!guardrails.weeklyClimb) return;
+  const cap = guardrails.weeklyClimb.capM;
+  const todayM = guardrails.today?.elevationM ?? 0;
+  const budget = Math.max(0, cap - todayM);
+  const counted = sessions.filter((session) => !isRaceDaySession(session, guardrails));
+  const total = countedClimb(counted);
+  if (total <= budget) return;
+  const lowered: string[] = [];
+  for (const group of CLIMB_CUT_ORDER) {
+    const excess = countedClimb(counted) - budget;
+    if (excess <= 0) break;
+    const runs = counted.filter((session) => group.holds(session.kind) && session.elevationMeters > 0);
+    const groupM = runs.reduce((sum, session) => sum + session.elevationMeters, 0);
+    if (groupM <= 0) continue;
+    const ratio = Math.max(0, groupM - excess) / groupM;
+    for (const session of runs) {
+      const next = Math.floor(session.elevationMeters * ratio + 1e-9);
+      if (next >= session.elevationMeters) continue;
+      session.elevationMeters = next;
+      session.notes.push(
+        next === 0
+          ? todayM >= cap
+            ? `Pick a flat route: today's ${todayM} m of climbing already reaches this week's ${cap} m.`
+            : `Pick a flat route: the week's climbing stays at or below ${cap} m${todayM > 0 ? `, today's ${todayM} m included` : ""}, and the harder runs keep theirs.`
+          : `Pick a route with about ${next} m of climbing: the week's climbing stays at or below ${cap} m${todayM > 0 ? `, today's ${todayM} m included` : ""}.`
+      );
+    }
+    lowered.push(group.label);
+  }
+  const capText = todayM > 0 ? `${budget} m left after today's ${todayM} m (cap ${cap} m)` : `${cap} m cap`;
+  const quality = CLIMB_CUT_ORDER[2];
+  const keepsQuality = !lowered.includes(quality.label) && counted.some((session) => quality.holds(session.kind) && session.elevationMeters > 0);
+  const order = lowered.length > 1 ? `${lowered.slice(0, -1).join(", ")} first, then ${lowered.at(-1)}` : lowered[0];
+  adjustments.push(
+    `Weekly climbing ${total} m was above the ${capText}; the climbing came off ${order}${keepsQuality ? `, so ${quality.label} keep theirs` : ""}: ${countedClimb(counted)} m total.`
+  );
+}
+
+/** Planned climbing in meters, race-day session excluded. */
+export function countedWeeklyClimb(week: RunningWeek, guardrails: RunningGuardrails): number {
+  return countedClimb(week.sessions.filter((session) => !isRaceDaySession(session, guardrails)));
+}
+
+function countedClimb(sessions: RunningWeek["sessions"]): number {
+  return Math.round(sessions.reduce((sum, session) => sum + Math.max(0, session.elevationMeters), 0));
 }
 
 /**
@@ -405,6 +567,19 @@ function clampPhaseRules(sessions: RunningWeek["sessions"], guardrails: RunningG
       session.notes.push(`Pick a route with about ${rule.maxElevationM} m of climbing at most: ${rule.elevationReason}.`);
       adjustments.push(`Run ${index + 1} (${session.title}): climbing lowered from ${before} m to ${rule.maxElevationM} m (${rule.elevationReason}).`);
     }
+  });
+}
+
+/** A tripped wellness gate: tempo, interval and hill runs in the next 48 hours become easy runs. */
+function clampWellnessGate(sessions: RunningWeek["sessions"], guardrails: RunningGuardrails, adjustments: string[]) {
+  const gate = guardrails.wellnessGate;
+  if (!gate) return;
+  sessions.forEach((session, index) => {
+    if (!QUALITY_RUN_KINDS.has(session.kind) || !gate.offsets.includes(session.dayOffset)) return;
+    const before = session.kind;
+    const title = session.title;
+    convertToEasy(session, gate.reason, false, guardrails.easyReference);
+    adjustments.push(`Run ${index + 1} (${title}): ${before} changed to an easy run (${gate.reason}).`);
   });
 }
 
@@ -540,22 +715,26 @@ function floorHalf(value: number): number {
 
 function computedRelaxations(context: CoachContext, anchorMs: number, raceDayOffset: number | null): RunningRelaxation[] {
   const relaxations: RunningRelaxation[] = [];
-  const state = context.readiness.state;
-  if (state === "overreaching" || state === "recovery_needed") {
-    relaxations.push({ code: `readiness_${state}`, detail: `Computed readiness is ${state}.` });
+  // Logged pain or very weak feedback is whole-body. Overreaching is computed
+  // from strength logs only, so it eases the strength week, not the runs.
+  if (context.readiness.state === "recovery_needed") {
+    relaxations.push(relaxation("readiness_recovery_needed", "Computed readiness is recovery needed (logged pain of 4 or more, or very weak feedback)."));
   }
 
   const running = context.running;
   if (running) {
+    const daysToRace = daysFromWeekStart(context, running.raceGoal.raceDate);
     if (raceDayOffset !== null) {
-      relaxations.push({ code: "race_this_week", detail: `The race is on day offset ${raceDayOffset}.` });
+      relaxations.push(relaxation("race_this_week", `The race is on day offset ${raceDayOffset}.`));
+    } else if (daysToRace === 0) {
+      // Race day: the rest of the rolling week is the first week after the race.
+      relaxations.push(relaxation("race_this_week", "The race is today."));
     } else if (running.weeksToRace >= 1 && running.weeksToRace <= 3) {
-      relaxations.push({ code: "taper_window", detail: `${running.weeksToRace} week(s) to the race: taper window.` });
+      relaxations.push(relaxation("taper_window", `${plural(running.weeksToRace, "week")} to the race: taper window.`));
     }
 
-    const daysToRace = daysFromWeekStart(context, running.raceGoal.raceDate);
-    if (daysToRace !== null && daysToRace <= 0 && daysToRace >= -14) {
-      relaxations.push({ code: "post_race_recovery", detail: `The race was ${-daysToRace} day(s) ago.` });
+    if (daysToRace !== null && daysToRace < 0 && daysToRace >= -postRaceDaysFor(running.raceGoal.distanceKm)) {
+      relaxations.push(relaxation("post_race_recovery", `The race was ${plural(-daysToRace, "day")} ago.`));
     }
 
     const distressed = running.recentRuns
@@ -563,78 +742,56 @@ function computedRelaxations(context: CoachContext, anchorMs: number, raceDayOff
       .filter((run) => typeof run.feelScore === "number" && run.feelScore >= 1 && run.feelScore <= 2);
     if (distressed.length > 0) {
       const latest = distressed[distressed.length - 1];
-      relaxations.push({
-        code: "recent_run_distress",
-        detail: `A run on ${latest.completedAt.slice(0, 10)} was rated ${latest.feelScore}/5 for feel.`
-      });
+      relaxations.push(relaxation("recent_run_distress", `A run on ${latest.completedAt.slice(0, 10)} was rated ${latest.feelScore}/5 for feel.`));
     }
 
     if (running.recentRuns.length === 0 && (running.baselineWeeklyKm || 0) <= 0) {
-      relaxations.push({ code: "missing_run_history", detail: "No run history and no baseline weekly volume." });
-    }
-
-    if (hasProfilePainNote(context.profile.profileNotes)) {
-      relaxations.push({
-        code: "profile_pain_note",
-        detail: "The athlete's profile notes mention pain or an injury: fewer runs than the floor are fine; the caps and the quality-session rule stay.",
-        floorOnly: true
-      });
+      relaxations.push(relaxation("missing_run_history", "No run history and no baseline weekly volume."));
     }
   }
 
-  const gate = wellnessGate(context, anchorMs);
-  if (gate) relaxations.push(gate);
   return relaxations;
 }
 
-function wellnessGate(context: CoachContext, anchorMs: number): RunningRelaxation | null {
-  const latest = [...(context.garmin?.wellness ?? [])].sort((a, b) => a.date.localeCompare(b.date)).at(-1);
-  if (!latest) return null;
-  const dayMs = Date.parse(`${latest.date.slice(0, 10)}T12:00:00Z`);
-  if (!Number.isFinite(dayMs) || Math.abs(anchorMs - dayMs) > RUNNING_LIMITS.wellnessMaxAgeDays * DAY_MS) return null;
-  const hrv = latest.hrvStatus?.trim().toUpperCase() ?? "";
-  if (SUPPRESSED_HRV.has(hrv)) {
-    return { code: "wellness_gate", detail: `HRV status ${hrv} on ${latest.date}.` };
-  }
-  if (typeof latest.sleepScore === "number" && latest.sleepScore > 0 && latest.sleepScore < 50) {
-    return { code: "wellness_gate", detail: `Sleep score ${latest.sleepScore} on ${latest.date}.` };
-  }
-  return null;
-}
-
-/**
- * The athlete's own pain or injury note. The app appends a session-length
- * sentence to the profile notes; that alone is not a pain note.
- */
-export function hasProfilePainNote(profileNotes: string | undefined): boolean {
-  const withoutSessionCap = (profileNotes ?? "").replace(/Keep each strength session within \d+ minutes\.?/gi, "");
-  return withoutSessionCap.trim().length > 0;
-}
 
 /**
  * Keeps the run-count floor reachable under the weekly cap: minRuns easy
- * runs of the minimum length must fit, else the floor drops to what fits.
+ * runs of the minimum length must fit the budget today's run leaves, else
+ * the floor drops to what fits.
  */
-function feasibleFrequency(policy: RunFrequencyPolicy, weeklyVolume: WeeklyVolumeLimit): RunFrequencyPolicy {
+function feasibleFrequency(policy: RunFrequencyPolicy, weeklyVolume: WeeklyVolumeLimit, today: TodayRun | null): RunFrequencyPolicy {
   if (weeklyVolume.kind !== "capped") return policy;
-  const fits = Math.floor((weeklyVolume.capKm + 1e-9) / RUNNING_LIMITS.easyRunMinimumKm);
+  const budget = kmLeftAfterToday(weeklyVolume, today);
+  const todayKm = today?.distanceKm ?? 0;
+  const fits = Math.max(0, Math.floor((budget + 1e-9) / RUNNING_LIMITS.easyRunMinimumKm));
   if (policy.minRuns <= fits) return policy;
-  const minRuns = Math.max(0, fits);
+  const minRuns = fits;
+  const where = todayKm > 0 ? `the ${round1(budget)} km left of the ${weeklyVolume.capKm} km cap after today's ${todayKm} km run` : `the ${weeklyVolume.capKm} km cap`;
   return {
     ...policy,
     minRuns,
-    basis: `${policy.basis}; at most ${minRuns} runs of ${RUNNING_LIMITS.easyRunMinimumKm} km fit the ${weeklyVolume.capKm} km cap`
+    basis: `${policy.basis}; at most ${minRuns} runs of ${RUNNING_LIMITS.easyRunMinimumKm} km fit ${where}`
   };
 }
 
-function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | null, recentRunCount: number): WeeklyVolumeLimit {
+/** The weekly cap left for offsets 1-6 after today's run (locked), never below 0; null without a cap. */
+export function weeklyBudgetAfterToday(guardrails: RunningGuardrails): number | null {
+  return guardrails.weeklyVolume.kind === "capped" ? kmLeftAfterToday(guardrails.weeklyVolume, guardrails.today) : null;
+}
+
+/** The one computation of the km a capped week leaves after today's run (never below 0): the clamp, the run-count floor, the validator and continuity read it. */
+export function kmLeftAfterToday(weeklyVolume: Extract<WeeklyVolumeLimit, { kind: "capped" }>, today: TodayRun | null): number {
+  return Math.max(0, round1(weeklyVolume.capKm - (today?.distanceKm ?? 0)));
+}
+
+function weeklyVolumeLimit(context: CoachContext, recentRunCount: number): WeeklyVolumeLimit {
   const running = context.running;
   if (!running) return { kind: "waived", reason: "No running context." };
   const baseline = running.baselineWeeklyKm || 0;
   const returnCap = RUNNING_LIMITS.returningFromBreakCapKm;
   const sparse = recentRunCount < RUNNING_LIMITS.sparseHistoryRunCount;
 
-  if (running.recentRuns.length === 0 || !signals) {
+  if (running.recentRuns.length === 0) {
     if (baseline > 0) {
       const cap = capFrom(baseline);
       return {
@@ -647,15 +804,19 @@ function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | nul
     return { kind: "waived", reason: "No run history and no baseline weekly volume: plan a minimal assessment week." };
   }
 
-  const last7 = signals.running.last7DaysKm;
-  const fourWeekAvg = signals.running.fourWeekAvgKm;
+  // Anchored at local midnight like the floor: today's run counts against
+  // the 7-day budget, so it must not also raise the cap in a daytime re-plan.
+  const { last7Km, fourWeekAvgKm } = loadBeforeToday(context, { racesIncluded: true });
+  const last7 = round1(last7Km);
+  const fourWeekAvg = round1(fourWeekAvgKm);
   const reference = Math.max(last7, fourWeekAvg);
   if (reference <= 0) {
     return {
       kind: "capped",
       referenceKm: 0,
       capKm: RUNNING_LIMITS.returningFromBreakCapKm,
-      basis: `no runs in the last 4 weeks, so the return week is capped at ${RUNNING_LIMITS.returningFromBreakCapKm} km`
+      basis: `no runs in the last 4 weeks, so the return week is capped at ${RUNNING_LIMITS.returningFromBreakCapKm} km`,
+      returnWeek: true
     };
   }
   const cap = capFrom(reference);
@@ -664,7 +825,7 @@ function weeklyVolumeLimit(context: CoachContext, signals: TrainingSignals | nul
       kind: "capped",
       referenceKm: round1(reference),
       capKm: returnCap,
-      basis: `only ${recentRunCount} run(s) in the last 6 weeks, so the ${returnCap} km return cap applies instead of 15% above ${round1(reference)} km`
+      basis: `only ${plural(recentRunCount, "run")} in the last ${RUNNING_LIMITS.recentRunWindowDays / 7} weeks, so the ${returnCap} km return cap applies instead of ${Math.round(RUNNING_LIMITS.weeklyJumpRatio * 100)}% above ${round1(reference)} km`
     };
   }
   return {
@@ -679,12 +840,75 @@ function capFrom(reference: number): number {
   return round1(Math.max(reference * (1 + RUNNING_LIMITS.weeklyJumpRatio), reference + RUNNING_LIMITS.weeklyMinimumStepKm));
 }
 
-function longRunLimit(context: CoachContext, signals: TrainingSignals | null): RunningGuardrails["longRun"] {
+/**
+ * The longest training run of the last 6 weeks, races left out: a race is
+ * demonstrated capacity, never a long-run reference. With no runs on record,
+ * the app's recent longest run (it cannot be a logged race).
+ */
+function recentLongestTrainingRunKm(context: CoachContext, anchorMs: number): number {
+  const running = context.running;
+  if (!running) return 0;
+  if (running.recentRuns.length === 0) return running.longestRecentRunKm || 0;
+  return Math.max(
+    0,
+    ...running.recentRuns
+      .filter((run) => withinDaysBefore(run, anchorMs, RUNNING_LIMITS.recentRunWindowDays) && !isRaceRun(run, running.raceGoal.raceDate))
+      .map((run) => run.distanceKm)
+  );
+}
+
+function longRunLimit(context: CoachContext, anchorMs: number): LongRunLimit | null {
   const running = context.running;
   if (!running) return null;
-  const recentLongest = Math.max(running.longestRecentRunKm || 0, signals?.running.longestRunLast6WeeksKm ?? 0);
-  if (recentLongest <= 0) return null;
-  return { recentLongestKm: round1(recentLongest), capKm: round1(recentLongest * RUNNING_LIMITS.longRunCapRatio) };
+  const raceDate = running.raceGoal.raceDate;
+  const { longRunWindowDays, recentRunWindowDays, longRunCapRatio, returningFromBreakCapKm } = RUNNING_LIMITS;
+  const within = (days: number) => running.recentRuns.filter((run) => withinDaysBefore(run, anchorMs, days) && run.distanceKm > 0);
+  const longestTraining = (runs: RunSummary[]) => Math.max(0, ...runs.filter((run) => !isRaceRun(run, raceDate)).map((run) => run.distanceKm));
+  const recent = within(recentRunWindowDays);
+  const longestRace = recent
+    .filter((run) => isRaceRun(run, raceDate))
+    .reduce<RunSummary | null>((longest, run) => (!longest || run.distanceKm > longest.distanceKm ? run : longest), null);
+  const demonstratedCapacity = longestRace
+    ? `A ${round1(longestRace.distanceKm)} km race on ${longestRace.completedAt.slice(0, 10)}: demonstrated capacity, not a long-run reference.`
+    : null;
+  const capFrom = (referenceKm: number, basis: string): LongRunLimit => ({
+    referenceKm: round1(referenceKm),
+    capKm: round1(referenceKm * longRunCapRatio),
+    basis,
+    demonstratedCapacity
+  });
+
+  const last30 = longestTraining(within(longRunWindowDays));
+  if (last30 > 0) return capFrom(last30, `the longest training run of the last ${longRunWindowDays} days`);
+  const last42 = longestTraining(recent);
+  if (last42 > 0) return capFrom(last42, `the longest training run of the last ${recentRunWindowDays} days (none in the last ${longRunWindowDays})`);
+  // Runs on record but no training run in 42 days (a break, or only a race):
+  // never a race as the reference; the return-week cap holds one run.
+  if (running.recentRuns.length > 0) {
+    return { referenceKm: null, capKm: returningFromBreakCapKm, basis: `the return-week cap: no training run in the last ${recentRunWindowDays} days`, demonstratedCapacity };
+  }
+  // No runs on record: the app's recent longest run cannot be a logged race.
+  const stated = running.longestRecentRunKm || 0;
+  return stated > 0 ? capFrom(stated, "the recent longest run") : null;
+}
+
+/**
+ * At most 1.25x the average weekly climbing of the 4 weeks before today
+ * (local midnight, like the km cap), never capped below 300 m. The cap
+ * covers the 7 days of today's run plus the planned runs. Without run history
+ * there is no climbing reference: no cap.
+ */
+function weeklyClimbLimit(context: CoachContext): RunningGuardrails["weeklyClimb"] {
+  const running = context.running;
+  if (!running || running.recentRuns.length === 0) return null;
+  // A race's climbing is not training: it stays out of the reference.
+  const fourWeekAvgM = Math.round(loadBeforeToday(context, { racesIncluded: false }).fourWeekAvgClimbM);
+  const { weeklyClimbRatio, weeklyClimbMinimumM } = RUNNING_LIMITS;
+  return {
+    fourWeekAvgM,
+    capM: Math.round(Math.max(fourWeekAvgM * weeklyClimbRatio, weeklyClimbMinimumM)),
+    basis: `the larger of ${weeklyClimbRatio}x the 4-week average of ${fourWeekAvgM} m a week (races left out) and ${weeklyClimbMinimumM} m`
+  };
 }
 
 function backToBackLongRunsAllowed(context: CoachContext): boolean {
@@ -706,10 +930,10 @@ function runFrequencyPolicy(context: CoachContext, availableDays: number, recent
 
   const baselineWeeklyKm = running.baselineWeeklyKm || 0;
   const longestRecentRunKm = running.longestRecentRunKm || 0;
-  const basis = `${recentRunCount} runs in the last 6 weeks, baseline ${round1(baselineWeeklyKm)} km/week, longest recent run ${round1(longestRecentRunKm)} km`;
+  const basis = `${recentRunCount} runs in the last ${RUNNING_LIMITS.recentRunWindowDays / 7} weeks, baseline ${round1(baselineWeeklyKm)} km/week, longest recent run ${round1(longestRecentRunKm)} km`;
   // Run counts only count runs inside the last 6 weeks: an old block of
   // runs before a long break is not an established base.
-  const lowStartingBase = recentRunCount < 3 && baselineWeeklyKm <= 20 && longestRecentRunKm <= 8;
+  const lowStartingBase = isStarterBase(running, recentRunCount);
   const establishedBase = baselineWeeklyKm >= 35 || longestRecentRunKm >= 16 || recentRunCount >= 8;
   if (lowStartingBase) {
     const maxRuns = Math.min(availableDays, 3);
@@ -814,7 +1038,7 @@ function defaultAnchor(context: CoachContext): Date {
 }
 
 function daysFromWeekStart(context: CoachContext, date: string): number | null {
-  const diff = Math.round((Date.parse(date) - Date.parse(context.profile.weekStart)) / DAY_MS);
+  const diff = daysBetween(context.profile.weekStart, date);
   return Number.isFinite(diff) ? diff : null;
 }
 
@@ -834,9 +1058,4 @@ function roundTo5(value: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-// The epsilon keeps 45 * 1.15 (51.749999...) at 51.8.
-function round1(value: number): number {
-  return Math.round(value * 10 + 1e-9) / 10;
 }

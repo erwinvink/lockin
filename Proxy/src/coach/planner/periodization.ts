@@ -1,3 +1,7 @@
+import { isRaceRun } from "./compute-training-signals";
+import { highEffortOffPlan } from "./effort-flags";
+import { plural, round1 } from "./numbers";
+import { daysBetween, POST_RACE_STRENGTH_TEXT, postRaceDaysFor, SEASON_LIMITS } from "./season";
 import type {
   BlockWeekClassification,
   BlockWeekSummary,
@@ -13,17 +17,23 @@ import type {
  * Planned recovery weeks on the plan-block calendar.
  *
  * Rule (3:1): after three loading weeks in a row, counted from the block
- * start or the last unloading week, the next block week is a recovery week
- * in which running and strength back off together. Ultra coaches commonly
+ * start or the last unloading week, the next block week is a recovery week:
+ * running and strength back off together (strength alone for a
+ * strength-only athlete). Ultra coaches commonly
  * use 3:1 (2:1 for older or heavier athletes); a hybrid athlete carries two
  * loads, so the shorter end of the 3-5 week range is the default.
  *
  * Stateless and deterministic: the decision for block week K depends only
  * on complete weeks before K, so every nightly re-plan inside K reaches the
  * same answer. A week counts as unloading when it was
- * - a reactive offload (a deload session, pain >= 4 or very weak feedback,
- *   or three RPE 9+ sessions in that week),
- * - taper, race or post-race,
+ * - a reactive offload: pain >= 4 or very weak feedback (whole-body), and
+ *   for a strength-only athlete also a deloaded session or three sessions
+ *   rated RPE 9+ on work planned below very_hard (tests and planned
+ *   near-max work rated as planned do not count). A hybrid athlete's count
+ *   follows the shared load: strength effort ratings and deloaded strength
+ *   sessions alone never reset it (one hard strength week would push the
+ *   running recovery week out by weeks),
+ * - taper, race or post-race (the race's post-race window, season.ts),
  * - a planned recovery week that was actually done lighter, or
  * - simply low volume (illness, travel): running at or below 80% of the four
  *   weeks before, or (strength only) hard sets at or below 60%.
@@ -46,8 +56,7 @@ export const RECOVERY_CYCLE = {
   /** How far back the app sends runs and planned sessions. */
   runHistoryDays: 70,
   sessionHistoryDays: 56,
-  taperDays: 21,
-  postRaceDays: 14,
+  taperDays: SEASON_LIMITS.phaseUntilDays.taper,
   running: {
     weeklyKmCapRatio: 0.75,
     weeklyKmTargetRatio: { low: 0.6, high: 0.75 },
@@ -86,7 +95,10 @@ type WeekData = {
   plannedHardSets: number;
   executedHardSets: number;
   executedStrengthSessions: number;
-  reactiveReason: string | null;
+  /** Pain >= 4 or very weak feedback: a reactive offload for every athlete. */
+  wholeBodyReason: string | null;
+  /** A deloaded session or three off-plan RPE 9+ sessions: a reactive offload for a strength-only athlete. */
+  strengthReason: string | null;
   raceReason: string | null;
 };
 
@@ -108,6 +120,7 @@ export function computePeriodization({ request, readinessState }: PeriodizationI
       lastUnloadingWeek: null,
       recoveryWeekDue: false,
       recoveryWeekReason: "No plan block start was sent, so planned recovery weeks are off; reactive offloads still apply.",
+      lastLoadingWeekHardSets: null,
       recentWeeks: []
     };
   }
@@ -121,13 +134,14 @@ export function computePeriodization({ request, readinessState }: PeriodizationI
   );
   const sessionCoverage = weekStart - RECOVERY_CYCLE.sessionHistoryDays * DAY_MS;
   const raceDate = request.running ? Date.parse(request.running.raceGoal.raceDate) : Number.NaN;
+  const postRaceDays = request.running ? postRaceDaysFor(request.running.raceGoal.distanceKm) : 0;
 
   const firstWeek = Math.max(1, currentWeek - RECOVERY_CYCLE.maxScanWeeks);
   const weekData = new Map<number, WeekData>();
   const dataFor = (index: number): WeekData => {
     let data = weekData.get(index);
     if (!data) {
-      data = collectWeek(index, blockStart, runs, request.plannedSessions, request.trainingLogs, runCoverage, sessionCoverage, raceDate);
+      data = collectWeek(index, blockStart, runs, request.plannedSessions, request.trainingLogs, runCoverage, sessionCoverage, raceDate, postRaceDays);
       weekData.set(index, data);
     }
     return data;
@@ -144,7 +158,7 @@ export function computePeriodization({ request, readinessState }: PeriodizationI
     // Decide the next week from the weeks so far (planned recovery weeks are
     // recomputed this way, so past decisions are reproducible).
     const streak = loadingStreak(summaries);
-    statusOf.set(index + 1, streak >= RECOVERY_CYCLE.loadingWeeksBeforeRecovery && !inRaceWindow(raceDate, index + 1, blockStart) ? "recovery" : "loading");
+    statusOf.set(index + 1, streak >= RECOVERY_CYCLE.loadingWeeksBeforeRecovery && !inRaceWindow(raceDate, postRaceDays, index + 1, blockStart) ? "recovery" : "loading");
   }
 
   const loadingWeeks = loadingStreak(summaries);
@@ -157,22 +171,25 @@ export function computePeriodization({ request, readinessState }: PeriodizationI
 
   let due = false;
   let reason: string;
-  const daysToRace = Number.isFinite(raceDate) ? Math.round((raceDate - weekStart) / DAY_MS) : null;
+  const daysToRace = Number.isFinite(raceDate) ? daysBetween(weekStart, raceDate) : null;
   if (daysToRace !== null && daysToRace >= 0 && daysToRace <= RECOVERY_CYCLE.taperDays) {
-    reason = `The race is ${daysToRace} day(s) away: the taper takes the place of planned recovery weeks.`;
-  } else if (daysToRace !== null && daysToRace < 0 && daysToRace >= -RECOVERY_CYCLE.postRaceDays) {
-    reason = `The race was ${-daysToRace} day(s) ago: post-race recovery comes first.`;
+    reason = `The race is ${plural(daysToRace, "day")} away: the taper takes the place of planned recovery weeks.`;
+  } else if (daysToRace !== null && daysToRace < 0 && daysToRace >= -postRaceDays) {
+    reason = `The race was ${plural(-daysToRace, "day")} ago: running recovers first while ${POST_RACE_STRENGTH_TEXT}; the post-race window replaces the planned recovery week.`;
   } else if (!dueByCount) {
-    reason = `${loadingWeeks} loading week(s) ${since}; a planned recovery week follows ${RECOVERY_CYCLE.loadingWeeksBeforeRecovery} loading weeks (3:1).`;
-  } else if (readinessState === "recovery_needed" || readinessState === "overreaching") {
-    reason = `${loadingWeeks} loading weeks ${since}, but readiness is ${readinessState}: the reactive offload already backs off this week.`;
+    reason = `${plural(loadingWeeks, "loading week")} ${since}; a planned recovery week follows ${RECOVERY_CYCLE.loadingWeeksBeforeRecovery} loading weeks (3:1).`;
+  } else if (readinessState === "recovery_needed") {
+    // Overreaching is computed from strength logs and eases only the strength
+    // week, so the planned recovery week still goes ahead for both.
+    reason = `${loadingWeeks} loading weeks ${since}, but a computed recovery need (logged pain of 4 or more, or very weak feedback) already backs off this week.`;
   } else {
     due = true;
-    reason = `${loadingWeeks} loading weeks ${since}: block week ${currentWeek} is a planned recovery week (3:1). Run and strength both back off together this week.`;
+    reason = `${loadingWeeks} loading weeks ${since}: block week ${currentWeek} is a planned recovery week (3:1). ${hybrid ? "Running and strength both back off together this week." : "Strength backs off this week."}`;
   }
 
   const weekStartIso = new Date(blockStart + (currentWeek - 1) * WEEK_MS).toISOString();
   const weekEndIso = new Date(blockStart + currentWeek * WEEK_MS).toISOString();
+  const lastLoadingWeekHardSets = lastLoadingHardSets(dataFor, summaries);
   return {
     ...base,
     blockWeek: currentWeek,
@@ -182,7 +199,8 @@ export function computePeriodization({ request, readinessState }: PeriodizationI
       : null,
     recoveryWeekDue: due,
     recoveryWeekReason: reason,
-    recoveryWeek: due ? recoveryLimits(weekStartIso, weekEndIso, reference, dataFor, summaries) : null,
+    lastLoadingWeekHardSets,
+    recoveryWeek: due ? recoveryLimits(weekStartIso, weekEndIso, reference, dataFor, lastLoadingWeekHardSets) : null,
     recentWeeks: summaries.slice(-6)
   };
 }
@@ -196,11 +214,11 @@ function weekRange(index: number, blockStart: number): { start: number; end: num
   return { start: blockStart + (index - 1) * WEEK_MS, end: blockStart + index * WEEK_MS };
 }
 
-/** The week starts inside the taper (21 days out) or the post-race weeks (14 days after). */
-function inRaceWindow(raceDate: number, index: number, blockStart: number): boolean {
+/** The week starts inside the taper (21 days out) or the race's post-race window. */
+function inRaceWindow(raceDate: number, postRaceDays: number, index: number, blockStart: number): boolean {
   if (!Number.isFinite(raceDate)) return false;
-  const daysToRace = Math.round((raceDate - weekRange(index, blockStart).start) / DAY_MS);
-  return daysToRace <= RECOVERY_CYCLE.taperDays && daysToRace >= -RECOVERY_CYCLE.postRaceDays;
+  const daysToRace = daysBetween(weekRange(index, blockStart).start, raceDate);
+  return daysToRace <= RECOVERY_CYCLE.taperDays && daysToRace >= -postRaceDays;
 }
 
 function collectWeek(
@@ -211,9 +229,11 @@ function collectWeek(
   logs: TrainingLog[],
   runCoverage: number,
   sessionCoverage: number,
-  raceDate: number
+  raceDate: number,
+  postRaceDays: number
 ): WeekData {
   const { start, end } = weekRange(index, blockStart);
+  const raceDateIso = Number.isFinite(raceDate) ? new Date(raceDate).toISOString() : undefined;
   const within = (iso: string, from = start) => {
     const at = Date.parse(iso);
     return Number.isFinite(at) && at >= from && at < end;
@@ -234,25 +254,23 @@ function collectWeek(
   const deloads = sessions.filter((session) => within(session.scheduledDate) && session.status === "deload").length;
   const pain = weekLogs.find((log) => log.painLevel >= 4);
   const veryWeak = weekLogs.find((log) => log.fatigueLevel >= 9);
-  const veryHard = weekLogs.filter((log) => log.rpe >= 9).length;
-  const reactiveReason = deloads > 0
-    ? `${deloads} session(s) deloaded`
-    : pain
-      ? `pain ${pain.painLevel}/10 logged`
-      : veryWeak
-        ? "very weak session feedback"
-        : veryHard >= 3
-          ? `${veryHard} sessions at RPE 9 or higher`
-          : null;
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const veryHard = weekLogs.filter((log) => highEffortOffPlan(log, sessionsById.get(log.sessionId)?.exercises)).length;
+  const wholeBodyReason = pain ? `pain ${pain.painLevel}/10 logged` : veryWeak ? "very weak session feedback" : null;
+  const strengthReason = deloads > 0
+    ? `${plural(deloads, "session")} deloaded`
+    : veryHard >= 3
+      ? `${veryHard} sessions at RPE 9 or higher`
+      : null;
 
   // By where the week starts: the race inside it, a start 21 days or less
-  // before the race (taper), or a start up to 14 days after it.
+  // before the race (taper), or a start inside the race's post-race window.
   let raceReason: string | null = null;
   if (Number.isFinite(raceDate)) {
-    const daysFromStart = Math.round((raceDate - start) / DAY_MS);
+    const daysFromStart = daysBetween(start, raceDate);
     if (daysFromStart >= 0 && daysFromStart < 7) raceReason = "race week";
     else if (daysFromStart >= 7 && daysFromStart <= RECOVERY_CYCLE.taperDays) raceReason = "taper";
-    else if (daysFromStart < 0 && daysFromStart >= -RECOVERY_CYCLE.postRaceDays) raceReason = "post-race";
+    else if (daysFromStart < 0 && daysFromStart >= -postRaceDays) raceReason = "post-race";
   }
 
   return {
@@ -265,11 +283,13 @@ function collectWeek(
     runningKmAfterDayOne: round1(
       weekRuns.filter((run) => within(run.completedAt, start + DAY_MS)).reduce((total, run) => total + Math.max(0, run.distanceKm), 0)
     ),
-    longestRunKm: Math.max(0, ...weekRuns.map((run) => run.distanceKm)),
+    // A race is demonstrated capacity, never the recovery week's long-run reference.
+    longestRunKm: Math.max(0, ...weekRuns.filter((run) => !isRaceRun(run, raceDateIso)).map((run) => run.distanceKm)),
     plannedHardSets: hardSets(strengthSessions),
     executedHardSets: hardSets(executed),
     executedStrengthSessions: executed.length,
-    reactiveReason,
+    wholeBodyReason,
+    strengthReason,
     raceReason
   };
 }
@@ -304,10 +324,14 @@ function classifyWeek(
     runningKm: hybrid ? data.runningKm : null,
     hardStrengthSets: data.executedHardSets,
     classification,
-    note
+    note,
+    ...(plannedRecovery ? { plannedRecovery: true as const } : {})
   });
 
-  if (data.reactiveReason) return summary("reactive_offload", `reactive offload: ${data.reactiveReason}`);
+  // A hybrid athlete's week unloads on whole-body signals only; strength
+  // effort ratings and deloads alone leave the running load counted.
+  const reactiveReason = hybrid ? data.wholeBodyReason : (data.strengthReason ?? data.wholeBodyReason);
+  if (reactiveReason) return summary("reactive_offload", `reactive offload: ${reactiveReason}`);
   if (data.raceReason) return summary("taper_or_race", data.raceReason);
 
   const runningRef = hybrid && reference.runningKm !== null && reference.runningKm >= RECOVERY_CYCLE.minReferenceKm ? reference.runningKm : null;
@@ -336,7 +360,7 @@ function classifyWeek(
   }
   const trained = data.runningKm > 0 || data.executedStrengthSessions > 0;
   return trained
-    ? summary("loading", hybrid ? `${data.runningKm} km (no steady base to compare yet)` : `${data.executedStrengthSessions} strength session(s)`)
+    ? summary("loading", hybrid ? `${data.runningKm} km (no steady base to compare yet)` : plural(data.executedStrengthSessions, "strength session"))
     : summary("no_training", "no training logged");
 }
 
@@ -349,18 +373,27 @@ function loadingStreak(summaries: BlockWeekSummary[]): number {
   return streak;
 }
 
+/**
+ * Hard strength sets prescribed in the last loading week, when 3 or more:
+ * the reference for the hard-set cap of a planned recovery week (60%) and of
+ * an overreaching week (70%, strength-phase.ts).
+ */
+function lastLoadingHardSets(dataFor: (index: number) => WeekData, summaries: BlockWeekSummary[]): number | null {
+  const lastLoading = [...summaries].reverse().find((summary) => summary.classification === "loading");
+  const hardSets = lastLoading ? dataFor(lastLoading.blockWeek).plannedHardSets : null;
+  return hardSets !== null && hardSets >= RECOVERY_CYCLE.minReferenceHardSets ? hardSets : null;
+}
+
 function recoveryLimits(
   startsAt: string,
   endsAt: string,
   reference: Reference,
   dataFor: (index: number) => WeekData,
-  summaries: BlockWeekSummary[]
+  referenceHardSets: number | null
 ): NonNullable<PeriodizationContext["recoveryWeek"]> {
   const { running, strength } = RECOVERY_CYCLE;
   const referenceKm = reference.runningKm !== null && reference.runningKm > 0 ? reference.runningKm : null;
   const longest = Math.max(0, ...reference.weeks.map((index) => dataFor(index).longestRunKm));
-  const lastLoading = [...summaries].reverse().find((summary) => summary.classification === "loading");
-  const referenceHardSets = lastLoading ? dataFor(lastLoading.blockWeek).plannedHardSets : null;
   return {
     startsAt,
     endsAt,
@@ -372,16 +405,9 @@ function recoveryLimits(
         : { low: round1(referenceKm * running.weeklyKmTargetRatio.low), high: round1(referenceKm * running.weeklyKmTargetRatio.high) },
     longRunCapKm: longest > 0 ? round1(longest * running.longRunRatio) : null,
     maxQualityRuns: running.maxQualityRuns,
-    referenceHardStrengthSets: referenceHardSets !== null && referenceHardSets >= RECOVERY_CYCLE.minReferenceHardSets ? referenceHardSets : null,
-    hardStrengthSetCap:
-      referenceHardSets !== null && referenceHardSets >= RECOVERY_CYCLE.minReferenceHardSets
-        ? Math.floor(referenceHardSets * strength.hardSetRatio + 1e-9)
-        : null,
+    referenceHardStrengthSets: referenceHardSets,
+    hardStrengthSetCap: referenceHardSets !== null ? Math.floor(referenceHardSets * strength.hardSetRatio + 1e-9) : null,
     maxHardStrengthSessions: strength.maxHardSessions,
     maxGoalSetsPerExercise: strength.maxGoalSetsPerExercise
   };
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10 + 1e-9) / 10;
 }

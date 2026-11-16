@@ -8,7 +8,7 @@ import {
   normalizeCoachChatMessages,
   type CoachChatMessage
 } from "./chat";
-import { NOW, context, evaluation, signals } from "./chat.fixtures";
+import { NOW, POST_RACE_STRENGTH, context, evaluation, signals } from "./chat.fixtures";
 
 test("answers five connected coach questions with conversation memory and training evidence", () => {
   const messages: CoachChatMessage[] = [];
@@ -41,9 +41,86 @@ test("answers five connected coach questions with conversation memory and traini
   assert.match(answers[1], /Earlier you asked about whether your work is on track/i);
   assert.match(answers[2], /Earlier you asked about whether your work is on track and your long-term schedule/i);
   assert.match(answers[3], /long-term schedule, and your biggest improvement point/i);
+  // Effort is judged against the work delivered: only planned work that felt harder is a warning.
+  assert.match(answers[3], /sessions you do as planned keep feeling harder than planned/i);
+  assert.match(answers[3], /doing more than planned is not a warning sign/i);
   assert.match(answers[4], /Earlier you asked about your long-term schedule, your biggest improvement point, and fatigue/i);
   assert.match(answers[4], /recent pain up to 4\/10/i);
   assert.match(answers[4], /Keep shoulders warm/i);
+});
+
+// After the race the chat used to read the race as "0 weeks out".
+test("the schedule answer says how long ago the race was, never 0 weeks out", () => {
+  const racedDaysAgo = (days: number) => {
+    const base = context();
+    const raceDate = new Date(Date.parse(base.profile.weekStart) - days * 24 * 60 * 60 * 1000).toISOString();
+    return { ...base, running: { ...base.running!, raceGoal: { ...base.running!.raceGoal, raceDate }, weeksToRace: 0 } };
+  };
+  const scheduleAnswer = (raced: ReturnType<typeof context>) => buildCoachChatResponse({
+    messages: [{ role: "user", text: "Am I on schedule for the race?" }],
+    context: raced,
+    signals: signals(),
+    evaluation: evaluation(),
+    generatedAt: NOW
+  }).answer;
+
+  // The 51 km race has a 13-day post-race window.
+  const recent = scheduleAnswer(racedDaysAgo(3));
+  assert.match(recent, /Your race, Eiger Ultra 51K, was 3 days ago/);
+  assert.ok(recent.includes(`running recovers first until day 13 after the race, while ${POST_RACE_STRENGTH}.`), recent);
+
+  const afterWindow = scheduleAnswer(racedDaysAgo(20));
+  assert.match(afterWindow, /Your race, Eiger Ultra 51K, was 20 days ago, and no next race is planned/);
+
+  const raceDay = scheduleAnswer(racedDaysAgo(0));
+  assert.match(raceDay, /Eiger Ultra 51K is today/);
+
+  for (const answer of [recent, afterWindow, raceDay]) {
+    assert.doesNotMatch(answer, /weeks out/, answer);
+  }
+});
+
+test("the chat's race line follows the season: no readable date is no race, and the last week counts days", () => {
+  const scheduleAnswer = (raceDate: string) => {
+    const base = context();
+    return buildCoachChatResponse({
+      messages: [{ role: "user", text: "Am I on schedule for the race?" }],
+      context: { ...base, running: { ...base.running!, raceGoal: { ...base.running!.raceGoal, raceDate } } },
+      signals: signals(),
+      evaluation: evaluation(),
+      generatedAt: NOW
+    }).answer;
+  };
+  const inDays = (days: number) => new Date(Date.parse(context().profile.weekStart) + days * 24 * 60 * 60 * 1000).toISOString();
+
+  const noDate = scheduleAnswer("not-a-date");
+  assert.match(noDate, /No race is planned/);
+  assert.doesNotMatch(noDate, /weeks out|Eiger Ultra 51K/);
+
+  assert.match(scheduleAnswer(inDays(1)), /Eiger Ultra 51K is in 1 day: 51 km and 3100 m\+/);
+  assert.match(scheduleAnswer(inDays(7)), /Eiger Ultra 51K is in 7 days/);
+  assert.match(scheduleAnswer(inDays(10)), /Eiger Ultra 51K is 2 weeks out: 51 km and 3100 m\+/);
+  for (const days of [1, 7]) {
+    assert.doesNotMatch(scheduleAnswer(inDays(days)), /weeks? out/);
+  }
+});
+
+test("a race without a name is your race in the chat", () => {
+  const scheduleAnswer = (days: number) => {
+    const base = context();
+    const raceDate = new Date(Date.parse(base.profile.weekStart) + days * 24 * 60 * 60 * 1000).toISOString();
+    return buildCoachChatResponse({
+      messages: [{ role: "user", text: "Am I on schedule for the race?" }],
+      context: { ...base, running: { ...base.running!, raceGoal: { ...base.running!.raceGoal, name: " ", raceDate } } },
+      signals: signals(),
+      evaluation: evaluation(),
+      generatedAt: NOW
+    }).answer;
+  };
+
+  assert.match(scheduleAnswer(3), /Your race is in 3 days: 51 km and 3100 m\+/);
+  assert.ok(scheduleAnswer(-3).includes(`Your race was 3 days ago (51 km and 3100 m+): running recovers first until day 13 after the race, while ${POST_RACE_STRENGTH}.`), scheduleAnswer(-3));
+  assert.match(scheduleAnswer(-20), /Your race was 20 days ago, and no next race is planned/);
 });
 
 test("normalizes coach chat messages to a bounded recent transcript", () => {

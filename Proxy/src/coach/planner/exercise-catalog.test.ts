@@ -60,7 +60,8 @@ test("the ladder step follows the current max and the equipment", () => {
   const strong = ladder(15, 45, 150, ["pullUpBar", "backpack"]);
   assert.match(strong.pullUps, /weightedPullUp, archerPullUp or lSitPullUp/);
   assert.match(strong.pushUps, /declinePushUp, deficitPushUp, archerPushUp or weightedPushUp/);
-  assert.match(strong.plankSeconds, /longLeverPlank, rkcPlank or weightedPlank instead of longer holds/);
+  // Above 120 s the plank holds stay (two a week, see below); the variants come on top.
+  assert.match(strong.plankSeconds, /add harder variants: longLeverPlank, rkcPlank or weightedPlank/);
   assert.match(ladder(15, 45, 150, ["yogaMat"]).pullUps, /No pull-up bar: invertedRow/);
 });
 
@@ -146,4 +147,32 @@ test("the validator rejects a known exercise the client cannot show", () => {
   } as unknown as WeeklyPlan;
 
   assert.ok(validateWeeklyPlan(plan, context).messages.some((m) => m.includes("Session 1 uses negativePullUp, which this app version cannot show")));
+});
+
+// Above 40 push-ups, 120 s plank and 12 pull-ups the ladders keep two goal
+// days a week (the exposure rule); harder variants come on top, not instead.
+test("selection rules keep two goal days above 40 push-ups", async () => {
+  const library = JSON.parse(await readFile(join(skillRoot, "exercise-library.json"), "utf8")) as {
+    selectionRules: Record<string, Array<{ currentMax: string; use: string }>>;
+  };
+  const step = (metric: string, currentMax: string) => library.selectionRules[metric].find((entry) => entry.currentMax === currentMax)?.use ?? "";
+  const ladder = exerciseLadder({ pullUps: 15, pushUps: 45, plankSeconds: 150 }, ["pullUpBar", "backpack"])!;
+
+  for (const text of [step("pushUps", "41+"), ladder.pushUps]) {
+    assert.match(text, /two pushUp goal days/);
+    assert.match(text, /high-rep or density/);
+    assert.match(text, /third day/);
+    assert.match(text, /declinePushUp/);
+  }
+  for (const text of [step("plankSeconds", "121 s+"), ladder.plankSeconds]) {
+    assert.match(text, /two plank holds a week/);
+    assert.match(text, /longLeverPlank/);
+  }
+  for (const text of [step("pullUps", "13+"), ladder.pullUps]) {
+    assert.match(text, /two pullUp volume days/);
+    assert.match(text, /archerPullUp/);
+  }
+  for (const text of [step("pushUps", "41+"), step("plankSeconds", "121 s+"), step("pullUps", "13+"), ladder.pushUps, ladder.plankSeconds, ladder.pullUps]) {
+    assert.doesNotMatch(text, /\bkeep one\b|\bone plank hold\b|instead of/, text);
+  }
 });

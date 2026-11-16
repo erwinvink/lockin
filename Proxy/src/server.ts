@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { buildCoachContext } from "./coach/planner/build-coach-context";
 import { withStoredCurrentPlan } from "./coach/planner/current-plan";
 import { EXERCISE_KINDS, schemaForExercises } from "./coach/planner/exercise-catalog";
+import { coachVerdictReferencePoints, coachVerdictSystemPrompt } from "./coach/coach-verdict-prompt";
 import {
-  disciplineCoachSystemPrompt,
+  DELIVERED_WORK_PRINCIPLE,
   disciplineCoachTemperament,
   flatGoalMetricsRequiringProgression
 } from "./coach/planner/coach-temperament";
-import { coachReferencePoints, computeTrainingSignals } from "./coach/planner/compute-training-signals";
+import { computeTrainingSignals } from "./coach/planner/compute-training-signals";
 import { runningDayAvailability } from "./coach/planner/validate-running-week";
 import {
   runCombinedWeekPipeline,
@@ -760,6 +761,7 @@ function buildRunningPromptPayload(
           : "Use only availableDayOffsets for runs.",
       longRunDay: context.running?.longRunDay ?? null,
       longRunDayOffset: context.running?.longRunDayOffset ?? null,
+      deliveredWork: DELIVERED_WORK_PRINCIPLE,
       ...(guidance?.continuity ? { continuity: guidance.continuity } : {})
     }
   };
@@ -787,35 +789,12 @@ async function generateCoachVerdict(
   coachEvaluation: CoachEvaluation & { snapshot: CoachSnapshot },
   telemetry: OpenAIRequestTelemetry
 ): Promise<VerdictResult> {
-  const isHybrid = Boolean(context.running);
   const response = await fetchOpenAIResponse(apiKey, {
     model,
     input: [
       {
         role: "system",
-        content: [
-          "You are a human, athlete-facing training coach inside lockin.",
-          disciplineCoachSystemPrompt,
-          isHybrid
-            ? "Write like an experienced ultra-endurance coach who also programs strength: direct, calm, practical, and not technical. Running volume, the long run, descent exposure, and the race countdown lead the read; strength work is framed as serving the race (running economy, durability), never as a separate hobby."
-            : "Write like an experienced strength coach: direct, calm, practical, and not technical.",
-          "Return a short read on the athlete's current state. This is shown directly to the athlete, not to a developer.",
-          "Separate running and strength clearly. runningRead is only running/endurance/race-readiness. strengthRead is only strength, mobility, pain, fatigue, or durability work. If one side has no real signal, say so plainly in athlete language.",
-          "Use nextStep for the one thing the athlete should do next. Do not tell the athlete to request, generate, refresh, or update a plan; lockin handles plan updates automatically.",
-          "coachEvaluation is computed by code and is the source of truth. Do not change its status, adherence percentage, readiness gate, progress state, plan decision, or next action.",
-          "Do not calculate adherence, readiness, progress, or plan status from raw logs. Use coachEvaluation and athleteSignals only.",
-          "The headline and summary must reflect coachEvaluation.statusLabel. nextStep must match coachEvaluation.nextAction in athlete-facing words.",
-          "shouldUpdatePlan must match coachEvaluation.planDecision.shouldUpdatePlan.",
-          "Cite only numbers present in athleteSignals or coachContext, exactly as provided — never compute, estimate, or invent figures. Work at least one of the athlete's actual numbers into the summary.",
-          "Pick exactly ONE actionable next step — the single highest-leverage lever right now. More than one ask dilutes all of them.",
-          "Treat week-over-week volume comparisons as hedged observations, not injury predictions; the evidence behind load ratios is weak. When the wellness gate favors easy work and coachContext.plannedWork.todaySessions is not empty, gate today's intensity rather than rewriting the week. When todaySessions is empty, say there is no training today and make nextStep about rest, syncing data, or the next planned session.",
-          "If there are no completed training logs or runs, say that you only know the starting profile and goals.",
-          "If coachEvaluation says the week should update because of pain, very poor feel, overreaching, or progress concerns, explain the training reason without telling the athlete to request, generate, refresh, or update a plan.",
-          "Never mention schemas, databases, proxy calls, JSON, validation, skill bundles, internal systems, or variable names.",
-          "Never write snake_case, camelCase, raw field names, or code-like labels such as averageDeltaLast5, abovePlanBy2Count, maxPain, recent_pain_level_4_or_higher, or recent_effort_above_plan.",
-          "watchItems must contain short human phrases only, for example 'Pain reached 4/10 recently' or 'Effort has been higher than planned'. Do not put raw flags in watchItems.",
-          "Keep latestChange and recommendation as backward-compatible plain athlete text. latestChange should summarize the main recent signal; recommendation should match nextStep."
-        ].join("\n")
+        content: coachVerdictSystemPrompt(context)
       },
       {
         role: "user",
@@ -824,7 +803,7 @@ async function generateCoachVerdict(
           athleteSignals: trainingSignals,
           coachEvaluation,
           coachSnapshot: coachEvaluation.snapshot,
-          coachReferencePoints: isHybrid ? coachReferencePoints : undefined,
+          coachReferencePoints: coachVerdictReferencePoints(context),
           verdictRules: {
             keepSummaryUnderWords: 65,
             keepRunningReadUnderWords: 38,
@@ -876,9 +855,12 @@ function buildCoachPromptPayload(
   guidance?: StrengthPlannerGuidance
 ): Record<string, unknown> {
   const hasSelectedTrainingDays = context.profile.trainingDays.length > 0;
-  const maxFutureStrengthSessions = hasSelectedTrainingDays
-    ? Math.min(context.profile.weeklySessions, context.profile.trainingDayOffsets.length)
-    : context.profile.weeklySessions;
+  // The guardrails' maximum also keeps one full rest day around the runs (what the validator enforces).
+  const maxFutureStrengthSessions = guidance
+    ? guidance.maxSessionsThisWeek
+    : hasSelectedTrainingDays
+      ? Math.min(context.profile.weeklySessions, context.profile.trainingDayOffsets.length)
+      : context.profile.weeklySessions;
   const outputRules: Record<string, unknown> = {
     todayIsLocked: true,
     selectedTrainingDays: context.profile.trainingDays,
@@ -888,14 +870,15 @@ function buildCoachPromptPayload(
       "Every session and exercise must include plannedEffort. These labels are shown in the app before training, so light must mean intentionally light, hard must mean real goal stimulus, and max_output must only be used for a deliberate test.",
     coachTemperament: disciplineCoachTemperament,
     progression:
-      "strengthGuardrails.progression is computed from coachContext.plannedWork.recentGoalPerformance and the previous working prescription, and it is enforced: for each goal metric keep the week's top working target inside allowedTopTarget and its sets at or below maxSetsOnTopTarget, or use setRoute (same target, one more set) when it is offered. Earned steps: pull-ups +1 rep; push-ups +1 below 15 reps, +1-2 below 30, +1-3 from 30; plank +5-10 s below 60 s, +5-15 s from 60 s. Never increase sets and the target together. Working values never exceed strengthGuardrails.workingCaps (tests excepted). Safety text alone cannot bypass earned progression.",
+      "strengthGuardrails.progression is computed from coachContext.plannedWork.recentGoalPerformance and the previous working prescription, and it is enforced: for each goal metric keep the week's top working target inside allowedTopTarget and its sets at or below maxSetsOnTopTarget, or use setRoute (same target, one more set) when it is offered. Earned steps: pull-ups +1 rep; push-ups +1 below 15 reps, +1-2 below 30, +1-3 from 30; plank +5-10 s below 60 s, +5-15 s from 60 s. Never increase sets and the target together. Working values never exceed strengthGuardrails.workingCaps (tests excepted). Safety text alone cannot bypass earned progression. When the latest result was clearly more than planned, or the previous prescription sat below the useful floor for the current best, allowedTopTarget is re-based to the athlete's level: plan inside it, not +1 on the old target.",
+    deliveredWork: DELIVERED_WORK_PRINCIPLE,
     strengthGuardrails: guidance?.guardrails ?? null,
     ...(guidance?.continuity ? { continuity: guidance.continuity } : {}),
     phase:
-      "Prefix summary with exactly one adaptive phase: Build:, Offload:, Restore:, Maintenance:, or Assessment:. Explain separately why pull-ups, push-ups, and plank progressed, held, or reduced. Do not force a four-week calendar wave.",
+      "Prefix summary with exactly one adaptive phase: Build:, Offload:, Restore:, or Assessment:. Explain separately why pull-ups, push-ups, and plank progressed, held, or reduced. Do not force a four-week calendar wave.",
     scheduling: hasSelectedTrainingDays
-      ? "Use allowedDayOffsets as availability, not a quota. Schedule no more than maxFutureStrengthSessions strength sessions, and schedule fewer when recovery, running load, safety, or a week already in progress makes that better. Leave at least one of offsets 1 through 6 unused by both running and strength. If allowedDayOffsets is empty, return zero strength sessions and explain the current week is already underway. Never schedule dayOffset 0 because today is locked."
-      : "Schedule no more than maxFutureStrengthSessions strength sessions across dayOffset 1 through 6. Schedule fewer when recovery or safety requires it, and leave at least one complete rest day. Never schedule dayOffset 0 because today is locked."
+      ? "Use only allowedDayOffsets. Schedule at least strengthGuardrails.minSessionsThisWeek and no more than maxFutureStrengthSessions strength sessions: a normal week has at least 3 when 3 training days are free, and a busy running week is not a reason to drop below the minimum (sessions on hard-run days stay medium or light). Leave at least one of offsets 1 through 6 unused by both running and strength. If allowedDayOffsets is empty, return zero strength sessions and explain the current week is already underway. Never schedule dayOffset 0 because today is locked."
+      : "Schedule at least strengthGuardrails.minSessionsThisWeek and no more than maxFutureStrengthSessions strength sessions across dayOffset 1 through 6 (a normal week has at least 3), and leave at least one complete rest day. Never schedule dayOffset 0 because today is locked."
   };
 
   if (plannedRuns) {

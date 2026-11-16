@@ -1,3 +1,4 @@
+import { METRIC_NAME, metricForExercise } from "./goal-metrics";
 import type { ExerciseKind } from "./types";
 
 /**
@@ -70,6 +71,13 @@ export function schemaForExercises(schema: Record<string, unknown>, exercises: E
   return copy as Record<string, unknown>;
 }
 
+/** The exercise as the athlete reads it: "Push-ups" for a goal exercise, else its title ("Pike push-up"). */
+export function plainExerciseName(exercise: unknown): string {
+  const metric = metricForExercise(exercise);
+  if (metric) return METRIC_NAME[metric];
+  return isExerciseKind(exercise) ? EXERCISE_CATALOG[exercise].title : String(exercise);
+}
+
 export function isExerciseKind(value: unknown): value is ExerciseKind {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(EXERCISE_CATALOG, value);
 }
@@ -112,19 +120,19 @@ export function exerciseLadder(
         ? `Current max ${pull}: submaximal pullUp sets inside the cap, negativePullUp as a finisher, invertedRow${has("resistanceBand") ? " or bandAssistedPullUp" : ""} for volume.`
         : pull <= 12
           ? `Current max ${pull}: pullUp volume; archerPullUp or lSitPullUp in small doses.`
-          : `Current max ${pull}: one pullUp volume day, plus ${has("dumbbells") || has("backpack") ? "weightedPullUp, " : ""}archerPullUp or lSitPullUp for strength.`;
+          : `Current max ${pull}: keep two pullUp volume days; add ${has("dumbbells") || has("backpack") ? "weighted or archer work: weightedPullUp, archerPullUp" : "archer work: archerPullUp"} or lSitPullUp.`;
   const pushStep = push < 10
     ? `Current max ${push}: inclinePushUp and kneePushUp for volume; full pushUp in small sets.`
     : push <= 25
       ? `Current max ${push}: full pushUp sets; inclinePushUp for extra volume.`
       : push <= 40
         ? `Current max ${push}: full pushUp sets; diamondPushUp or declinePushUp for variation; pikePushUp as support.`
-        : `Current max ${push}: one high-rep pushUp day, plus declinePushUp, deficitPushUp, archerPushUp${has("backpack") ? " or weightedPushUp" : ""} instead of ever more reps.`;
+        : `Current max ${push}: keep two pushUp goal days (one high-rep or density day, one submaximal volume day); add harder variants on a third day: declinePushUp, deficitPushUp, archerPushUp${has("backpack") ? " or weightedPushUp" : ""}.`;
   const plankStep = plank < 30
     ? `Current max ${plank} s: short plank holds (15-20 s) and hollowHold.`
     : plank <= 120
       ? `Current max ${plank} s: plank holds inside the cap; sidePlank for lateral core.`
-      : `Current max ${plank} s: longLeverPlank, rkcPlank${has("backpack") || has("dumbbells") ? " or weightedPlank" : ""} instead of longer holds; one plank hold a week for the goal.`;
+      : `Current max ${plank} s: keep two plank holds a week for the goal; add harder variants: longLeverPlank, rkcPlank${has("backpack") || has("dumbbells") ? " or weightedPlank" : ""}.`;
   return { pullUps: pullStep, pushUps: pushStep, plankSeconds: plankStep };
 }
 

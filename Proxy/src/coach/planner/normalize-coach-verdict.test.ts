@@ -37,7 +37,19 @@ test("keeps nextStep aligned with the computed next action and humanizes watch i
   );
 
   assert.equal(normalized.nextStep, "Rest today and be ready for the next planned session.");
-  assert.deepEqual(normalized.watchItems, ["pain reached 4/10 recently", "Effort has been higher than planned"]);
+  assert.deepEqual(normalized.watchItems, ["pain reached 4/10 recently", "Sessions done as planned felt harder than planned"]);
+});
+
+// Final review item 10: replacing every "rpe" turned "sharpen" into "shaRPEn".
+test("athlete text capitalizes RPE as a word only", () => {
+  const normalized = normalizeCoachVerdict(
+    verdict({ summary: "Sharpen the push-ups: your rpe was 8 and rpe_delta stayed low.", headline: "Sharpen up" }),
+    context({}),
+    evaluation({})
+  );
+
+  assert.equal(normalized.summary, "Sharpen the push-ups: your RPE was 8 and RPE delta stayed low.");
+  assert.equal(normalized.headline, "Sharpen up");
 });
 
 function verdict(overrides: Partial<CoachVerdict> = {}): CoachVerdict {

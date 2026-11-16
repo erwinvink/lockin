@@ -1,16 +1,31 @@
 import { nextLocalMidnight, startOfLocalDay, validTimeZone } from "../local-time";
-import { buildCurrentPlanContext } from "./current-plan";
+import { buildCurrentPlanContext, todayPlannedRunsFromRequest } from "./current-plan";
+import { deliveredVsPlanned, describeDeliveredVsPlan, didMoreThanPlanned, overDeliveryMargin, plannedTargetFor } from "./delivered-work";
+import { actualRPE, cleanCompletion, testsAGoal, validRPE, type EffortReadiness } from "./effort-flags";
 import { supportedExercisesFor } from "./exercise-catalog";
+import {
+  GOAL_METRICS,
+  hardestOf,
+  isGoalTest,
+  LOGGED_FLAG,
+  METRIC_PLURAL,
+  metricForExercise,
+  prescribedValue,
+  prescriptionEffort,
+  topBlock,
+  type GoalMetric
+} from "./goal-metrics";
 import { computePeriodization } from "./periodization";
-import { RECOVERY_NEEDED_FLAGS, recoveryFlagsAt } from "./readiness-flags";
+import { computeReadiness, planBlockStartMs, sortedTrainingLogs } from "./readiness-state";
 import { planBlockContext } from "./plan-block";
-import { addMonths, startOfMonthUTC, summarizeMonth, summarizeRollingTrend, summarizeTrend } from "./summarize-training-history";
+import { preTaperTrainingWeekKm } from "./running-floors";
+import { computeSeason, daysBetween } from "./season";
+import { ROLLING_TREND } from "./summarize-training-history";
 import type {
   CoachContext,
   CoachRequest,
   ContextState,
   EffortLabel,
-  EffortStimulus,
   PlannedExercisePrescription,
   PlannedGoalTrend,
   RecentGoalPerformance,
@@ -20,44 +35,41 @@ import type {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export { READINESS_WINDOWS, RECOVERY_NEEDED_FLAGS, unresolvedRecentTrigger } from "./readiness-flags";
-
-
 /**
- * Planned RPE assumed when a log carries none (manually logged or legacy
- * sessions): the planned effort label's RPE when known, else 7 (a normal
- * hard working set). Without it those sessions could never earn progression.
+ * Planned RPE assumed when a log carries none (effort-flags.ts): without it
+ * manually logged or legacy sessions could never earn progression.
  */
-export const DEFAULT_PLANNED_RPE = 7;
-const plannedRPEForLabel: Record<EffortLabel, number> = {
-  light: 4,
-  medium: 6,
-  hard: 7,
-  very_hard: 9,
-  max_output: 10
-};
+export { DEFAULT_PLANNED_RPE } from "./effort-flags";
 
 export function buildCoachContext(request: CoachRequest, now = new Date()): CoachContext {
   const context = buildBaseContext(request, now);
   const currentPlan = buildCurrentPlanContext(request, context, now);
-  return currentPlan ? { ...context, currentPlan } : context;
+  const todayPlannedRuns = todayPlannedRunsFromRequest(request);
+  return {
+    ...context,
+    ...(currentPlan ? { currentPlan } : {}),
+    ...(todayPlannedRuns.length > 0 ? { todayPlannedRuns } : {})
+  };
 }
 
 function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
-  const sortedLogs = [...request.trainingLogs].sort(
-    (a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime()
-  );
-  const last5Logs = sortedLogs.slice(-5).map(normalizeLogForContext);
+  const sortedLogs = sortedTrainingLogs(request);
+  // Delivered work against each session's own plan (see delivered-work.ts).
+  const sessionsById = new Map(request.plannedSessions.map((session) => [session.id, session]));
+  const planOf = (log: TrainingLog) => sessionsById.get(log.sessionId)?.exercises;
+  const deliveredWork = (log: TrainingLog) => deliveredVsPlanned(log, planOf(log));
+  const last5Logs = sortedLogs.slice(-5).map((log) => {
+    const normalized = normalizeLogForContext(log);
+    const entries = deliveredWork(log);
+    const deliveredVsPlan = describeDeliveredVsPlan(entries);
+    return {
+      ...normalized,
+      ...(didMoreThanPlanned(entries) ? { didMoreThanPlanned: true } : {}),
+      ...(deliveredVsPlan ? { deliveredVsPlan } : {})
+    };
+  });
 
-  const currentMonthStart = startOfMonthUTC(now);
-  const lastFullMonthStart = addMonths(currentMonthStart, -1);
-  const previousFullMonthStart = addMonths(currentMonthStart, -2);
-
-  const currentPartialMonth = summarizeMonth(sortedLogs, currentMonthStart, true);
-  const lastFullMonth = summarizeMonth(sortedLogs, lastFullMonthStart, false);
-  const previousFullMonth = summarizeMonth(sortedLogs, previousFullMonthStart, false);
-  const twoFullMonthTrend = summarizeTrend(lastFullMonth, previousFullMonth);
   const blockStartMs = planBlockStartMs(request);
-  const rollingTrend = summarizeRollingTrend(sortedLogs, now, blockStartMs);
   // A new plan block resets the current level and the progression evidence:
   // caps, progression and continuity use only the block's own logs and
   // prescriptions (the baseline set at the block start covers the rest).
@@ -65,28 +77,12 @@ function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
   const blockSessions = blockStartMs === null
     ? request.plannedSessions
     : request.plannedSessions.filter((session) => Date.parse(session.scheduledDate) >= blockStartMs);
-  const validCompletedMonthLogCount = validLogCount(sortedLogs, previousFullMonthStart, currentMonthStart);
-  const validCurrentMonthLogCount = validLogCount(sortedLogs, currentMonthStart, addMonths(currentMonthStart, 1));
-  const riskFlags = collectRiskFlags(
-    sortedLogs,
-    last5Logs,
-    now,
-    lastFullMonth,
-    previousFullMonth,
-    request.weeklySessions,
-    validCompletedMonthLogCount,
-    validCurrentMonthLogCount
-  );
   const today = todayWindow(request, now);
   const adherence = summarizeAdherence(request, now, today);
-  const state = classifyState(
-    riskFlags,
-    twoFullMonthTrend.label,
-    rollingTrend.label,
-    validCompletedMonthLogCount,
-    validCurrentMonthLogCount,
-    adherence
-  );
+  // One readiness for the planners, the coach read and the continuity exit signal (readiness-state.ts).
+  const { state, riskFlags, effort, currentPartialMonth, lastFullMonth, previousFullMonth, twoFullMonthTrend, rollingTrend } =
+    computeReadiness(request, sortedLogs, now, adherence);
+  const season = computeSeason(request.running?.raceGoal, request.weekStart);
 
   return {
     profile: {
@@ -103,7 +99,10 @@ function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
     },
     history: {
       last5Logs,
-      rpeCalibration: summarizeRPECalibration(last5Logs),
+      // Effort against the plan only where the work matched the plan: doing
+      // clearly more than planned explains a higher effort.
+      // Tests are left out too: a max set is the plan (as in the effort flags).
+      rpeCalibration: summarizeRPECalibration(last5Logs.filter((log) => !log.didMoreThanPlanned && !testsAGoal(planOf(log)))),
       currentPartialMonth,
       lastFullMonth,
       previousFullMonth,
@@ -112,9 +111,9 @@ function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
       // The current level: the baseline set at the block start plus logs
       // since then. Without a block start, all logs (3 months) count.
       bestRecentTests: {
-        pullUps: latestKnownBest("pullUps", "loggedPullUps", blockLogs, request.baseline.pullUps),
-        pushUps: latestKnownBest("pushUps", "loggedPushUps", blockLogs, request.baseline.pushUps),
-        plankSeconds: latestKnownBest("plankSeconds", "loggedPlankSeconds", blockLogs, request.baseline.plankSeconds)
+        pullUps: latestKnownBest("pullUps", blockLogs, request.baseline.pullUps),
+        pushUps: latestKnownBest("pushUps", blockLogs, request.baseline.pushUps),
+        plankSeconds: latestKnownBest("plankSeconds", blockLogs, request.baseline.plankSeconds)
       },
       ...bestBeforeBlock(sortedLogs, blockStartMs, request)
     },
@@ -124,7 +123,8 @@ function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
     plannedWork: summarizePlannedWork(blockSessions, blockLogs, request.weekStart, today, request.plannedSessions, blockStartMs),
     readiness: {
       state,
-      riskFlags
+      riskFlags,
+      ...readinessDetail(state, effort, rollingTrend)
     },
     running: request.running
       ? {
@@ -133,59 +133,43 @@ function buildBaseContext(request: CoachRequest, now: Date): CoachContext {
           recentRuns: [...request.running.recentRuns]
             .sort((a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime())
             .slice(-30),
-          weeksToRace: weeksToRace(request.running.raceGoal.raceDate, request.weekStart)
+          weeksToRace: weeksToRace(request.running.raceGoal.raceDate, request.weekStart),
+          // From the whole history the app sent: the last 30 runs stop short of the weeks before the taper.
+          preTaperTrainingWeekKm: preTaperTrainingWeekKm(request.running, season, request.weekStart)
         }
-      : undefined
+      : undefined,
+    season
   };
 }
 
+/** Kept for older readers: 0 on race day and for any past race (the phase comes from the season). */
 function weeksToRace(raceDate: string, weekStart: string): number {
-  const days = Math.round((Date.parse(raceDate) - Date.parse(weekStart)) / (24 * 60 * 60 * 1000));
+  const days = daysBetween(weekStart, raceDate);
   return Number.isFinite(days) ? Math.max(0, Math.ceil(days / 7)) : 0;
 }
 
-function collectRiskFlags(
-  sortedLogs: TrainingLog[],
-  last5Logs: TrainingLog[],
-  now: Date,
-  lastFullMonth: CoachContext["history"]["lastFullMonth"],
-  previousFullMonth: CoachContext["history"]["previousFullMonth"],
-  weeklySessions: number,
-  validCompletedMonthLogCount: number,
-  validCurrentMonthLogCount: number
-): string[] {
-  const flags: string[] = [];
-
-  flags.push(...recoveryFlagsAt(sortedLogs, now));
-  if (last5Logs.filter((log) => log.rpe >= 9).length >= 3) flags.push("repeated_high_perceived_effort");
-  if (last5Logs.filter((log) => typeof log.rpeDelta === "number" && log.rpeDelta >= 2).length >= 2) {
-    flags.push("recent_effort_above_plan");
+/**
+ * Why readiness is what it is, for the planners: the overreaching reason, or
+ * the goal metrics a calibration holds (normal readiness only).
+ */
+function readinessDetail(
+  state: ContextState,
+  effort: EffortReadiness,
+  rollingTrend: CoachContext["history"]["rollingTrend"]
+): Pick<CoachContext["readiness"], "reason" | "calibration"> {
+  if (state === "overreaching") {
+    const declined = GOAL_METRICS.filter((metric) => (rollingTrend?.[`${metric}Delta`] ?? 0) < 0);
+    const names = declined.map((metric) => METRIC_PLURAL[metric]);
+    const what = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "results";
+    const is = declined.length === 1 && declined[0] === "plankSeconds" ? "is" : "are";
+    const weeks = ROLLING_TREND.windowDays / 7;
+    return {
+      reason: effort.overreaching ??
+        `The best ${what} of the last ${weeks} weeks ${is} below the ${weeks} weeks before, with at least ${ROLLING_TREND.minShortfalls} results below the plan.`
+    };
   }
-  if (lastFullMonth.maxPain >= 4) flags.push("last_full_month_pain_flag");
-  if (lastFullMonth.maxFatigue >= 9) flags.push("last_full_month_how_you_felt_very_weak");
-
-  const expectedMonthlySessions = Math.max(1, weeklySessions * 4);
-  if (lastFullMonth.logCount > 0 && lastFullMonth.logCount < expectedMonthlySessions * 0.6) {
-    flags.push("low_last_full_month_training_count");
-  }
-
-  if (
-    previousFullMonth.logCount >= expectedMonthlySessions * 0.6 &&
-    lastFullMonth.logCount > previousFullMonth.logCount * 1.5
-  ) {
-    flags.push("sudden_monthly_volume_increase");
-  }
-
-  if (validCompletedMonthLogCount < 3 && validCurrentMonthLogCount < 2) {
-    flags.push("insufficient_training_history");
-  }
-
-  return flags;
-}
-
-function planBlockStartMs(request: CoachRequest): number | null {
-  const start = typeof request.planBlockStartedAt === "string" ? Date.parse(request.planBlockStartedAt) : Number.NaN;
-  return Number.isFinite(start) ? start : null;
+  if (state === "recovery_needed" || !effort.calibration || effort.calibration.metrics.length === 0) return {};
+  return { calibration: effort.calibration };
 }
 
 type TodayWindow = { start: number; end: number };
@@ -271,28 +255,36 @@ function summarizePlannedWork(
       return Number.isFinite(scheduled) && scheduled >= startTime && scheduled < endOfToday;
     })
     .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime())
-    .map((session) => ({
-      id: session.id,
-      title: session.title,
-      status: session.status,
-      focus: session.focus,
-      scheduledDate: session.scheduledDate
-    }));
+    .map((session) => {
+      const hardest = hardestOf((session.exercises ?? []).map((exercise) => exercise.plannedEffortLabel));
+      return {
+        id: session.id,
+        title: session.title,
+        status: session.status,
+        focus: session.focus,
+        scheduledDate: session.scheduledDate,
+        ...(hardest ? { hardestEffort: hardest } : {})
+      };
+    });
   const goalEntries = plannedSessions
     .filter((session) => new Date(session.scheduledDate).getTime() < startTime)
     .flatMap((session) =>
       (session.exercises ?? [])
         .filter(isGoalWorkPrescription)
-        .map((exercise) => ({
-          metric: goalMetricForExercise(exercise.exercise),
-          scheduledDate: session.scheduledDate,
-          target: exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps,
-          sets: exercise.sets,
-          stimulus: exercise.plannedEffortStimulus,
-          volume: (exercise.exercise === "plank" ? exercise.targetSeconds : exercise.targetReps) * exercise.sets
-        }))
+        .map((exercise) => {
+          const metric = metricForExercise(exercise.exercise);
+          const target = metric ? prescribedValue(metric, exercise) : 0;
+          return {
+            metric,
+            scheduledDate: session.scheduledDate,
+            target,
+            sets: exercise.sets,
+            test: isGoalTest(prescriptionEffort(exercise)),
+            volume: target * exercise.sets
+          };
+        })
     )
-    .filter((entry): entry is GoalEntry & { metric: "pullUps" | "pushUps" | "plankSeconds" } =>
+    .filter((entry): entry is GoalEntry & { metric: GoalMetric } =>
       entry.metric !== null && entry.target > 0 && entry.volume > 0
     )
     .sort((a, b) => new Date(b.scheduledDate).getTime() - new Date(a.scheduledDate).getTime());
@@ -305,9 +297,9 @@ function summarizePlannedWork(
       plankSeconds: summarizeGoalTrend(goalEntries.filter((entry) => entry.metric === "plankSeconds"))
     },
     recentGoalPerformance: {
-      pullUps: summarizeRecentGoalPerformance("pullUps", plannedSessions, logs, startTime, allPlannedSessions, blockStartMs),
-      pushUps: summarizeRecentGoalPerformance("pushUps", plannedSessions, logs, startTime, allPlannedSessions, blockStartMs),
-      plankSeconds: summarizeRecentGoalPerformance("plankSeconds", plannedSessions, logs, startTime, allPlannedSessions, blockStartMs)
+      pullUps: summarizeRecentGoalPerformance("pullUps", plannedSessions, logs, today, allPlannedSessions, blockStartMs),
+      pushUps: summarizeRecentGoalPerformance("pushUps", plannedSessions, logs, today, allPlannedSessions, blockStartMs),
+      plankSeconds: summarizeRecentGoalPerformance("plankSeconds", plannedSessions, logs, today, allPlannedSessions, blockStartMs)
     }
   };
 }
@@ -316,31 +308,25 @@ function summarizeRecentGoalPerformance(
   metric: "pullUps" | "pushUps" | "plankSeconds",
   plannedSessions: CoachRequest["plannedSessions"],
   logs: TrainingLog[],
-  startTime: number,
+  today: TodayWindow,
   allPlannedSessions: CoachRequest["plannedSessions"] = plannedSessions,
   blockStartMs: number | null = null
 ): RecentGoalPerformance {
   const sessionsById = new Map(plannedSessions.map((session) => [session.id, session]));
   const matches = logs
-    .filter((log) => log[loggedFlagForMetric(metric)])
+    .filter((log) => log[LOGGED_FLAG[metric]])
     .flatMap((log) => {
       const session = sessionsById.get(log.sessionId);
-      const prescription = latestGoalPrescription(session?.exercises ?? [], metric);
+      const latestLoggedBest = log[metric];
+      const prescription =
+        latestGoalPrescription(session?.exercises ?? [], metric) ??
+        overDeliveredEasyPrescription(session?.exercises ?? [], metric, latestLoggedBest);
       if (!prescription) return [];
 
-      const actualRPE = normalizeRPE(log.actualRPE) ?? normalizeRPE(log.rpe);
-      const plannedRPE =
-        normalizeRPE(log.plannedRPE) ??
-        plannedRPEFromLabel(log.plannedEffortLabel) ??
-        plannedRPEFromLabel(prescription.label) ??
-        DEFAULT_PLANNED_RPE;
-      const clean =
-        typeof actualRPE === "number" &&
-        typeof plannedRPE === "number" &&
-        log.painLevel < 4 &&
-        log.fatigueLevel < 9 &&
-        actualRPE <= plannedRPE + 1;
-      const latestLoggedBest = log[metric];
+      const overDelivered = latestLoggedBest - prescription.target >= overDeliveryMargin(metric, prescription.target);
+      // One clean-completion rule (effort-flags.ts): the target met, no pain or
+      // very weak feedback, effort within plan (clearly more than planned explains more).
+      const clean = cleanCompletion(log, session?.exercises, metric) !== null;
 
       return [{
         completedAt: log.completedAt,
@@ -348,7 +334,8 @@ function summarizeRecentGoalPerformance(
         prescribedTarget: prescription.target,
         prescribedSets: prescription.sets,
         delta: latestLoggedBest - prescription.target,
-        clean
+        clean,
+        overDelivered
       }];
     })
     .filter((match) => Number.isFinite(Date.parse(match.completedAt)))
@@ -375,16 +362,13 @@ function summarizeRecentGoalPerformance(
     prescribedSets: latest?.prescribedSets ?? null,
     delta: latest?.delta ?? null,
     clean: latest?.clean ?? null,
+    overDelivered: latest?.overDelivered ?? null,
     consecutiveCleanCompletionsAtStandard,
     completedAt: latest?.completedAt ?? null,
     // Tests from before the block still count for the 28-day test spacing.
-    latestTestDate: latestTestDate(metric, allPlannedSessions, startTime),
+    latestTestDate: latestTestDate(metric, allPlannedSessions, today),
     ...(blockStartMs === null ? {} : { baselineSetAt: new Date(blockStartMs).toISOString() })
   };
-}
-
-function plannedRPEFromLabel(label: unknown): number | undefined {
-  return typeof label === "string" && label in plannedRPEForLabel ? plannedRPEForLabel[label as EffortLabel] : undefined;
 }
 
 function latestGoalPrescription(
@@ -393,71 +377,72 @@ function latestGoalPrescription(
 ): { target: number; sets: number; label?: EffortLabel } | null {
   // A test (one max set) is not a working prescription: matching a log to it
   // would make "1 set" the standard the next week continues from.
-  const candidates = exercises
-    .filter((exercise) =>
-      isGoalWorkPrescription(exercise) &&
-      exercise.plannedEffortStimulus !== "test" &&
-      exercise.plannedEffortLabel !== "max_output" &&
-      goalMetricForExercise(exercise.exercise) === metric
-    )
-    .map((exercise) => ({
-      target: metric === "plankSeconds" ? exercise.targetSeconds : exercise.targetReps,
-      sets: exercise.sets,
-      label: exercise.plannedEffortLabel
-    }))
-    .filter((exercise) => exercise.target > 0 && exercise.sets > 0)
-    .sort((a, b) => b.target - a.target || b.sets - a.sets);
-  return candidates[0] ?? null;
+  return topBlock(exercises
+    .filter((exercise) => isGoalWorkPrescription(exercise) && !isGoalTest(prescriptionEffort(exercise)) && metricForExercise(exercise.exercise) === metric)
+    .map((exercise) => ({ target: prescribedValue(metric, exercise), sets: exercise.sets, label: exercise.plannedEffortLabel }))
+    .filter((exercise) => exercise.target > 0 && exercise.sets > 0));
 }
 
+/**
+ * Easy (light, technique or recovery) work is not a working prescription,
+ * but doing clearly more than it asked is evidence: the athlete showed more
+ * than the plan expected. Only then is the log matched to that easy target.
+ */
+function overDeliveredEasyPrescription(
+  exercises: PlannedExercisePrescription[],
+  metric: "pullUps" | "pushUps" | "plankSeconds",
+  delivered: number
+): { target: number; sets: number; label?: EffortLabel } | null {
+  const target = plannedTargetFor(metric, exercises);
+  if (target === null || !Number.isFinite(delivered) || delivered - target < overDeliveryMargin(metric, target)) return null;
+  const prescription = exercises.find((exercise) =>
+    metricForExercise(exercise.exercise) === metric &&
+    prescribedValue(metric, exercise) === target &&
+    !isGoalTest(prescriptionEffort(exercise))
+  );
+  return prescription ? { target, sets: prescription.sets, label: prescription.plannedEffortLabel } : null;
+}
+
+const DONE_STATUSES = new Set(["completed", "partial"]);
+
+/**
+ * The latest goal test of a metric: a test done before today, or one planned
+ * for today (it happens today, so the coming days need no second test). A
+ * missed, deloaded or overdue test was no test.
+ */
 function latestTestDate(
   metric: "pullUps" | "pushUps" | "plankSeconds",
   plannedSessions: CoachRequest["plannedSessions"],
-  startTime: number
+  today: TodayWindow
 ): string | null {
   return plannedSessions
-    .filter((session) => Date.parse(session.scheduledDate) < startTime)
+    .filter((session) => {
+      const scheduled = Date.parse(session.scheduledDate);
+      if (scheduled < today.start) return DONE_STATUSES.has(session.status);
+      return scheduled < today.end && (session.status === "planned" || DONE_STATUSES.has(session.status));
+    })
     .filter((session) => (session.exercises ?? []).some((exercise) =>
-      goalMetricForExercise(exercise.exercise) === metric && exercise.plannedEffortStimulus === "test"
+      metricForExercise(exercise.exercise) === metric && isGoalTest(prescriptionEffort(exercise))
     ))
     .map((session) => session.scheduledDate)
     .filter((date) => Number.isFinite(Date.parse(date)))
     .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
 }
 
-function loggedFlagForMetric(
-  metric: "pullUps" | "pushUps" | "plankSeconds"
-): "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds" {
-  if (metric === "pullUps") return "loggedPullUps";
-  if (metric === "pushUps") return "loggedPushUps";
-  return "loggedPlankSeconds";
-}
-
+/** Goal work of a past session that is not easy work: not light, technique or recovery (tests included). */
 function isGoalWorkPrescription(exercise: PlannedExercisePrescription): boolean {
-  if (!["pullUp", "pushUp", "plank"].includes(exercise.exercise)) return false;
+  if (metricForExercise(exercise.exercise) === null) return false;
   if (exercise.plannedEffortLabel === "light") return false;
   if (exercise.plannedEffortStimulus === "recovery" || exercise.plannedEffortStimulus === "technique") return false;
   return exercise.sets > 0 && (exercise.targetReps > 0 || exercise.targetSeconds > 0);
-}
-
-function goalMetricForExercise(exercise: string): "pullUps" | "pushUps" | "plankSeconds" | null {
-  switch (exercise) {
-    case "pullUp":
-      return "pullUps";
-    case "pushUp":
-      return "pushUps";
-    case "plank":
-      return "plankSeconds";
-    default:
-      return null;
-  }
 }
 
 type GoalEntry = {
   scheduledDate: string;
   target: number;
   sets: number;
-  stimulus: EffortStimulus | undefined;
+  /** A goal test (one max set), not a working prescription. */
+  test: boolean;
   volume: number;
 };
 
@@ -500,42 +485,14 @@ function summarizeGoalTrend(entries: GoalEntry[]): PlannedGoalTrend {
  * using the block's top set matches how a new plan's goal work is summarized.
  */
 function latestWorkingPrescription(entries: GoalEntry[]): { target: number; sets: number; date: string } | null {
-  const working = entries.filter((entry) => entry.stimulus !== "test" && Number.isFinite(Date.parse(entry.scheduledDate)));
+  const working = entries.filter((entry) => !entry.test && Number.isFinite(Date.parse(entry.scheduledDate)));
   const latest = working[0];
   if (!latest) return null;
   const latestMs = Date.parse(latest.scheduledDate);
-  const top = working
-    .filter((entry) => Date.parse(entry.scheduledDate) > latestMs - 7 * DAY_MS)
-    .reduce((best, entry) => (entry.target > best.target || (entry.target === best.target && entry.sets > best.sets) ? entry : best));
+  const top = topBlock(working.filter((entry) => Date.parse(entry.scheduledDate) > latestMs - 7 * DAY_MS))!;
   return { target: top.target, sets: top.sets, date: latest.scheduledDate };
 }
 
-
-function classifyState(
-  riskFlags: string[],
-  monthTrendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
-  rollingTrendLabel: CoachContext["history"]["twoFullMonthTrend"]["label"],
-  validCompletedMonthLogCount: number,
-  validCurrentMonthLogCount: number,
-  adherence: CoachContext["adherence"]
-): ContextState {
-  if (riskFlags.some((flag) => RECOVERY_NEEDED_FLAGS.has(flag))) return "recovery_needed";
-  if (
-    riskFlags.includes("repeated_high_perceived_effort") ||
-    riskFlags.includes("recent_effort_above_plan")
-  ) {
-    return "overreaching";
-  }
-  const hasEarlyCurrentEvidence = validCurrentMonthLogCount >= 2;
-  if ((validCompletedMonthLogCount < 3 || monthTrendLabel === "insufficient_history") && !hasEarlyCurrentEvidence) {
-    return "insufficient_history";
-  }
-  // Plateau and decline come from the rolling 3-week windows, so they show
-  // up within weeks instead of after two full calendar months.
-  if (rollingTrendLabel === "flat" && adherence.completed >= Math.max(3, adherence.planned * 0.7)) return "plateau";
-  if (rollingTrendLabel === "declining") return "overreaching";
-  return "building";
-}
 
 /**
  * Older, higher bests from before the current plan block, shown as context
@@ -548,18 +505,15 @@ function bestBeforeBlock(
 ): Pick<CoachContext["history"], "bestBeforeBlock"> {
   if (blockStartMs === null) return {};
   const before = sortedLogs.filter((log) => Date.parse(log.completedAt) < blockStartMs);
-  const higher = (
-    metric: "pullUps" | "pushUps" | "plankSeconds",
-    flag: "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds"
-  ): number | null => {
-    const values = before.filter((log) => log[flag]).map((log) => log[metric]);
+  const higher = (metric: GoalMetric): number | null => {
+    const values = before.filter((log) => log[LOGGED_FLAG[metric]]).map((log) => log[metric]);
     if (values.length === 0) return null;
     const best = Math.max(...values);
     return best > request.baseline[metric] ? best : null;
   };
-  const pullUps = higher("pullUps", "loggedPullUps");
-  const pushUps = higher("pushUps", "loggedPushUps");
-  const plankSeconds = higher("plankSeconds", "loggedPlankSeconds");
+  const pullUps = higher("pullUps");
+  const pushUps = higher("pushUps");
+  const plankSeconds = higher("plankSeconds");
   if (pullUps === null && pushUps === null && plankSeconds === null) return {};
   return {
     bestBeforeBlock: {
@@ -572,13 +526,8 @@ function bestBeforeBlock(
   };
 }
 
-function latestKnownBest(
-  metric: "pullUps" | "pushUps" | "plankSeconds",
-  flag: "loggedPullUps" | "loggedPushUps" | "loggedPlankSeconds",
-  logs: TrainingLog[],
-  baseline: number
-): number | null {
-  const values = logs.filter((log) => log[flag]).map((log) => log[metric]);
+function latestKnownBest(metric: GoalMetric, logs: TrainingLog[], baseline: number): number | null {
+  const values = logs.filter((log) => log[LOGGED_FLAG[metric]]).map((log) => log[metric]);
   if (values.length === 0) return baseline > 0 ? baseline : null;
   return Math.max(...values, baseline);
 }
@@ -595,32 +544,21 @@ function normalizeFutureDayOffsets(value: unknown): number[] {
   )].sort((a, b) => a - b);
 }
 
-function validLogCount(logs: TrainingLog[], start: Date, end: Date): number {
-  return logs.filter((log) => {
-    const completedAt = new Date(log.completedAt);
-    return completedAt >= start && completedAt < end && hasLoggedGoalMetric(log);
-  }).length;
-}
-
-function hasLoggedGoalMetric(log: TrainingLog): boolean {
-  return log.loggedPullUps || log.loggedPushUps || log.loggedPlankSeconds;
-}
-
 function normalizeLogForContext(log: TrainingLog): TrainingLog {
   const howYouFeltScore = howYouFeltScoreFromFatigueLevel(log.fatigueLevel);
-  const actualRPE = normalizeRPE(log.actualRPE) ?? normalizeRPE(log.rpe) ?? log.rpe;
-  const plannedRPE = normalizeRPE(log.plannedRPE);
-  const rpeDelta = typeof plannedRPE === "number" ? actualRPE - plannedRPE : undefined;
+  const rated = actualRPE(log);
+  const plannedRPE = validRPE(log.plannedRPE);
+  const rpeDelta = typeof plannedRPE === "number" ? rated - plannedRPE : undefined;
   const generatedSummary = typeof plannedRPE === "number"
-    ? `RPE - Planned ${plannedRPE} | Actual ${actualRPE}`
+    ? `RPE - Planned ${plannedRPE} | Actual ${rated}`
     : undefined;
 
   return {
     ...log,
-    rpe: actualRPE,
-    perceivedEffort: actualRPE,
+    rpe: rated,
+    perceivedEffort: rated,
     plannedRPE,
-    actualRPE,
+    actualRPE: rated,
     rpeDelta,
     rpeSummary: trimNote(log.rpeSummary || generatedSummary || ""),
     plannedEffortReason: trimNote(log.plannedEffortReason || ""),
@@ -648,12 +586,6 @@ function summarizeRPECalibration(logs: TrainingLog[]): CoachContext["history"]["
 function averageDelta(values: number[]): number | null {
   if (values.length === 0) return null;
   return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1));
-}
-
-function normalizeRPE(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const rounded = Math.round(value);
-  return rounded >= 1 && rounded <= 10 ? rounded : undefined;
 }
 
 function trimNote(note: string | undefined): string {

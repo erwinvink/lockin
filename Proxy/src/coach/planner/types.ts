@@ -85,6 +85,10 @@ export type TrainingLog = {
   plannedEffortReason?: string;
   howYouFeltScore?: number;
   howYouFelt?: "very_weak" | "weak" | "normal" | "strong" | "very_strong";
+  /** Context only: the athlete did clearly more than the session planned (delivered-work.ts). */
+  didMoreThanPlanned?: boolean;
+  /** Context only: "more than planned: 38 push-ups against 10 planned", or the shortfall. */
+  deliveredVsPlan?: string;
   notes: string;
 };
 
@@ -148,6 +152,16 @@ export type RollingTrendSummary = TrendSummary & {
   windowDays: number;
   recent: RollingWindowSummary;
   previous: RollingWindowSummary;
+  /**
+   * Metrics whose lower recent numbers only followed a lighter plan (every
+   * recent log met or beat its planned target): not a decline, so not counted.
+   */
+  lowerNumbersFollowLighterPlan?: Array<"pullUps" | "pushUps" | "plankSeconds">;
+  /**
+   * Metrics whose lower recent numbers came with fewer than two results
+   * below their plan (one off day, or logs without a plan): not a decline.
+   */
+  lowerNumbersWithoutRepeatedShortfall?: Array<"pullUps" | "pushUps" | "plankSeconds">;
 };
 
 export type RollingWindowSummary = {
@@ -229,6 +243,8 @@ export type CoachContext = {
       status: string;
       focus: SessionFocus;
       scheduledDate: string;
+      /** The hardest planned effort of a strength session today (absent when none is planned). */
+      hardestEffort?: EffortLabel;
     }>;
     recentGoalTargets: {
       pullUps: PlannedGoalTrend;
@@ -244,6 +260,13 @@ export type CoachContext = {
   readiness: {
     state: ContextState;
     riskFlags: string[];
+    /** Why readiness is overreaching, in one plain sentence (effort-flags.ts, or a decline below plan). */
+    reason?: string;
+    /**
+     * Effort above plan without a second marker (calibrate): these goal
+     * metrics hold, with no progression and no extra set; readiness stays normal.
+     */
+    calibration?: { metrics: Array<"pullUps" | "pushUps" | "plankSeconds">; reason: string };
   };
   running?: RunningContext;
   garmin?: { wellness: CoachWellnessDay[] };
@@ -253,6 +276,40 @@ export type CoachContext = {
   periodization?: PeriodizationContext;
   /** The plan made earlier for the coming days, and what changed since (plan continuity). */
   currentPlan?: CurrentPlanContext;
+  /**
+   * Runs the current plan has for today (offset 0, locked), when not done
+   * yet; today's done runs are in running.recentRuns. They count toward the
+   * week's running floors (running-guardrails.ts).
+   */
+  todayPlannedRuns?: CurrentPlanRun[];
+  /**
+   * Race state, phase and emphasis (computed from the request; absent in
+   * hand-built contexts). Read it with `contextSeason(context)` (season.ts),
+   * which computes it when it is absent.
+   */
+  season?: Season;
+};
+
+export type RaceState = "upcoming" | "recent" | "none";
+export type SeasonPhase = "general_preparation" | "base" | "build" | "peak" | "taper" | "transition";
+export type SeasonEmphasis = "transition" | "strength_led" | "balanced" | "run_led" | "taper";
+
+/** Where the athlete stands in the running season (season.ts). */
+export type Season = {
+  /** "recent": inside the post-race window of the stored race. */
+  raceState: RaceState;
+  /** The stored race's name; null without a race or with a blank name (printed as "your race"). */
+  raceName: string | null;
+  /** Upcoming races only; 0 on race day. */
+  daysToRace: number | null;
+  /** After the race: inside the window and after it. */
+  daysSinceRace: number | null;
+  /** The post-race window of the stored race in days (0 without a race). */
+  postRaceDays: number;
+  phase: SeasonPhase;
+  emphasis: SeasonEmphasis;
+  /** One plain sentence for the prompts. */
+  reason: string;
 };
 
 export type CurrentPlanRun = {
@@ -269,7 +326,7 @@ export type CurrentPlanStrengthSession = {
   title: string;
   focus: SessionFocus;
   hardestEffort: EffortLabel | null;
-  goalWork: Array<{ exercise: string; sets: number; target: number; effort: string | null }>;
+  goalWork: Array<{ exercise: string; sets: number; target: number; effort: string | null; stimulus: string | null }>;
 };
 
 export type CurrentPlanContext = {
@@ -295,6 +352,8 @@ export type BlockWeekSummary = {
   hardStrengthSets: number;
   classification: BlockWeekClassification;
   note: string;
+  /** The week was a planned recovery week (3:1), whatever it turned out to be. */
+  plannedRecovery?: true;
 };
 
 /** Planned recovery weeks (3:1) on the plan-block calendar; see periodization.ts. */
@@ -307,6 +366,12 @@ export type PeriodizationContext = {
   lastUnloadingWeek: { blockWeek: number; startsAt: string; classification: BlockWeekClassification; note: string } | null;
   recoveryWeekDue: boolean;
   recoveryWeekReason: string;
+  /**
+   * Hard strength sets prescribed in the last loading week (when 3 or more):
+   * the reference for the recovery week's and an overreaching week's hard-set
+   * cap. Absent in hand-built contexts (no reference).
+   */
+  lastLoadingWeekHardSets?: number | null;
   /** The limits of this recovery week, when one is due. */
   recoveryWeek: {
     startsAt: string;
@@ -350,6 +415,11 @@ export type RecentGoalPerformance = {
   prescribedSets: number | null;
   delta: number | null;
   clean: boolean | null;
+  /**
+   * The latest result was clearly more than planned (delivered-work.ts): the
+   * athlete chose to do more, so the next week plans from the level shown.
+   */
+  overDelivered?: boolean | null;
   consecutiveCleanCompletionsAtStandard: number;
   completedAt: string | null;
   latestTestDate: string | null;
@@ -524,6 +594,9 @@ export type GarminWellnessDay = {
   bodyBattery: number;
   trainingReadiness: number;
   restingHr: number;
+  /** Garmin's 7-day HRV average and the lower bound of the athlete's balanced baseline range (hrvSummary weeklyAvg and baseline.balancedLow); newer sidecars only. */
+  hrvWeeklyAvgMs?: number;
+  hrvBaselineLowMs?: number;
   /** Fields whose Garmin call failed; their 0/"" values are placeholders, not data. */
   unavailableMetrics?: string[];
 };
@@ -538,6 +611,19 @@ export type CoachWellnessDay = {
   bodyBattery: number | null;
   trainingReadiness: number | null;
   restingHr: number | null;
+  /** 7-day HRV average and the lower bound of the baseline range, when the sidecar sends them (wellness-gate.ts). */
+  hrvWeeklyAvgMs?: number | null;
+  hrvBaselineLowMs?: number | null;
 };
 
-export type RunningContext = RunningRequest & { weeksToRace: number };
+export type RunningContext = RunningRequest & {
+  weeksToRace: number;
+  /**
+   * In the first weeks after the post-race transition: the average training
+   * week before the stored race's taper, read from the whole run history the
+   * app sent (recentRuns keeps the last 30 runs); null otherwise. The
+   * weekly-km floor reads it (running-floors.ts); a hand-built context
+   * without it gets it computed from recentRuns.
+   */
+  preTaperTrainingWeekKm?: number | null;
+};

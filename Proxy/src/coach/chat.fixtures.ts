@@ -1,10 +1,14 @@
 import type { TrainingSignals } from "./planner/compute-training-signals";
+import { STRENGTH_PHASE_LIMITS } from "./planner/strength-phase";
 import type { CoachContext, CoachEvaluation, CoachRequest, CoachSnapshot } from "./planner/types";
 
 // Shared coach-chat test data: an athlete four sessions into a strength block
 // with an ultra 14 weeks out, a shoulder note, and a 4/10 pain log.
 
 export const NOW = new Date("2026-06-28T12:00:00Z");
+
+/** The post-race strength rule in plain words, built from the rule's numbers (chat, chat prompt and season tests). */
+export const POST_RACE_STRENGTH = `strength carries on: light or medium on days 1-${STRENGTH_PHASE_LIMITS.postRace.noHardThroughDay} after the race, nothing very hard or max through day ${STRENGTH_PHASE_LIMITS.postRace.atMostHardThroughDay}, then normal upper-body progression`;
 
 export function context(): CoachContext {
   return {
@@ -180,10 +184,23 @@ export function signals(): TrainingSignals {
       longestRunLast6WeeksKm: 16.4,
       recentLongRunsKm: [16.4],
       lowIntensityTimeShareLast4Weeks: 0.82,
+      lowIntensityTimeShareLast3Weeks: 0.8,
+      noSpeedStimulusLast3Weeks: false,
       runCountLast7Days: 2
     },
-    race: { daysToRace: 98, weeksToRace: 14, taperStatus: "training" },
-    wellness: { latestDate: "2026-06-27", hrvStatus: "BALANCED", hrvGate: "ok-for-hard", sleepScore: 82, trainingReadiness: 74, restingHr: 47 },
+    race: { daysToRace: 98, daysSinceRace: null, weeksToRace: 14, taperStatus: "training" },
+    wellness: {
+      latestDate: "2026-06-27",
+      hrvStatus: "BALANCED",
+      hrvDate: "2026-06-27",
+      hrvGate: "ok-for-hard",
+      sleepScore: 82,
+      sleepScoreDate: "2026-06-27",
+      trainingReadiness: 74,
+      trainingReadinessDate: "2026-06-27",
+      restingHr: 47,
+      restingHrDate: "2026-06-27"
+    },
     lastRun: { completedAt: "2026-06-26T10:00:00Z", distanceKm: 16.4, paceSecPerKm: 395, elevationGainM: 420, averageHr: 149, rpe: 6, feelScore: 4, kind: "long" }
   };
 }

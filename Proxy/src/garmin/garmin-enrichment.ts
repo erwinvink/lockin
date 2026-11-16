@@ -1,15 +1,19 @@
 import type { CoachContext, CoachWellnessDay, GarminWellnessDay } from "../coach/planner/types";
+import { latestDayWith } from "../coach/planner/wellness-gate";
 import { garminSnapshot } from "./garmin-client";
 
-// The coach gates on the most recent wellness day only, so two days (today
-// plus yesterday as a fallback) is enough: ~9 serialized Garmin calls instead
-// of ~29 for a week, which fits the coach request's time budget.
-const ENRICHMENT_DAYS = 2;
+// The HRV gate reads the latest day with a reading (at most 2 days old) and
+// the sleep gate the last three nights that have a score (wellness-gate.ts).
+// At the 01:30 plan today's row has neither yet, so four days: the sidecar
+// makes 4 serialized Garmin calls a day plus one body-battery call, ~17
+// instead of ~29 for a week, inside the 10 s budget below (a timeout only
+// means the coach plans without Garmin data).
+const ENRICHMENT_DAYS = 4;
 const ENRICHMENT_TIMEOUT_MS = 10_000;
 // Chat asks the coach many times in a row; reuse one fetch per user for a while.
 const DEFAULT_CACHE_TTL_MS = 10 * 60_000;
 
-type NumericMetric = "sleepScore" | "sleepSeconds" | "hrvMs" | "bodyBattery" | "trainingReadiness" | "restingHr";
+type NumericMetric = "sleepScore" | "sleepSeconds" | "hrvMs" | "bodyBattery" | "trainingReadiness" | "restingHr" | "hrvWeeklyAvgMs" | "hrvBaselineLowMs";
 
 /**
  * A sidecar wellness row as the coach should see it: metrics whose Garmin
@@ -23,6 +27,10 @@ export function sanitizeWellnessForCoach(day: GarminWellnessDay): CoachWellnessD
     return !unavailable.has(field) && typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
   };
   const hrvStatus = typeof day.hrvStatus === "string" ? day.hrvStatus.trim() : "";
+  // The 7-day average and the baseline's lower bound (newer sidecars) let the
+  // HRV gate tell a below-baseline UNBALANCED status from an above-baseline one.
+  const hrvWeeklyAvgMs = numeric("hrvWeeklyAvgMs");
+  const hrvBaselineLowMs = numeric("hrvBaselineLowMs");
   return {
     date: String(day.date),
     sleepScore: numeric("sleepScore"),
@@ -31,7 +39,8 @@ export function sanitizeWellnessForCoach(day: GarminWellnessDay): CoachWellnessD
     hrvMs: numeric("hrvMs"),
     bodyBattery: numeric("bodyBattery"),
     trainingReadiness: numeric("trainingReadiness"),
-    restingHr: numeric("restingHr")
+    restingHr: numeric("restingHr"),
+    ...(hrvWeeklyAvgMs !== null && hrvBaselineLowMs !== null ? { hrvWeeklyAvgMs, hrvBaselineLowMs } : {})
   };
 }
 
@@ -106,11 +115,12 @@ export function createGarminEnricher(options: GarminEnricherOptions = {}) {
       return context;
     }
 
-    // The sidecar promises most-recent-first, but pick by max date anyway.
-    const latest = [...result.wellness].sort((a, b) => b.date.localeCompare(a.date))[0];
+    // The latest day that has a readiness value (at most 2 days old): at the
+    // 01:30 plan today's row has none yet.
+    const readiness = latestDayWith(result.wellness, context.profile.weekStart, (day) => typeof day.trainingReadiness === "number" && day.trainingReadiness > 0);
     context.garmin = { wellness: result.wellness };
-    if (latest && typeof latest.trainingReadiness === "number" && latest.trainingReadiness < 30) {
-      context.readiness.riskFlags.push("garmin: training readiness low");
+    if (readiness && typeof readiness.trainingReadiness === "number" && readiness.trainingReadiness < 30) {
+      context.readiness.riskFlags.push(`garmin: training readiness low on ${readiness.date}`);
     }
     return context;
   };

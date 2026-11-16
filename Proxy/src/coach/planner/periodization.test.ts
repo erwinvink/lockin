@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildCoachContext } from "./build-coach-context";
 import { computePeriodization } from "./periodization";
+import { POST_RACE_STRENGTH_TEXT } from "./season";
 import type { CoachRequest, PlannedSession, RunSummary, TrainingLog } from "./types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -37,6 +38,7 @@ function request(options: {
   weekStart: string;
   weeklyKm?: Record<number, number>;
   raceDate?: string;
+  raceDistanceKm?: number;
   planBlockStartedAt?: string | null;
   trainingLogs?: TrainingLog[];
   plannedSessions?: PlannedSession[];
@@ -59,7 +61,7 @@ function request(options: {
     running: options.running === false
       ? undefined
       : {
-          raceGoal: { name: "Trail 75K", raceDate: options.raceDate ?? "2026-12-12T00:00:00Z", distanceKm: 75, elevationGainM: 3000 },
+          raceGoal: { name: "Trail 75K", raceDate: options.raceDate ?? "2026-12-12T00:00:00Z", distanceKm: options.raceDistanceKm ?? 75, elevationGainM: 3000 },
           baselineWeeklyKm: 40,
           longestRecentRunKm: 20,
           runningDays: [],
@@ -85,6 +87,7 @@ test("three loading weeks since the block start make block week 4 a planned reco
   assert.equal(result.loadingWeeksSinceRecovery, 3);
   assert.equal(result.recoveryWeekDue, true);
   assert.match(result.recoveryWeekReason, /3 loading weeks since the block start: block week 4 is a planned recovery week/);
+  assert.ok(result.recoveryWeekReason.endsWith("Running and strength both back off together this week."), result.recoveryWeekReason);
   assert.deepEqual(result.recentWeeks.map((week) => week.classification), ["loading", "loading", "loading"]);
   // The four block weeks before week 4 (weeks 0-3) average 43.75 km.
   assert.equal(result.recoveryWeek?.referenceWeeklyKm, 43.8);
@@ -95,13 +98,22 @@ test("three loading weeks since the block start make block week 4 a planned reco
   assert.equal(result.recoveryWeek?.startsAt, BLOCK_START.replace("07-06", "07-27"));
 });
 
+test("a race in a loading week is not the recovery week's long-run reference", () => {
+  const req = request({ weekStart: blockDay(4, 1), weeklyKm: STEADY });
+  req.running!.recentRuns.push({ completedAt: new Date(Date.parse(blockDay(2, 7)) + 8 * 60 * 60 * 1000).toISOString(), distanceKm: 30, movingSeconds: 10800, elevationGainM: 600, kind: "race" });
+  const result = periodization(req);
+
+  assert.equal(result.recoveryWeekDue, true);
+  assert.equal(result.recoveryWeek?.longRunCapKm, 13.4, "70% of the 19.2 km training long run, not of the 30 km race");
+});
+
 test("two loading weeks are not enough yet", () => {
   const result = periodization(request({ weekStart: blockDay(3, 2), weeklyKm: STEADY }));
 
   assert.equal(result.loadingWeeksSinceRecovery, 2);
   assert.equal(result.recoveryWeekDue, false);
   assert.equal(result.recoveryWeek, null);
-  assert.match(result.recoveryWeekReason, /2 loading week\(s\) since the block start/);
+  assert.match(result.recoveryWeekReason, /2 loading weeks since the block start/);
 });
 
 test("the decision is the same on every night of the recovery week", () => {
@@ -122,7 +134,7 @@ test("a low-volume week (illness, travel) resets the count", () => {
   assert.equal(result.lastUnloadingWeek?.blockWeek, 2);
 });
 
-test("a reactive offload (pain, very weak feedback or a deloaded session) resets the count", () => {
+test("a reactive offload (pain or very weak feedback; for a strength-only athlete also a deloaded session) resets the count", () => {
   const painLog: TrainingLog = {
     sessionId: "s", completedAt: blockDay(2, 3), pullUps: 8, pushUps: 30, plankSeconds: 90,
     loggedPullUps: true, loggedPushUps: true, loggedPlankSeconds: true, rpe: 7, painLevel: 5, fatigueLevel: 5, notes: ""
@@ -136,9 +148,14 @@ test("a reactive offload (pain, very weak feedback or a deloaded session) resets
     id: "d", scheduledDate: blockDay(3, 2), title: "Pull strength", focus: "pull", status: "deload",
     exercises: [{ exercise: "pullUp", sets: 2, targetReps: 4, targetSeconds: 0, plannedEffortLabel: "light" }]
   };
-  const withDeload = periodization(request({ weekStart: blockDay(4, 1), weeklyKm: STEADY, plannedSessions: [deloaded] }));
-  assert.equal(withDeload.recentWeeks[2].classification, "reactive_offload");
-  assert.equal(withDeload.loadingWeeksSinceRecovery, 0);
+  // A deloaded strength session is a strength-side signal: it resets a
+  // strength-only athlete's count, never a hybrid athlete's running count (Task 8 review).
+  const strengthOnlyDeload = periodization(request({ weekStart: blockDay(4, 1), running: false, plannedSessions: [deloaded] }));
+  assert.equal(strengthOnlyDeload.recentWeeks.at(-1)?.classification, "reactive_offload");
+  assert.equal(strengthOnlyDeload.loadingWeeksSinceRecovery, 0);
+  const hybridDeload = periodization(request({ weekStart: blockDay(4, 1), weeklyKm: STEADY, plannedSessions: [deloaded] }));
+  assert.equal(hybridDeload.recentWeeks[2].classification, "loading", hybridDeload.recentWeeks[2].note);
+  assert.equal(hybridDeload.recoveryWeekDue, true);
 });
 
 test("a recovery week that was done resets the cycle; one trained through does not", () => {
@@ -175,7 +192,7 @@ test("a recovery week stays recognised when its first day still held a long run"
 test("the taper, the post-race weeks and a reactive state replace the planned recovery week", () => {
   const taper = periodization(request({ weekStart: blockDay(4, 1), weeklyKm: STEADY, raceDate: "2026-08-12T00:00:00Z" }));
   assert.equal(taper.recoveryWeekDue, false);
-  assert.match(taper.recoveryWeekReason, /The race is 16 day\(s\) away: the taper takes the place of planned recovery weeks/);
+  assert.match(taper.recoveryWeekReason, /The race is 16 days away: the taper takes the place of planned recovery weeks/);
 
   const painNow: TrainingLog = {
     sessionId: "s", completedAt: new Date(Date.parse(blockDay(4, 1)) - 6 * 60 * 60 * 1000).toISOString(), pullUps: 8, pushUps: 30,
@@ -184,6 +201,28 @@ test("the taper, the post-race weeks and a reactive state replace the planned re
   // The pain log falls on the last day of week 3, so week 3 is a reactive offload as well.
   const reactive = periodization(request({ weekStart: blockDay(4, 1), weeklyKm: STEADY, trainingLogs: [painNow] }));
   assert.equal(reactive.recoveryWeekDue, false);
+});
+
+// The post-race window follows the race (season.ts): 7 days after 21 km, 25 after 100 km.
+function daysBeforeBlockStart(days: number): string {
+  return new Date(Date.parse(BLOCK_START) - days * DAY_MS).toISOString();
+}
+
+test("after a 21 km race on day 10 nothing is post-race any more", () => {
+  const result = periodization(request({ weekStart: BLOCK_START, weeklyKm: STEADY, raceDate: daysBeforeBlockStart(10), raceDistanceKm: 21 }));
+
+  assert.doesNotMatch(result.recoveryWeekReason, /post-race/);
+  assert.match(result.recoveryWeekReason, /0 loading weeks since the block start/);
+});
+
+test("after a 100 km race on day 20 the post-race treatment still applies", () => {
+  const today = periodization(request({ weekStart: BLOCK_START, weeklyKm: STEADY, raceDate: daysBeforeBlockStart(20), raceDistanceKm: 100 }));
+  assert.equal(today.recoveryWeekDue, false);
+  assert.equal(today.recoveryWeekReason, `The race was 20 days ago: running recovers first while ${POST_RACE_STRENGTH_TEXT}; the post-race window replaces the planned recovery week.`);
+
+  // Block week 1 started 16 days after the race: a post-race week, not a loading week.
+  const nextWeek = periodization(request({ weekStart: blockDay(2, 1), weeklyKm: STEADY, raceDate: daysBeforeBlockStart(16), raceDistanceKm: 100 }));
+  assert.deepEqual(nextWeek.recentWeeks.map((week) => [week.blockWeek, week.classification, week.note]), [[1, "taper_or_race", "post-race"]]);
 });
 
 test("without a block start planned recovery weeks are off", () => {
@@ -216,16 +255,89 @@ test("a strength-only athlete's recovery week follows executed hard sets", () =>
   const result = periodization(request({ weekStart: blockDay(4, 1), running: false, plannedSessions: sessions }));
 
   assert.equal(result.recoveryWeekDue, true);
+  assert.ok(result.recoveryWeekReason.endsWith("Strength backs off this week."), result.recoveryWeekReason);
   assert.equal(result.recoveryWeek?.referenceHardStrengthSets, 24);
   assert.equal(result.recoveryWeek?.hardStrengthSetCap, 14);
   assert.equal(result.recoveryWeek?.weeklyKmCap, null);
 });
 
-test("an active reactive state takes the place of the planned recovery week", () => {
+test("a computed recovery need takes the place of the planned recovery week", () => {
+  const req = request({ weekStart: blockDay(4, 1), weeklyKm: STEADY });
+  const result = computePeriodization({ request: req, readinessState: "recovery_needed", now: new Date(blockDay(4, 1)) });
+
+  assert.equal(result.loadingWeeksSinceRecovery, 3);
+  assert.equal(result.recoveryWeekDue, false);
+  assert.match(result.recoveryWeekReason, /but a computed recovery need \(logged pain of 4 or more, or very weak feedback\) already backs off this week\.$/);
+});
+
+// Task 8: overreaching comes from strength logs and eases only the strength
+// week, so it no longer stands in for the running side of the 3:1 recovery
+// week; the planned recovery week goes ahead for both disciplines.
+test("strength-only overreaching does not take the place of the planned recovery week", () => {
   const req = request({ weekStart: blockDay(4, 1), weeklyKm: STEADY });
   const result = computePeriodization({ request: req, readinessState: "overreaching", now: new Date(blockDay(4, 1)) });
 
   assert.equal(result.loadingWeeksSinceRecovery, 3);
-  assert.equal(result.recoveryWeekDue, false);
-  assert.match(result.recoveryWeekReason, /readiness is overreaching: the reactive offload already backs off this week/);
+  assert.equal(result.recoveryWeekDue, true, result.recoveryWeekReason);
+});
+
+// Effort is judged against the plan (effort-flags.ts): planned tests and
+// very_hard work rated as planned do not make a week a reactive offload;
+// near-max ratings on work planned below very_hard still do.
+test("a week of tests and planned very-hard work rated as planned is not a reactive offload", () => {
+  const sessionFor = (id: string, day: string, label: "hard" | "very_hard" | "max_output"): PlannedSession => ({
+    id, scheduledDate: day, title: "Strength", focus: "mixed", status: "completed",
+    exercises: [{ exercise: "pushUp", sets: label === "max_output" ? 1 : 3, targetReps: 24, targetSeconds: 0, plannedEffortLabel: label, plannedEffortStimulus: label === "max_output" ? "test" : "strength" }]
+  });
+  const logFor = (id: string, day: string, rpe: number, plannedRPE: number): TrainingLog => ({
+    sessionId: id, completedAt: new Date(Date.parse(day) + 17 * 60 * 60 * 1000).toISOString(), pullUps: 8, pushUps: 24, plankSeconds: 90,
+    loggedPullUps: false, loggedPushUps: true, loggedPlankSeconds: false, rpe, plannedRPE, painLevel: 0, fatigueLevel: 5, notes: ""
+  });
+  const week = (labels: Array<"hard" | "very_hard" | "max_output">, rpes: number[], plannedRPEs: number[]) => {
+    const days = [blockDay(2, 1), blockDay(2, 3), blockDay(2, 5)];
+    return request({
+      weekStart: blockDay(4, 1),
+      weeklyKm: STEADY,
+      plannedSessions: days.map((day, index) => sessionFor(`w${index}`, day, labels[index])),
+      trainingLogs: days.map((day, index) => logFor(`w${index}`, day, rpes[index], plannedRPEs[index]))
+    });
+  };
+
+  const asPlanned = periodization(week(["max_output", "very_hard", "max_output"], [10, 9, 10], [10, 9, 10]));
+  assert.equal(asPlanned.recentWeeks[1].classification, "loading", asPlanned.recentWeeks[1].note);
+
+  // Off-plan near-max ratings are a strength-only athlete's reactive offload
+  // (a hybrid athlete's count ignores strength effort ratings: test below).
+  const offPlan = periodization({ ...week(["hard", "hard", "hard"], [9, 9, 9], [7, 7, 7]), running: undefined });
+  const ratedWeek = offPlan.recentWeeks.find((summary) => summary.blockWeek === 2);
+  assert.equal(ratedWeek?.classification, "reactive_offload");
+  assert.match(ratedWeek?.note ?? "", /3 sessions at RPE 9 or higher/);
+});
+
+// Task 8 review (probe three-one-reset.ts): one strength week of 3 sessions
+// rated RPE 9 on work planned hard reset the hybrid 3:1 count and pushed the
+// running recovery week out by about 5 weeks. For a hybrid athlete a week is
+// unloading only from pain 4+ or very weak feedback, a planned recovery week,
+// the taper or race window, or a real drop in running km; strength effort
+// ratings and deloaded strength sessions alone never reset it.
+test("strength effort ratings alone never reset a hybrid athlete's 3:1 count", () => {
+  const days = [blockDay(2, 1), blockDay(2, 3), blockDay(2, 5)];
+  const req = (rpe: number) => request({
+    weekStart: blockDay(4, 1),
+    weeklyKm: STEADY,
+    plannedSessions: days.map((day, index) => ({
+      id: `w${index}`, scheduledDate: day, title: "Strength", focus: "mixed", status: "completed",
+      exercises: [{ exercise: "pushUp", sets: 3, targetReps: 24, targetSeconds: 0, plannedEffortLabel: "hard", plannedEffortStimulus: "strength" }]
+    })),
+    trainingLogs: days.map((day, index) => ({
+      sessionId: `w${index}`, completedAt: new Date(Date.parse(day) + 17 * 60 * 60 * 1000).toISOString(), pullUps: 8, pushUps: 24, plankSeconds: 90,
+      loggedPullUps: false, loggedPushUps: true, loggedPlankSeconds: false, rpe, plannedRPE: 7, painLevel: 0, fatigueLevel: 5, notes: ""
+    }))
+  });
+
+  for (const rpe of [7, 9]) {
+    const result = periodization(req(rpe));
+    assert.deepEqual(result.recentWeeks.map((week) => [week.blockWeek, week.classification]), [[1, "loading"], [2, "loading"], [3, "loading"]], `RPE ${rpe}`);
+    assert.equal(result.recoveryWeekDue, true, `RPE ${rpe}: ${result.recoveryWeekReason}`);
+  }
 });
