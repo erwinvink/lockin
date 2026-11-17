@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildCoachContext } from "./coach/planner/build-coach-context";
-import { withStoredCurrentPlan } from "./coach/planner/current-plan";
+import { startsFreshPlan, withoutCurrentPlan, withStoredCurrentPlan } from "./coach/planner/current-plan";
 import { EXERCISE_KINDS, schemaForExercises } from "./coach/planner/exercise-catalog";
 import { coachVerdictReferencePoints, coachVerdictSystemPrompt } from "./coach/coach-verdict-prompt";
 import {
@@ -379,7 +379,7 @@ async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTri
   try {
     // The previous generated plan may be newer than what the app applied
     // (nightly runs reuse the last request the app sent): keep that one.
-    const generated = await generateAutoPlan(trigger.request, decision.generatedPlan ?? null);
+    const generated = await generateAutoPlan(trigger.request, decision.generatedPlan ?? null, startsFreshPlan(trigger.source, trigger.force === true));
     const plan = await autoPlanStore.updateUser(userId, (user) => {
       return markAutoPlanGenerated(user, decision, generated);
     });
@@ -406,7 +406,8 @@ async function runAutoPlanTrigger(trigger: AutoPlanTrigger): Promise<AutoPlanTri
 
 async function generateAutoPlan(
   payload: CoachRequest,
-  storedPlan: AutoPlanGeneratedPlan | null = null
+  storedPlan: AutoPlanGeneratedPlan | null = null,
+  fresh = false
 ): Promise<Omit<AutoPlanGeneratedPlan, "planRevisionId" | "generatedAt" | "localDate" | "source">> {
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set");
@@ -416,7 +417,8 @@ async function generateAutoPlan(
 
   const skill = await loadSkillBundle();
   const now = new Date();
-  const context = withStoredCurrentPlan(await enrichWithGarmin(buildCoachContext(payload, now), payload.userId), payload, storedPlan, now);
+  const withEarlierPlan = withStoredCurrentPlan(await enrichWithGarmin(buildCoachContext(payload, now), payload.userId), payload, storedPlan, now);
+  const context = fresh ? withoutCurrentPlan(withEarlierPlan) : withEarlierPlan;
 
   if (!payload.running) {
     const result = await runStrengthWeekPipeline(strengthPipelineDeps(apiKey, model, skill, context, payload, "/plan/trigger"));

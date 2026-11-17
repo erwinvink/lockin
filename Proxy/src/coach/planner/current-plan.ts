@@ -188,6 +188,22 @@ export function withStoredCurrentPlan(context: CoachContext, request: CoachReque
   return { ...rest, currentPlan, ...(today.length > 0 ? { todayPlannedRuns: today } : {}) };
 }
 
+/**
+ * A regenerate the athlete asks for (manual and forced: the Regenerate
+ * button, a new plan, changed training days) starts fresh: the earlier plan
+ * is not kept, so a weak plan cannot carry itself forward. Nightly and
+ * automatic runs keep continuity.
+ */
+export function startsFreshPlan(source: string, force: boolean): boolean {
+  return source === "manual" && force;
+}
+
+/** The context without an earlier plan to keep; today's locked run stays. */
+export function withoutCurrentPlan(context: CoachContext): CoachContext {
+  const { currentPlan: _earlier, ...rest } = context;
+  return rest;
+}
+
 /** The stored plan's runs for today (offset 0 after re-basing onto `weekStart`). */
 function todayRunsFromStoredPlan(plan: StoredPlan, weekStart: string): CurrentPlanRun[] {
   const shift = Math.round((Date.parse(weekStart) - Date.parse(plan.weekStart)) / DAY_MS);

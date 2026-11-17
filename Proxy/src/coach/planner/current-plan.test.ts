@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runCombinedWeekPipeline, type RunningPlannerGuidance } from "../plan-pipeline";
 import { buildCoachContext } from "./build-coach-context";
-import { keepRunningContinuity, strengthContinuityNotes, withStoredCurrentPlan } from "./current-plan";
+import { continuityState, keepRunningContinuity, startsFreshPlan, strengthContinuityNotes, withoutCurrentPlan, withStoredCurrentPlan } from "./current-plan";
 import type { CoachRequest, PlannedSession, RunKind, RunningWeek, RunSummary, TrainingLog, WeeklyPlan } from "./types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -430,6 +430,28 @@ test("a newer plan from the auto-plan store replaces the app's older planned ses
   assert.deepEqual(swapped.currentPlan?.runs.map((r) => [r.dayOffset, r.kind, r.distanceKm]), [[1, "easy", 9], [5, "long", 21]]);
   const older = withStoredCurrentPlan(context, req, { ...stored, generatedAt: "2026-05-10T20:00:00.000Z" }, NOW);
   assert.equal(older.currentPlan?.source, "app", "the app's own plan is newer");
+});
+
+test("a regenerate the athlete asks for starts fresh: no earlier plan to keep, today's run stays", () => {
+  assert.equal(startsFreshPlan("manual", true), true);
+  assert.equal(startsFreshPlan("manual", false), false);
+  assert.equal(startsFreshPlan("nightly", true), false);
+  assert.equal(startsFreshPlan("app_active", false), false);
+
+  const req = request({ plannedSessions: [...request().plannedSessions, plannedRun("today", 0, "easy", 6)] });
+  const stored = {
+    generatedAt: "2026-05-11T20:00:00.000Z",
+    weekStart: "2026-05-11T00:00:00.000Z",
+    runningWeek: { summary: "s", safetyFlags: [], sessions: [run("Easy", 2, "easy", 9), run("Long", 6, "long", 21)] }
+  };
+  const context = withStoredCurrentPlan(buildCoachContext(req, NOW), req, stored, NOW);
+  assert.ok(context.currentPlan);
+
+  const fresh = withoutCurrentPlan(context);
+
+  assert.equal(fresh.currentPlan, undefined);
+  assert.deepEqual(fresh.todayPlannedRuns, context.todayPlannedRuns, "today's run is still locked");
+  assert.equal(continuityState(fresh), null, "the planners get no continuity rule");
 });
 
 function run(title: string, dayOffset: number, kind: RunKind, distanceKm: number): RunningWeek["sessions"][number] {
